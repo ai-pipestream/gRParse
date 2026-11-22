@@ -289,6 +289,30 @@ consensus mode takes the raster from the next target. A raster whose reported `d
 resized to the requested DPI, so it stays in the frame the text boxes are
 scaled to.
 
+## ParseStream (added 2026-11-22, gRParse#375)
+
+`PdfBackendService.ParseStream` is the bidirectional session every backend
+now serves (parser-protos `dce4e90`). gRParse opens one stream per
+document: a `ParseStreamOpen` with `header_only`, the document's `sha256`
+and `declared_size`, then the bytes as 256 KiB `PdfChunk` messages on an
+upload thread while the client waits for the open's header (load verdict,
+page inventory). The stream then stays open, and each page's text
+(`ParsePages`) and raster (`RenderPages`) is a request on it, tagged with
+its own `request_id` and closed by a typed `RequestDone`. A document is no
+longer capped by the message limit, and it crosses the wire once with no
+Probe, cache lookup or retry.
+
+Each page request waits no longer than its old unary budget (300 s parse,
+600 s render) or the request's deadline; one given up on is cancelled on
+the stream, which stays open. `cancel()` cancels the whole stream. A
+stream that ends early is reopened (one more upload) by the next page
+call. A backend that answers `UNIMPLEMENTED` (released before the RPC)
+gets the unary Probe/Parse/Render calls and the handshake above, and the
+source records `PdfBackendProtocol::kLegacyFallback`
+(`pdf_backend_protocol()`) and says so on stderr once per target.
+`GRPARSE_PDF_BACKEND_STREAM=off` pins the unary calls
+(`kLegacyByConfig`).
+
 ## AcroForm widgets (added 2026-10-02)
 
 With `GRPARSE_PDF_BACKEND` set, a PDF parse ends with one more Parse call

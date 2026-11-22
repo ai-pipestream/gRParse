@@ -1,19 +1,24 @@
 #include "grparse/remote_page_source.h"
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
+#include <condition_variable>
 #include <chrono>
 #include <cstdint>
 #include <cstdlib>
 #include <exception>
 #include <limits>
 #include <map>
+#include <memory>
 #include <mutex>
 #include <optional>
+#include <print>
 #include <set>
 #include <string>
 #include <string_view>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -76,6 +81,252 @@ constexpr size_t kStrongDigitalNonWhitespace = 128;
   }
 }
 
+// ParseStream is the default wire: the document goes up once, in chunks,
+// and every page request rides the same stream. GRPARSE_PDF_BACKEND_STREAM=
+// off pins the unary Probe/Parse/Render calls; read per opened document,
+// like the handshake switch.
+bool stream_enabled() {
+  const char* configured = std::getenv("GRPARSE_PDF_BACKEND_STREAM");
+  return configured == nullptr || std::string_view(configured) != "off";
+}
+
+// Upload frame size: the collector streams' (collectors/collector_support.h),
+// small enough to interleave with the page requests that share the stream's
+// write side.
+constexpr size_t kStreamChunkBytes = 256U * 1024U;
+
+// How long closing a session waits for the backend's ParseStreamDone after
+// the half-close before cancelling the call.
+constexpr auto kStreamCloseGrace = std::chrono::seconds(5);
+
+// Says once per target that a backend answered ParseStream UNIMPLEMENTED,
+// so an operator sees the fleet still has a backend on the old contract;
+// every source also records it in backend_protocol().
+void report_stream_fallback(const std::string& target) {
+  static std::mutex mutex;
+  static std::set<std::string> reported;
+  const std::lock_guard<std::mutex> lock(mutex);
+  if (!reported.insert(target).second) return;
+  std::println(stderr,
+               "PDF backend {} does not serve ParseStream (UNIMPLEMENTED); using "
+               "Probe/Parse/Render for its documents",
+               target);
+}
+
+// The answer to one ParseStream request.
+struct StreamAnswer {
+  std::vector<pdfv1::ParseStreamResponse> messages;
+  // How the request ended; unset when the stream ended first.
+  std::optional<pdfv1::RequestDone> done;
+  // The stream's status when it ended before the request did.
+  grpc::Status stream_status;
+};
+
+// One open ParseStream: the document uploads on its own thread while a
+// reader thread files every response under its request_id, so page requests
+// from any thread share the stream and the bytes go up once. This is the
+// ConcurrentUpload pattern of the collector clients, except that the upload
+// does not half-close: the stream stays open for the page requests that
+// follow, and Close() half-closes it.
+class ParseStreamSession {
+ public:
+  ParseStreamSession(pdfv1::PdfBackendService::Stub* stub,
+                     std::shared_ptr<const std::string> bytes,
+                     const pdfv1::ParseStreamOpen& open,
+                     std::chrono::system_clock::time_point deadline)
+      : bytes_(std::move(bytes)) {
+    context_.set_deadline(deadline);
+    pending_[0];  // the open's own answer
+    stream_ = stub->ParseStream(&context_);
+    reader_ = std::thread([this] { read_loop(); });
+    upload_ = std::thread([this, open] { upload(open); });
+  }
+  ParseStreamSession(const ParseStreamSession&) = delete;
+  ParseStreamSession& operator=(const ParseStreamSession&) = delete;
+  ~ParseStreamSession() { close(); }
+
+  grpc::ClientContext* context() { return &context_; }
+
+  uint32_t next_id() { return next_id_.fetch_add(1); }
+
+  bool ended() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return ended_;
+  }
+
+  // Registers id's answer slot and sends the request. A request sent after
+  // the stream ended is answered by Await with the stream's status.
+  void send(uint32_t id, const pdfv1::ParseStreamRequest& request) {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (ended_) return;
+      pending_[id];
+    }
+    write(request);
+  }
+
+  // Waits for request id to end, or for the stream to. False when `until`
+  // passed first; the caller then abandons the request.
+  bool await(uint32_t id, std::chrono::system_clock::time_point until, StreamAnswer* out) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    const bool settled = changed_.wait_until(lock, until, [&] {
+      const auto it = pending_.find(id);
+      return ended_ || (it != pending_.end() && it->second.done.has_value());
+    });
+    if (!settled) return false;
+    auto it = pending_.find(id);
+    if (it != pending_.end()) {
+      *out = std::move(it->second);
+      pending_.erase(it);
+    }
+    if (!out->done.has_value()) out->stream_status = status_;
+    return true;
+  }
+
+  // Stops a request its caller gave up on; its late messages are dropped.
+  void abandon(uint32_t id) {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      pending_.erase(id);
+    }
+    pdfv1::ParseStreamRequest cancel;
+    cancel.mutable_cancel()->set_request_id(id);
+    write(cancel);
+  }
+
+ private:
+  bool write(const pdfv1::ParseStreamRequest& message) {
+    const std::lock_guard<std::mutex> lock(write_mutex_);
+    if (writes_closed_) return false;
+    if (!stream_->Write(message)) writes_closed_ = true;
+    return !writes_closed_;
+  }
+
+  void upload(const pdfv1::ParseStreamOpen& open) {
+    pdfv1::ParseStreamRequest message;
+    *message.mutable_open() = open;
+    if (!write(message)) return;
+    const std::string& bytes = *bytes_;
+    size_t offset = 0;
+    do {
+      const size_t length = std::min(kStreamChunkBytes, bytes.size() - offset);
+      message.Clear();
+      auto* chunk = message.mutable_chunk();
+      chunk->set_offset(offset);
+      chunk->set_data(bytes.data() + offset, length);
+      offset += length;
+      chunk->set_last(offset >= bytes.size());
+      if (!write(message)) return;
+    } while (offset < bytes.size());
+    uploaded_.store(true);
+  }
+
+  void read_loop() {
+    pdfv1::ParseStreamResponse message;
+    while (stream_->Read(&message)) {
+      if (message.has_done()) continue;
+      const std::lock_guard<std::mutex> lock(mutex_);
+      auto it = pending_.find(message.request_id());
+      if (it == pending_.end()) continue;
+      if (message.has_request_done()) {
+        it->second.done = message.request_done();
+        changed_.notify_all();
+      } else {
+        it->second.messages.push_back(std::move(message));
+      }
+    }
+    grpc::Status status;
+    {
+      // Finish must not race a Write: the write side closes first.
+      const std::lock_guard<std::mutex> lock(write_mutex_);
+      writes_closed_ = true;
+      status = stream_->Finish();
+    }
+    const std::lock_guard<std::mutex> lock(mutex_);
+    ended_ = true;
+    status_ = status;
+    changed_.notify_all();
+  }
+
+  // Half-closes once the upload is through and lets the backend end the
+  // stream; an upload still running, or a backend that does not end the
+  // stream in time, is cancelled.
+  void close() {
+    if (!uploaded_.load()) context_.TryCancel();
+    if (upload_.joinable()) upload_.join();
+    {
+      const std::lock_guard<std::mutex> lock(write_mutex_);
+      if (!writes_closed_) {
+        stream_->WritesDone();
+        writes_closed_ = true;
+      }
+    }
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (!changed_.wait_for(lock, kStreamCloseGrace, [this] { return ended_; })) {
+        context_.TryCancel();
+      }
+    }
+    if (reader_.joinable()) reader_.join();
+  }
+
+  std::shared_ptr<const std::string> bytes_;
+  grpc::ClientContext context_;
+  std::unique_ptr<grpc::ClientReaderWriter<pdfv1::ParseStreamRequest, pdfv1::ParseStreamResponse>>
+      stream_;
+  std::mutex write_mutex_;
+  bool writes_closed_ = false;
+  std::atomic<bool> uploaded_{false};
+  std::atomic<uint32_t> next_id_{1};
+  mutable std::mutex mutex_;
+  std::condition_variable changed_;
+  std::map<uint32_t, StreamAnswer> pending_;
+  bool ended_ = false;
+  grpc::Status status_;
+  std::thread reader_;
+  std::thread upload_;
+};
+
+// What one page's Parse answer comes to, from the unary stream or a
+// ParseStream request alike.
+struct ParsedPage {
+  std::optional<PdfPageFrame> frame;
+  std::optional<pdfv1::LoadStatus> load_status;
+  std::string load_detail;
+  std::map<uint32_t, std::string> font_names;
+  std::vector<pdfv1::TextCell> cells;
+  std::vector<pdfv1::BoundingBox> images;
+
+  void absorb(const pdfv1::ParseResponse& message, int page_number) {
+    switch (message.payload_case()) {
+      case pdfv1::ParseResponse::kHeader:
+        load_status = message.header().capabilities().load_status();
+        load_detail = message.header().capabilities().load_detail();
+        for (const auto& info : message.header().pages()) {
+          if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
+            frame.emplace(info);
+          }
+        }
+        break;
+      case pdfv1::ParseResponse::kFonts:
+        for (const auto& font : message.fonts().fonts()) {
+          font_names[font.font_id()] = font.base_name();
+        }
+        break;
+      case pdfv1::ParseResponse::kPage:
+        for (const auto& cell : message.page().text_cells()) {
+          cells.push_back(cell);
+        }
+        for (const auto& image : message.page().images()) {
+          images.push_back(image.bbox());
+        }
+        break;
+      default:
+        break;
+    }
+  }
+};
+
 class RemotePdfPageSource final : public PageSource {
  public:
   RemotePdfPageSource(std::shared_ptr<const std::string> bytes,
@@ -89,7 +340,17 @@ class RemotePdfPageSource final : public PageSource {
                            : std::string()),
         render_dpi_(render_dpi),
         render_scale_(render_dpi / kPdfUserSpaceDpi),
+        target_(target),
+        protocol_(stream_enabled() ? PdfBackendProtocol::kCurrent
+                                   : PdfBackendProtocol::kLegacyByConfig),
         stub_(pdfv1::PdfBackendService::NewStub(pdf_backend_channel(target))) {}
+
+  ~RemotePdfPageSource() override { release_session(); }
+
+  RemotePdfPageSource(const RemotePdfPageSource&) = delete;
+  RemotePdfPageSource& operator=(const RemotePdfPageSource&) = delete;
+
+  PdfBackendProtocol backend_protocol() const { return protocol_.load(); }
 
   int page_count() const override {
     open();
@@ -108,74 +369,79 @@ class RemotePdfPageSource final : public PageSource {
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     check_page(page_number);
+    if (on_stream()) {
+      pdfv1::ParseStreamRequest request;
+      auto* parse = request.mutable_parse();
+      add_page_families(parse->mutable_families());
+      parse->mutable_pages()->set_begin(static_cast<uint32_t>(page_number - 1));
+      parse->mutable_pages()->set_end(static_cast<uint32_t>(page_number));
+      const StreamAnswer answer =
+          stream_call(std::move(request), kParseDeadline, "PDF backend parse failed");
+      ParsedPage parsed;
+      for (const auto& message : answer.messages) {
+        if (message.has_parse()) parsed.absorb(message.parse(), page_number);
+      }
+      check_parse_load(parsed);
+      return digital_page(std::move(parsed));
+    }
     bool sent_bytes = !handshake_;
     for (;;) {
       Call call(*this, kParseDeadline);
       pdfv1::ParseRequest request;
       fill_document(request.mutable_document(), sent_bytes);
-      request.add_families(pdfv1::PDF_FAMILY_TEXT_CELLS);
-      request.add_families(pdfv1::PDF_FAMILY_FONTS);
-      // Placements only (no pixels): where the page's rasters sit, for OCR.
-      request.add_families(pdfv1::PDF_FAMILY_PLACED_IMAGES);
+      add_page_families(request.mutable_families());
       auto* range = request.mutable_pages();
       range->set_begin(static_cast<uint32_t>(page_number - 1));
       range->set_end(static_cast<uint32_t>(page_number));
       auto reader = stub_->Parse(call.context(), request);
 
       pdfv1::ParseResponse message;
-      std::optional<PdfPageFrame> frame;
-      std::optional<pdfv1::LoadStatus> header_load_status;
-      std::string header_load_detail;
-      std::map<uint32_t, std::string> font_names;
-      std::vector<pdfv1::TextCell> cells;
-      std::vector<pdfv1::BoundingBox> images;
-      while (reader->Read(&message)) {
-        switch (message.payload_case()) {
-          case pdfv1::ParseResponse::kHeader:
-            header_load_status = message.header().capabilities().load_status();
-            header_load_detail = message.header().capabilities().load_detail();
-            for (const auto& info : message.header().pages()) {
-              if (info.page_index() == static_cast<uint32_t>(page_number - 1)) {
-                frame.emplace(info);
-              }
-            }
-            break;
-          case pdfv1::ParseResponse::kFonts:
-            for (const auto& font : message.fonts().fonts()) {
-              font_names[font.font_id()] = font.base_name();
-            }
-            break;
-          case pdfv1::ParseResponse::kPage:
-            for (const auto& cell : message.page().text_cells()) {
-              cells.push_back(cell);
-            }
-            for (const auto& image : message.page().images()) {
-              images.push_back(image.bbox());
-            }
-            break;
-          default:
-            break;
-        }
-      }
+      ParsedPage parsed;
+      while (reader->Read(&message)) parsed.absorb(message, page_number);
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
         throw_backend_failure("PDF backend parse failed", status);
       }
-      if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
+      if (parsed.load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED &&
           !sent_bytes) {
         // Cache miss on a hash-only request: upload the bytes, once.
         sent_bytes = true;
         continue;
       }
-      if (header_load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED ||
-          header_load_status == pdfv1::LOAD_STATUS_HASH_MISMATCH) {
-        // Bytes were already on the wire, or the bytes did not hash to the
-        // value the client computed itself: a hard error, not a retry.
-        throw InvalidDocument(
-            "PDF backend could not load the document: " +
-            pdfv1::LoadStatus_Name(*header_load_status) +
-            (header_load_detail.empty() ? "" : " (" + header_load_detail + ")"));
-      }
+      check_parse_load(parsed);
+      return digital_page(std::move(parsed));
+    }
+  }
+
+  // Families a page's digital text needs: cells, the font table, and image
+  // placements only (no pixels): where the page's rasters sit, for OCR.
+  static void add_page_families(google::protobuf::RepeatedField<int>* families) {
+    families->Add(pdfv1::PDF_FAMILY_TEXT_CELLS);
+    families->Add(pdfv1::PDF_FAMILY_FONTS);
+    families->Add(pdfv1::PDF_FAMILY_PLACED_IMAGES);
+  }
+
+  // A BYTES_REQUIRED that survived its one retry (or that a stream, which
+  // always carries the bytes, should never see) and a HASH_MISMATCH are
+  // hard errors.
+  static void check_parse_load(const ParsedPage& parsed) {
+    if (parsed.load_status == pdfv1::LOAD_STATUS_BYTES_REQUIRED ||
+        parsed.load_status == pdfv1::LOAD_STATUS_HASH_MISMATCH) {
+      // Bytes were already on the wire, or the bytes did not hash to the
+      // value the client computed itself: a hard error, not a retry.
+      throw InvalidDocument(
+          "PDF backend could not load the document: " +
+          pdfv1::LoadStatus_Name(*parsed.load_status) +
+          (parsed.load_detail.empty() ? "" : " (" + parsed.load_detail + ")"));
+    }
+  }
+
+  std::optional<OcrPage> digital_page(ParsedPage parsed) const {
+    {
+      auto& frame = parsed.frame;
+      auto& cells = parsed.cells;
+      auto& images = parsed.images;
+      auto& font_names = parsed.font_names;
       if (!frame.has_value() || frame->display_height() <= 0.0) return std::nullopt;
 
       OcrPage result;
@@ -267,6 +533,32 @@ class RemotePdfPageSource final : public PageSource {
 
   cv::Mat render_page(int page_number) const override {
     check_page(page_number);
+    if (on_stream()) {
+      pdfv1::ParseStreamRequest request;
+      auto* render = request.mutable_render();
+      render->set_dpi(render_dpi_);
+      render->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
+      render->mutable_pages()->set_begin(static_cast<uint32_t>(page_number - 1));
+      render->mutable_pages()->set_end(static_cast<uint32_t>(page_number));
+      const StreamAnswer answer =
+          stream_call(std::move(request), kRenderDeadline, "PDF backend render failed");
+      cv::Mat rendered;
+      for (const auto& message : answer.messages) {
+        if (!message.has_render()) continue;
+        const auto& frame = message.render();
+        if (frame.has_head() && frame.head().load_status() != pdfv1::LOAD_STATUS_OK) {
+          throw InvalidDocument(
+              "PDF backend could not load the document: " +
+              pdfv1::LoadStatus_Name(frame.head().load_status()) +
+              (frame.head().load_detail().empty() ? "" : " (" + frame.head().load_detail() + ")"));
+        }
+        if (frame.has_raster()) rendered = page_raster(frame.raster(), page_number);
+      }
+      if (rendered.empty()) {
+        throw InvalidDocument("PDF page could not be rendered by the backend");
+      }
+      return rendered;
+    }
     bool sent_bytes = !handshake_;
     for (;;) {
       Call call(*this, kRenderDeadline);
@@ -291,15 +583,8 @@ class RemotePdfPageSource final : public PageSource {
           head_load_detail = message.head().load_detail();
           continue;
         }
-        const auto& raster = message.raster();
-        if (raster.width_px() == 0 || raster.height_px() == 0) continue;
-        if (raster.page_index() != static_cast<uint32_t>(page_number - 1)) {
-          throw InvalidDocument("PDF backend answered with a raster for page " +
-                                std::to_string(raster.page_index() + 1) + " instead of page " +
-                                std::to_string(page_number));
-        }
-        rendered = at_render_dpi(to_bgr(raster_view(raster), raster.pixel_format()),
-                                 raster.dpi());
+        cv::Mat page = page_raster(message.raster(), page_number);
+        if (!page.empty()) rendered = std::move(page);
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
@@ -373,13 +658,13 @@ class RemotePdfPageSource final : public PageSource {
   }
 
   void probe() const {
-    pdfv1::ProbeResponse response = probe_with(nullptr);
+    pdfv1::ProbeResponse response = open_with(nullptr);
     // A document that will not open without a password tries the request's
     // candidates in order; the first that opens it is sent on every later
     // call, since the backend loads the document afresh each time.
     if (password_status(response.capabilities().load_status()) && !candidates_.empty()) {
       for (const std::string& candidate : candidates_.candidates) {
-        response = probe_with(&candidate);
+        response = open_with(&candidate);
         if (response.capabilities().load_status() == pdfv1::LOAD_STATUS_OK) {
           password_ = candidate;
           break;
@@ -414,6 +699,190 @@ class RemotePdfPageSource final : public PageSource {
     pages_ = static_cast<int>(caps.page_count());
     if (pages_ <= 0) throw InvalidDocument("PDF does not contain a renderable page");
     backend_name_ = caps.backend_name();
+  }
+
+  // The opening call, with `password` when one is given: a ParseStream
+  // whose open answers with the header alone, which uploads the document
+  // and keeps the stream for every later page call; or, when the backend
+  // predates ParseStream (UNIMPLEMENTED) or GRPARSE_PDF_BACKEND_STREAM=off,
+  // the Probe of the unary calls. A fallback is recorded in
+  // backend_protocol() and reported once per target, never silent.
+  pdfv1::ProbeResponse open_with(const std::string* password) const {
+    if (protocol_.load() == PdfBackendProtocol::kCurrent) {
+      std::shared_ptr<ParseStreamSession> session;
+      if (const std::optional<pdfv1::ParseHeader> header = start_session(password, &session)) {
+        pdfv1::ProbeResponse response;
+        *response.mutable_capabilities() = header->capabilities();
+        auto* caps = response.mutable_capabilities();
+        if (caps->load_status() == pdfv1::LOAD_STATUS_OK && caps->page_count() == 0) {
+          caps->set_page_count(static_cast<uint32_t>(header->pages_size()));
+        }
+        if (session != nullptr) {
+          const std::lock_guard<std::mutex> lock(session_mutex_);
+          retire(std::move(session_));
+          session_ = std::move(session);
+        }
+        return response;
+      }
+      protocol_.store(PdfBackendProtocol::kLegacyFallback);
+      report_stream_fallback(target_);
+    }
+    return probe_with(password);
+  }
+
+  // Opens a ParseStream session and waits for the open's header. Returns
+  // nullopt when the backend does not serve ParseStream. On a header that
+  // loaded the document, *out holds the live session, registered for
+  // cancel(); otherwise the session is closed.
+  std::optional<pdfv1::ParseHeader> start_session(
+      const std::string* password, std::shared_ptr<ParseStreamSession>* out) const {
+    pdfv1::ParseStreamOpen open;
+    open.set_header_only(true);
+    if (!sha256_.empty()) open.set_sha256(sha256_);
+    open.set_declared_size(bytes_->size());
+    if (password != nullptr) open.set_password(*password);
+    std::chrono::system_clock::time_point deadline;
+    {
+      const std::lock_guard<std::mutex> lock(calls_mutex_);
+      if (cancelled_) {
+        throw PdfBackendUnavailable("PDF backend call cancelled", PdfBackendFailure::kCancelled);
+      }
+      deadline = deadline_;
+    }
+    // The session lives as long as the request may, so its own deadline is
+    // the request's; each page call bounds its wait by its own budget.
+    auto session = std::make_shared<ParseStreamSession>(stub_.get(), bytes_, open, deadline);
+    {
+      const std::lock_guard<std::mutex> lock(calls_mutex_);
+      if (cancelled_) session->context()->TryCancel();
+      calls_.insert(session->context());
+    }
+    // The open carries the upload, so it gets the Parse budget.
+    StreamAnswer answer;
+    const auto until = std::min(deadline, std::chrono::system_clock::now() + kParseDeadline);
+    if (!session->await(0, until, &answer)) {
+      retire(std::move(session));
+      throw PdfBackendUnavailable("PDF backend open timed out", PdfBackendFailure::kDeadlineExceeded);
+    }
+    if (!answer.done.has_value()) {
+      retire(std::move(session));
+      if (answer.stream_status.error_code() == grpc::StatusCode::UNIMPLEMENTED) return std::nullopt;
+      throw_backend_failure("PDF backend unreachable", answer.stream_status);
+    }
+    std::optional<pdfv1::ParseHeader> header;
+    for (const auto& message : answer.messages) {
+      if (message.has_parse() && message.parse().has_header()) {
+        header = message.parse().header();
+        break;
+      }
+    }
+    if (!header.has_value()) {
+      retire(std::move(session));
+      check_outcome(*answer.done, "PDF backend open failed");
+      throw InvalidDocument("PDF backend opened the stream without a header");
+    }
+    if (header->capabilities().load_status() == pdfv1::LOAD_STATUS_OK) {
+      *out = std::move(session);
+    } else {
+      retire(std::move(session));
+    }
+    return header;
+  }
+
+  // Unregisters a session from cancel() and lets it close.
+  void retire(std::shared_ptr<ParseStreamSession> session) const {
+    if (session == nullptr) return;
+    {
+      const std::lock_guard<std::mutex> lock(calls_mutex_);
+      calls_.erase(session->context());
+    }
+    session.reset();
+  }
+
+  void release_session() const {
+    std::shared_ptr<ParseStreamSession> session;
+    {
+      const std::lock_guard<std::mutex> lock(session_mutex_);
+      session = std::move(session_);
+    }
+    retire(std::move(session));
+  }
+
+  // Whether page calls go over the ParseStream session; true once open()
+  // opened one.
+  bool on_stream() const { return protocol_.load() == PdfBackendProtocol::kCurrent; }
+
+  // The live session, opened afresh (one more upload) when the last one
+  // ended, so one lost stream does not fail the rest of the document.
+  std::shared_ptr<ParseStreamSession> current_session() const {
+    const std::lock_guard<std::mutex> lock(session_mutex_);
+    if (session_ != nullptr && !session_->ended()) return session_;
+    retire(std::move(session_));
+    std::shared_ptr<ParseStreamSession> session;
+    const std::optional<pdfv1::ParseHeader> header =
+        start_session(password_.has_value() ? &*password_ : nullptr, &session);
+    if (!header.has_value()) {
+      throw PdfBackendUnavailable("PDF backend stopped serving ParseStream",
+                                  PdfBackendFailure::kUnavailable);
+    }
+    if (session == nullptr) {
+      throw InvalidDocument("PDF backend could not load the document: " +
+                            pdfv1::LoadStatus_Name(header->capabilities().load_status()));
+    }
+    session_ = session;
+    return session;
+  }
+
+  // A request that did not end OK fails the call the way the unary RPC's
+  // status would have.
+  static void check_outcome(const pdfv1::RequestDone& done, const std::string& what) {
+    const std::string message =
+        what + ": " + pdfv1::RequestOutcome_Name(done.outcome()) +
+        (done.has_detail() && !done.detail().empty() ? " (" + done.detail() + ")" : "");
+    switch (done.outcome()) {
+      case pdfv1::REQUEST_OUTCOME_OK:
+        return;
+      case pdfv1::REQUEST_OUTCOME_CANCELLED:
+        throw PdfBackendUnavailable(message, PdfBackendFailure::kCancelled);
+      case pdfv1::REQUEST_OUTCOME_RESOURCE_EXHAUSTED:
+        throw PdfBackendUnavailable(message, PdfBackendFailure::kResourceExhausted);
+      case pdfv1::REQUEST_OUTCOME_DEADLINE_EXCEEDED:
+        throw PdfBackendUnavailable(message, PdfBackendFailure::kDeadlineExceeded);
+      default:
+        throw InvalidDocument(message);
+    }
+  }
+
+  // One page request over the session: sent with a fresh request_id and
+  // waited for no longer than the call's budget or the request's deadline;
+  // a request given up on is cancelled on the stream, which stays open.
+  StreamAnswer stream_call(pdfv1::ParseStreamRequest request, std::chrono::seconds budget,
+                           const std::string& what) const {
+    std::chrono::system_clock::time_point until;
+    {
+      const std::lock_guard<std::mutex> lock(calls_mutex_);
+      if (cancelled_) {
+        throw PdfBackendUnavailable("PDF backend call cancelled", PdfBackendFailure::kCancelled);
+      }
+      until = std::min(deadline_, std::chrono::system_clock::now() + budget);
+    }
+    const std::shared_ptr<ParseStreamSession> session = current_session();
+    const uint32_t id = session->next_id();
+    if (request.has_parse()) {
+      request.mutable_parse()->set_request_id(id);
+    } else {
+      request.mutable_render()->set_request_id(id);
+    }
+    session->send(id, request);
+    StreamAnswer answer;
+    if (!session->await(id, until, &answer)) {
+      session->abandon(id);
+      throw PdfBackendUnavailable(what + ": deadline exceeded",
+                                  PdfBackendFailure::kDeadlineExceeded);
+    }
+    if (!answer.done.has_value()) throw_backend_failure(what, answer.stream_status);
+    check_outcome(*answer.done, what);
+    return answer;
   }
 
   static bool password_status(pdfv1::LoadStatus status) {
@@ -466,6 +935,18 @@ class RemotePdfPageSource final : public PageSource {
 
   int scaled(double user_space_units) const {
     return static_cast<int>(std::lround(user_space_units * render_scale_));
+  }
+
+  // One raster of the requested page in the fold's BGR at render_dpi; empty
+  // for a zero-sized one, which the caller skips.
+  cv::Mat page_raster(const pdfv1::PageRaster& raster, int page_number) const {
+    if (raster.width_px() == 0 || raster.height_px() == 0) return {};
+    if (raster.page_index() != static_cast<uint32_t>(page_number - 1)) {
+      throw InvalidDocument("PDF backend answered with a raster for page " +
+                            std::to_string(raster.page_index() + 1) + " instead of page " +
+                            std::to_string(page_number));
+    }
+    return at_render_dpi(to_bgr(raster_view(raster), raster.pixel_format()), raster.dpi());
   }
 
   // The raster is the backend's word on its own layout; a short or
@@ -562,7 +1043,13 @@ class RemotePdfPageSource final : public PageSource {
   const std::string sha256_;
   const double render_dpi_;
   const double render_scale_;
+  const std::string target_;
+  // kCurrent until the opening call finds a backend without ParseStream.
+  mutable std::atomic<PdfBackendProtocol> protocol_;
   std::unique_ptr<pdfv1::PdfBackendService::Stub> stub_;
+  // The ParseStream session page calls share; replaced when it ends.
+  mutable std::mutex session_mutex_;
+  mutable std::shared_ptr<ParseStreamSession> session_;
   // Set once by open(), under open_mutex_.
   mutable std::mutex open_mutex_;
   mutable std::exception_ptr open_failure_;
@@ -582,6 +1069,12 @@ class RemotePdfPageSource final : public PageSource {
 };
 
 }  // namespace
+
+std::optional<PdfBackendProtocol> pdf_backend_protocol(const PageSource& source) {
+  const auto* remote = dynamic_cast<const RemotePdfPageSource*>(&source);
+  if (remote == nullptr) return std::nullopt;
+  return remote->backend_protocol();
+}
 
 std::optional<std::string> remote_pdf_backend_target() {
   const char* value = std::getenv("GRPARSE_PDF_BACKEND");
