@@ -17,6 +17,7 @@
 #include <condition_variable>
 #include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -948,11 +949,15 @@ class BookEpubService final : public epubv1::EpubParseService::Service {
 // Parses the XHTML the book fake hands out: expects the HTML hint, and
 // projects a heading per <h1> and a picture per <img src>, so the fold's
 // href resolution and placement are exercised end to end. Records every
-// dial so the test can prove one leg per XHTML chapter.
+// dial so the test can prove one leg per XHTML chapter, with the time
+// each dial reached it; `delay` (by chapter bytes) holds a dial's answer back
+// so the dials can be made to finish out of order.
 class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
  public:
-  explicit HtmlMarkupService(size_t rendezvous_count = 0)
-      : rendezvous_count_(rendezvous_count) {}
+  explicit HtmlMarkupService(
+      size_t rendezvous_count = 0,
+      std::function<std::chrono::milliseconds(const std::string&)> delay = {})
+      : rendezvous_count_(rendezvous_count), delay_(std::move(delay)) {}
 
   grpc::Status ParseMarkup(
       grpc::ServerContext*,
@@ -971,6 +976,8 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
     {
       std::unique_lock<std::mutex> lock(mutex_);
       dials_.push_back(bytes);
+      dial_times_.push_back(std::chrono::steady_clock::now());
+      dialed_.notify_all();
       ++in_flight_;
       if (in_flight_ > peak_concurrent_) {
         peak_concurrent_ = in_flight_;
@@ -993,6 +1000,7 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "book chapters must be dialed with the HTML hint");
     }
+    if (delay_) std::this_thread::sleep_for(delay_(bytes));
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -1037,10 +1045,24 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
     return peak_concurrent_;
   }
 
+  // Waits up to `limit` for at least `count` dials to have arrived.
+  bool wait_for_dials(size_t count, std::chrono::milliseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return dialed_.wait_for(lock, limit, [this, count] { return dials_.size() >= count; });
+  }
+
+  std::vector<std::chrono::steady_clock::time_point> dial_times() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dial_times_;
+  }
+
  private:
   const size_t rendezvous_count_;
+  const std::function<std::chrono::milliseconds(const std::string&)> delay_;
   std::mutex mutex_;
   std::condition_variable cv_;
+  std::condition_variable dialed_;
+  std::vector<std::chrono::steady_clock::time_point> dial_times_;
   size_t in_flight_ = 0;
   size_t peak_concurrent_ = 0;
   std::vector<std::string> dials_;
@@ -1108,6 +1130,199 @@ void verify_epub_book_stream_has_a_byte_cap() {
               outcome.error.contains("32 bytes"),
           "a book past the cap fails as resource exhaustion: " + outcome.error);
   require(markup.dials().empty(), "nothing past the cap is folded");
+}
+
+// Streams a book the way grpc-epub does, one chapter event per inflated
+// entry with a pause between them, and holds its document event back until
+// the markup fake has seen a dial (or a few seconds have passed), recording
+// which came first. A coordinator that buffers the whole stream before it
+// dials never lets a dial in before the document event.
+class PacedBookEpubService final : public epubv1::EpubParseService::Service {
+ public:
+  explicit PacedBookEpubService(HtmlMarkupService* markup) : markup_(markup) {}
+
+  grpc::Status ParseEpub(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<epubv1::ParseEpubResponse, epubv1::ParseEpubRequest>*
+          stream) override {
+    epubv1::ParseEpubRequest request;
+    while (stream->Read(&request)) {
+    }
+    epubv1::ParseEpubResponse event;
+    docv1::Document skeleton;
+    skeleton.mutable_body()->set_self_ref("#/body");
+    skeleton.mutable_furniture()->set_self_ref("#/furniture");
+    for (int index = 0; index < 3; ++index) {
+      const std::string href = "OPS/ch0" + std::to_string(index + 1) + ".xhtml";
+      auto* chapter = event.mutable_chapter();
+      chapter->set_spine_index(static_cast<uint32_t>(index));
+      chapter->set_href(href);
+      chapter->set_media_type("application/xhtml+xml");
+      chapter->set_content("<html><body><h1>Paced " + std::to_string(index + 1) +
+                           "</h1></body></html>");
+      stream->Write(event);
+      event.Clear();
+      auto* group = skeleton.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(index));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_label(docv1::GROUP_LABEL_CHAPTER);
+      group->set_name(href);
+      skeleton.mutable_body()->add_children()->set_ref(group->self_ref());
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    dialed_before_document_.store(markup_->wait_for_dials(1, std::chrono::seconds(3)));
+    document_written_at_.store(std::chrono::steady_clock::now());
+    *event.mutable_document() = skeleton;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_chapters_emitted(3);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  bool dialed_before_document() const { return dialed_before_document_.load(); }
+  std::chrono::steady_clock::time_point document_written_at() const {
+    return document_written_at_.load();
+  }
+
+ private:
+  HtmlMarkupService* markup_;
+  std::atomic<bool> dialed_before_document_{false};
+  std::atomic<std::chrono::steady_clock::time_point> document_written_at_{};
+};
+
+// The markup dials run while the epub stream is still in flight: the first
+// chapter is dialed before grpc-epub has written its document event, and
+// the book still folds every chapter once the stream ends.
+void verify_epub_book_dials_chapters_while_the_stream_is_in_flight() {
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  PacedBookEpubService epub(&markup);
+  ServerFixture epub_server(&epub);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "the paced book collects: " + outcome.error);
+  require(epub.dialed_before_document(),
+          "the first chapter is dialed before the epub stream writes its document event");
+  const auto dial_times = markup.dial_times();
+  require(dial_times.size() == 3, "every XHTML chapter is dialed once");
+  require(dial_times.front() < epub.document_written_at(),
+          "the first markup dial starts before the epub stream finishes");
+  require(outcome.document.texts_size() == 3 &&
+              outcome.document.texts(0).section_header().base().text() == "Paced 1" &&
+              outcome.document.texts(2).section_header().base().text() == "Paced 3",
+          "the chapters still fold into the book");
+}
+
+// A longer book with an image spine item and a non-XHTML item between its
+// chapters, whose markup dials finish in reverse order (the first chapter's
+// is held longest): the fold still reads the chapters in spine order, each
+// heading under its own group, exactly as when the dials ran one by one
+// after the stream.
+class LongBookEpubService final : public epubv1::EpubParseService::Service {
+ public:
+  static constexpr int kItems = 12;
+  static constexpr int kImageItem = 4;
+  static constexpr int kStyleItem = 7;
+
+  static std::string href(int index) {
+    if (index == kImageItem) return "OPS/plate.svg";
+    if (index == kStyleItem) return "OPS/notes.txt";
+    return "OPS/ch" + std::to_string(index) + ".xhtml";
+  }
+
+  grpc::Status ParseEpub(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<epubv1::ParseEpubResponse, epubv1::ParseEpubRequest>*
+          stream) override {
+    epubv1::ParseEpubRequest request;
+    while (stream->Read(&request)) {
+    }
+    epubv1::ParseEpubResponse event;
+    docv1::Document skeleton;
+    skeleton.mutable_body()->set_self_ref("#/body");
+    skeleton.mutable_furniture()->set_self_ref("#/furniture");
+    for (int index = 0; index < kItems; ++index) {
+      auto* chapter = event.mutable_chapter();
+      chapter->set_spine_index(static_cast<uint32_t>(index));
+      chapter->set_href(href(index));
+      if (index == kImageItem) {
+        chapter->set_media_type("image/svg+xml");
+        chapter->set_content("<svg/>");
+      } else if (index == kStyleItem) {
+        chapter->set_media_type("text/plain");
+        chapter->set_content("not a chapter");
+      } else {
+        chapter->set_media_type("application/xhtml+xml");
+        chapter->set_content("<html><body><h1>Chapter " + std::to_string(index) +
+                             "</h1></body></html>");
+      }
+      stream->Write(event);
+      event.Clear();
+      auto* group = skeleton.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(index));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_label(docv1::GROUP_LABEL_CHAPTER);
+      group->set_name(href(index));
+      skeleton.mutable_body()->add_children()->set_ref(group->self_ref());
+    }
+    *event.mutable_document() = skeleton;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_chapters_emitted(kItems);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_epub_book_folds_chapters_in_spine_order() {
+  // Chapter n is held (kItems - n) x 15 ms: the earliest chapters answer last.
+  HtmlMarkupService markup(0, [](const std::string& bytes) {
+    const size_t at = bytes.find("Chapter ");
+    const int index = at == std::string::npos ? 0 : std::stoi(bytes.substr(at + 8));
+    return std::chrono::milliseconds((LongBookEpubService::kItems - index) * 15);
+  });
+  ServerFixture markup_server(&markup);
+  LongBookEpubService epub;
+  ServerFixture epub_server(&epub);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "the long book collects: " + outcome.error);
+  require(markup.dials().size() == LongBookEpubService::kItems - 2,
+          "every XHTML chapter is dialed once, the image and the text item never");
+  const auto& book = outcome.document;
+  require(book.groups_size() == LongBookEpubService::kItems,
+          "the skeleton's groups are all there");
+  require(book.texts_size() == LongBookEpubService::kItems - 2,
+          "one heading per XHTML chapter");
+  int text = 0;
+  for (int index = 0; index < LongBookEpubService::kItems; ++index) {
+    const auto& group = book.groups(index);
+    if (index == LongBookEpubService::kStyleItem) {
+      require(group.children_size() == 0, "the non-XHTML item's group stays empty");
+      continue;
+    }
+    require(group.children_size() == 1, "each chapter group holds its one item");
+    if (index == LongBookEpubService::kImageItem) {
+      require(group.children(0).ref() == "#/pictures/0",
+              "the image spine item becomes its group's picture");
+      continue;
+    }
+    const auto& header = book.texts(text).section_header().base();
+    require(header.text() == "Chapter " + std::to_string(index),
+            "the headings follow the spine, not the order the dials finished: #/texts/" +
+                std::to_string(text) + " is '" + header.text() + "'");
+    require(header.parent().ref() == group.self_ref() &&
+                group.children(0).ref() == header.self_ref(),
+            "each heading sits under its own chapter's group");
+    ++text;
+  }
+  int not_xhtml = 0;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("OPS/notes.txt") && warning.contains("is not XHTML")) ++not_xhtml;
+    require(!warning.contains("were not parsed"), "no chapter was cut: " + warning);
+  }
+  require(not_xhtml == 1, "the non-XHTML item is reported once");
 }
 
 void verify_epub_book_without_markup_keeps_the_skeleton() {
@@ -3822,6 +4037,8 @@ int main() {
       verify_missing_document_event_fails,
       verify_epub_book_folds_chapters_and_images,
       verify_epub_book_stream_has_a_byte_cap,
+      verify_epub_book_dials_chapters_while_the_stream_is_in_flight,
+      verify_epub_book_folds_chapters_in_spine_order,
       verify_epub_book_without_markup_keeps_the_skeleton,
       verify_epub_book_survives_a_failing_chapter,
       verify_markup_forwards_hint_and_collects,
