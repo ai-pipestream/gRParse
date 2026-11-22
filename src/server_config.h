@@ -127,6 +127,11 @@ std::string openvino_device_setting();
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
 
+// The streaming surface's admission cap and pool: GRPARSE_MAX_ACTIVE_STREAMS
+// (default 64), GRPARSE_STREAM_WORKERS (default 64) and GRPARSE_STREAM_QUEUE
+// (default 256), each 1 to 4096.
+StreamingLimits read_streaming_limits();
+
 // The async task registry's bounds: GRPARSE_MAX_TASKS (default 256),
 // GRPARSE_TASK_RESULT_TTL_SECONDS (default 3600) and GRPARSE_MAX_WATCHERS
 // (default 256).

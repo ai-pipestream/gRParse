@@ -340,8 +340,13 @@ int main() {
                  task_options.max_tasks,
                  std::chrono::duration_cast<std::chrono::seconds>(task_options.result_ttl).count(),
                  task_options.max_watchers);
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight, {},
-                                                        executor_options);
+    const grparse::StreamingLimits streaming_limits = grparse::read_streaming_limits();
+    std::println("gRParse streaming: at most {} streams open (GRPARSE_MAX_ACTIVE_STREAMS), "
+                 "{} workers, queue {}",
+                 streaming_limits.max_active_streams, streaming_limits.executor.workers,
+                 streaming_limits.executor.queue_capacity);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight,
+                                                        {}, streaming_limits);
     streaming_service.set_remote_fetch_slots(service.remote_fetch_slots());
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());

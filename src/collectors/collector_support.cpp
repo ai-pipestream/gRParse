@@ -8,6 +8,17 @@
 namespace grparse {
 
 CancelWatch::CancelWatch(grpc::ClientContext& context, CollectorCancelled cancelled) {
+  if (cancelled.pushed()) {
+    registry_ = cancelled.registry();
+    // The inbound call is already gone: TryCancel before the call starts is
+    // kept by the context and applied when it does.
+    if (registry_ == nullptr) {
+      context.TryCancel();
+      return;
+    }
+    token_ = registry_->add([&context] { context.TryCancel(); });
+    return;
+  }
   if (!cancelled) return;
   thread_ = std::thread([this, &context, cancelled = std::move(cancelled)] {
     std::unique_lock<std::mutex> lock(mutex_);
@@ -21,6 +32,7 @@ CancelWatch::CancelWatch(grpc::ClientContext& context, CollectorCancelled cancel
 }
 
 CancelWatch::~CancelWatch() {
+  if (registry_ != nullptr) registry_->remove(token_);
   if (!thread_.joinable()) return;
   {
     std::lock_guard<std::mutex> lock(mutex_);

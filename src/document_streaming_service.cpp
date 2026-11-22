@@ -19,11 +19,11 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
-#include <system_error>
-#include <thread>
 #include <utility>
 #include <vector>
 
+#include "grparse/call_executor.h"
+#include "grparse/collector_cancel.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
@@ -116,9 +116,12 @@ class DocumentStreamReactor final
                         std::optional<RepairOptions> repair,
                         std::shared_ptr<InflightBytes> inflight,
                         std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
-                        std::shared_ptr<std::atomic<uint64_t>> folded_pages)
+                        std::shared_ptr<std::atomic<uint64_t>> folded_pages,
+                        CallExecutor& executor, std::shared_ptr<std::atomic<size_t>> active_streams,
+                        size_t max_active_streams)
       : context_(context),
         scheduler_(scheduler),
+        executor_(executor),
         endpoints_(std::move(endpoints)),
         server_repair_(std::move(repair)),
         repair_(server_repair_),
@@ -132,6 +135,21 @@ class DocumentStreamReactor final
         transfer_observer_(std::move(transfer_observer)),
         folded_pages_(std::move(folded_pages)) {
     callback_gate_->reactor = this;
+    callback_gate_->cancel = cancel_registry_;
+    // Admission comes before the first read: a stream past the cap never
+    // buffers a chunk. It is a rejection like any refused request, and it
+    // holds no slot, so its teardown returns none.
+    if (!admit(std::move(active_streams), max_active_streams)) {
+      finish_requested_ = true;
+      finish_started_ = true;
+      finish_status_ = grpc::Status(
+          grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "StreamProcessDocument: " + std::to_string(max_active_streams) +
+              " streams are already open, the GRPARSE_MAX_ACTIVE_STREAMS cap");
+      record_stream_completion_locked();
+      Finish(finish_status_);
+      return;
+    }
     StartRead(&incoming_);
   }
 
@@ -140,6 +158,7 @@ class DocumentStreamReactor final
   ~DocumentStreamReactor() override {
     record_stream_completion_locked();
     if (inflight_ != nullptr) inflight_->release(charged_bytes_);
+    if (active_streams_ != nullptr) active_streams_->fetch_sub(1, std::memory_order_acq_rel);
   }
 
   void OnReadDone(bool ok) override {
@@ -163,6 +182,7 @@ class DocumentStreamReactor final
     write_in_flight_ = false;
     if (!ok) {
       client_cancelled_ = true;
+      cancel_registry_->cancel();
       events_.clear();
       buffered_pages_ = 0;
       request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "client stopped reading"));
@@ -175,6 +195,9 @@ class DocumentStreamReactor final
   void OnCancel() override {
     std::lock_guard<std::mutex> lock(mutex_);
     client_cancelled_ = true;
+    // Pushed, not polled: every outbound call a leg has open is cancelled
+    // here, on the thread that learned of the cancel.
+    cancel_registry_->cancel();
     request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled"));
   }
 
@@ -188,6 +211,8 @@ class DocumentStreamReactor final
       std::lock_guard<std::mutex> lock(gate->mutex);
       gate->reactor = nullptr;
     }
+    // A leg still running has nobody left to deliver to.
+    cancel_registry_->cancel();
     delete this;
   }
 
@@ -195,7 +220,22 @@ class DocumentStreamReactor final
   struct CallbackGate {
     std::mutex mutex;
     DocumentStreamReactor* reactor = nullptr;
+    // The stream's cancel registry, set before any leg starts and never
+    // changed, so a leg reads it without the mutex.
+    std::weak_ptr<CancelRegistry> cancel;
   };
+
+  // Takes one of the server's stream slots, or answers false at the cap.
+  bool admit(std::shared_ptr<std::atomic<size_t>> active_streams, size_t max_active_streams) {
+    if (active_streams == nullptr) return true;
+    size_t current = active_streams->load(std::memory_order_acquire);
+    do {
+      if (current >= max_active_streams) return false;
+    } while (!active_streams->compare_exchange_weak(current, current + 1,
+                                                    std::memory_order_acq_rel));
+    active_streams_ = std::move(active_streams);
+    return true;
+  }
 
   // The client half-closed. True when the stream ended with a document to
   // parse; a cancelled or truncated stream finishes the call instead.
@@ -403,22 +443,29 @@ class DocumentStreamReactor final
     MimetypeResolution mimetype;
   };
 
-  // The processing thread resolves the plan, sniffs the upload (up to
-  // 500 MiB; its digests were fed chunk by chunk) and spawns the legs, which
-  // is not work a gRPC
-  // event-manager thread may be handed: every call multiplexed on it,
-  // Health included, would stall behind it. It reaches the reactor through
-  // the gate like every other off-reactor callback.
+  // A stream worker resolves the plan, sniffs the upload (up to 500 MiB;
+  // its digests were fed chunk by chunk) and spawns the legs, which is not
+  // work a gRPC event-manager thread may be handed: every call multiplexed
+  // on it, Health included, would stall behind it. It reaches the reactor
+  // through the gate like every other off-reactor callback. A full pool
+  // refuses the stream instead of growing a thread for it.
   void start_processing() {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    bool queued = false;
     try {
-      std::thread([weak_gate] { process_guarded(weak_gate); }).detach();
-    } catch (const std::system_error& error) {
+      queued = executor_.submit([weak_gate] { process_guarded(weak_gate); });
+    } catch (const std::exception& error) {
       std::lock_guard<std::mutex> lock(mutex_);
       request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                                          std::string("could not start the parse: ") +
                                              error.what()));
+      return;
     }
+    if (queued) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    request_finish_locked(grpc::Status(
+        grpc::StatusCode::RESOURCE_EXHAUSTED,
+        "StreamProcessDocument: the stream worker queue is full (GRPARSE_STREAM_QUEUE)"));
   }
 
   // Calls `fn` on the reactor under the gate, unless it is already gone.
@@ -727,36 +774,53 @@ class DocumentStreamReactor final
         });
   }
 
-  // Starts one leg on its own detached thread. A throw inside the leg (an
+  // Queues one leg on the stream pool. A throw inside the leg (an
   // allocation, a thread the leg itself could not start) becomes the leg's
   // failure through the same gate path as any failed outcome, never
-  // std::terminate; a thread that cannot start fails its leg on the spot.
-  // Called with the gate held, so the reactor is alive.
+  // std::terminate. A leg the full queue refuses fails that collector on the
+  // spot with RESOURCE_EXHAUSTED (a capacity failure on the complete event),
+  // and the parse degrades as it does for any failed leg. Called with the
+  // gate held, so the reactor is alive.
   template <typename Body>
   void start_leg(pipestream::parse::v1::Collector id, Body body) {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    bool queued = false;
     try {
-      std::thread([weak_gate, id, body = std::move(body)]() mutable {
-        try {
-          body(weak_gate);
-        } catch (...) {
-          deliver(weak_gate, id, outcome_from_exception(std::current_exception()));
-        }
-      }).detach();
+      queued = executor_.submit(
+          [weak_gate, id, body = std::make_shared<Body>(std::move(body))]() mutable {
+            try {
+              (*body)(weak_gate);
+            } catch (...) {
+              deliver(weak_gate, id, outcome_from_exception(std::current_exception()));
+            }
+          });
     } catch (...) {
       on_collector_done(id, outcome_from_exception(std::current_exception()));
+      return;
     }
+    if (queued) return;
+    CollectorOutcome refused;
+    refused.code = grpc::StatusCode::RESOURCE_EXHAUSTED;
+    refused.error = std::string(collector_name(id)) +
+                    " collector: not started, the stream worker queue is full "
+                    "(GRPARSE_STREAM_QUEUE)";
+    on_collector_done(id, std::move(refused));
   }
 
-  // The poll a leg's own call makes to learn the client is gone: a cancel,
-  // a client that stopped reading, or a torn-down reactor.
+  // How a leg's own calls learn the client is gone: a cancel, a client
+  // that stopped reading, a failing finish, or a torn-down reactor. Pushed
+  // through the stream's registry, so each outbound ClientContext is
+  // cancelled the moment the reactor is; the gate check stays as the answer
+  // for code that asks between calls.
   static CollectorCancelled leg_cancelled(std::weak_ptr<CallbackGate> weak_gate) {
-    return [weak_gate = std::move(weak_gate)] {
+    std::weak_ptr<CancelRegistry> registry;
+    if (const auto gate = weak_gate.lock()) registry = gate->cancel;
+    return CollectorCancelled(std::move(registry), [weak_gate = std::move(weak_gate)] {
       const auto gate = weak_gate.lock();
       if (gate == nullptr) return true;
       std::lock_guard<std::mutex> lock(gate->mutex);
       return gate->reactor == nullptr || gate->reactor->client_gone();
-    };
+    });
   }
 
   // What the pdf routing leg runs with, copied off the reactor.
@@ -773,7 +837,7 @@ class DocumentStreamReactor final
   // parse is the collector's own fast-path Document (text-based) or the
   // in-process CV pipeline restricted to the pages the inspector named as
   // needing OCR. A failed classification degrades to the unrouted CV path,
-  // never to a failed parse. Runs on its own thread for the same reason
+  // never to a failed parse. Runs on a stream worker for the same reason
   // spawn_remote_collector does: the collector call is a blocking client,
   // cancelled like the other remote legs once the client is gone.
   //
@@ -802,12 +866,13 @@ class DocumentStreamReactor final
     if (leg.previews) {
       CollectorCancelled gone = leg_cancelled(weak_gate);
       const CollectorDeadline deadline = leg.deadline;
+      std::shared_ptr<CancelRegistry> registry = gone.registry();
       preview_session.emplace(
           leg.bytes,
           [gone = std::move(gone), deadline] {
             return std::chrono::system_clock::now() >= deadline || gone();
           },
-          deadline, leg.tuning.passwords);
+          deadline, leg.tuning.passwords, std::move(registry));
     }
     std::map<int, pipestream::document::v1::PageItem> previews;
     const auto stream_page = [&weak_gate, &preview_session, &previews](PdfPageSlice slice) {
@@ -979,7 +1044,7 @@ class DocumentStreamReactor final
         grpc::Status(outcome.code, outcome.error + "; fell back to the in-process CV path"));
   }
 
-  // An in-process collector runs on its own thread for the same reason a
+  // An in-process collector runs on a stream worker for the same reason a
   // remote one does: the fold is straight-line work on the request bytes,
   // not a gRPC reaction, and the gate keeps its completion safe against
   // reactor teardown.
@@ -1002,13 +1067,13 @@ class DocumentStreamReactor final
     return client_cancelled_ || context_->IsCancelled();
   }
 
-  // A remote collector runs on its own thread: it is a blocking client
+  // A remote collector runs on a stream worker: it is a blocking client
   // stream, not a gRPC reaction. The gate keeps its completion safe against
   // reactor teardown exactly like the scheduler callbacks. A client cancel
-  // abandons the result and cancels the leg's own call (polled through the
-  // gate, so a torn-down reactor reads as gone); the leg's deadline, the
-  // sooner of this call's own and the collector's cap, still bounds it. The
-  // streaming wire carries no ebcdic layout and no lol-html rules, so
+  // abandons the result and cancels the leg's own call (pushed through the
+  // stream's cancel registry, and a torn-down reactor reads as gone); the
+  // leg's deadline, the sooner of this call's own and the collector's cap,
+  // still bounds it. The streaming wire carries no ebcdic layout and no lol-html rules, so
   // selecting either collector here degrades to that collector's own
   // INVALID_ARGUMENT.
   void spawn_remote_collector(pipestream::parse::v1::Collector id,
@@ -1402,13 +1467,17 @@ class DocumentStreamReactor final
       if (finish_status_.ok() && !status.ok()) {
         finish_status_ = std::move(status);
         cancel_ticket_locked();
+        cancel_registry_->cancel();
       }
       pump_locked();
       return;
     }
     finish_requested_ = true;
     finish_status_ = std::move(status);
-    if (!finish_status_.ok()) cancel_ticket_locked();
+    if (!finish_status_.ok()) {
+      cancel_ticket_locked();
+      cancel_registry_->cancel();
+    }
     pump_locked();
   }
 
@@ -1433,6 +1502,14 @@ class DocumentStreamReactor final
 
   grpc::CallbackServerContext* context_;
   PageScheduler& scheduler_;
+  // The service's stream pool: the plan and every leg run there.
+  CallExecutor& executor_;
+  // Every outbound call this stream's legs have open, cancelled at once
+  // when the stream ends early. Legs hold it weakly through the gate.
+  const std::shared_ptr<CancelRegistry> cancel_registry_ = std::make_shared<CancelRegistry>();
+  // The server's stream count this call holds a slot of; null when it was
+  // refused at the cap.
+  std::shared_ptr<std::atomic<size_t>> active_streams_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   // The server's repair pass, and the one this stream runs once its
   // structural options resolve (fixed before any collector starts).
@@ -1876,13 +1953,14 @@ DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
                                                    std::optional<RepairOptions> repair,
                                                    std::shared_ptr<InflightBytes> inflight,
                                                    std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
-                                                   CallExecutor::Options executor_options)
+                                                   StreamingLimits limits)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
       inflight_(std::move(inflight)),
       transfer_observer_(std::move(transfer_observer)),
-      executor_(executor_options) {}
+      max_active_streams_(std::max<size_t>(1, limits.max_active_streams)),
+      executor_(limits.executor) {}
 
 grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse>*
 DocumentStreamingService::StreamDocument(
@@ -1911,7 +1989,8 @@ DocumentStreamingService::StreamDocument(
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
   return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_,
-                                   transfer_observer_, folded_pages_);
+                                   transfer_observer_, folded_pages_, executor_, active_streams_,
+                                   max_active_streams_);
 }
 
 }  // namespace grparse
