@@ -351,11 +351,34 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   // `inflight` is the budget every stream's chunks are charged to as they
   // arrive (see InflightBytes); null leaves the 500 MiB per-stream limit as
   // the only bound.
+  // `executor_options` sizes the pool StreamDocument's source parses run
+  // on, a pool of this service's own (the server passes the unary pool's
+  // GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE).
   DocumentStreamingService(PageScheduler& scheduler,
                            std::shared_ptr<CollectorEndpoints> endpoints,
                            std::optional<RepairOptions> repair = RepairOptions{},
                            std::shared_ptr<InflightBytes> inflight = {},
-                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {});
+                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {},
+                           CallExecutor::Options executor_options = {});
+
+  // The slots StreamDocument's remote source fetches hold, as on
+  // DocumentParserService; the server hands both services the same set, so
+  // GRPARSE_REMOTE_FETCH_CONCURRENCY bounds the fetches of both. Set before
+  // serving; null leaves fetches unbounded.
+  void set_remote_fetch_slots(std::shared_ptr<RemoteFetchSlots> slots) {
+    fetch_slots_ = std::move(slots);
+  }
+  const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
+
+  // The source-based entry to the envelope feed: each source of the
+  // ConvertDocumentRequest is fetched and parsed exactly as ConvertSource
+  // parses it, one after another on this service's executor, and the stream
+  // carries status envelopes around each source's final_document and
+  // source_result. Every envelope echoes request_id and carries the next
+  // sequence_number, from 1.
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamDocumentResponse>* StreamDocument(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::StreamDocumentRequest* request) override;
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
@@ -374,6 +397,11 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   std::shared_ptr<std::atomic<uint64_t>> folded_pages_ =
       std::make_shared<std::atomic<uint64_t>>(0);
+  std::shared_ptr<RemoteFetchSlots> fetch_slots_ =
+      std::make_shared<RemoteFetchSlots>(kDefaultRemoteFetchConcurrency);
+  // Declared last so it is torn down first, as on DocumentParserService:
+  // StreamDocument's parses are joined before what they read goes away.
+  CallExecutor executor_;
 };
 
 }  // namespace grparse

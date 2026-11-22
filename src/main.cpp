@@ -333,7 +333,9 @@ int main() {
     service.set_response_byte_cap(grparse::read_response_byte_cap());
     std::println("gRParse unary response: at most {} MiB (GRPARSE_MAX_RESPONSE_BYTES)",
                  service.response_byte_cap() / (1024 * 1024));
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight, {},
+                                                        executor_options);
+    streaming_service.set_remote_fetch_slots(service.remote_fetch_slots());
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());
     if (!server) {

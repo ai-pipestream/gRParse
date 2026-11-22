@@ -395,9 +395,8 @@ privilege escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts any format the collector routing does (below), up to 500 MiB;
-the same service's `StreamDocument` RPC is not implemented and returns
-`UNIMPLEMENTED`, whatever `parse_stream.proto` says of it. `collectors`
+server accepts any format the collector routing does (below), up to 500 MiB.
+`collectors`
 values validate like the unary options: an unknown value fails the stream
 with `INVALID_ARGUMENT` naming it. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
@@ -653,6 +652,31 @@ and full-digital pages are rasterized for it even when layout is off. The
 preview's pixel size rides its `ImageRef`; the page size stays in the
 page's own coordinate space (PDF points for digital pages), same aspect
 ratio.
+
+### Source streams (`StreamDocument`)
+
+`ParseStreamingService/StreamDocument` is the source-based entry to the same
+service: it takes a `ConvertDocumentRequest` (inline, HTTP or storage
+sources, the unary options) and answers with a server stream of
+`StreamDocumentResponse` envelopes. Each source is fetched and parsed
+exactly as `ConvertSource` parses it (the same remote fetch slots,
+in-flight budget, collectors, merge and repair), one source after another
+on a pool sized like the unary one (`GRPARSE_UNARY_WORKERS`,
+`GRPARSE_UNARY_QUEUE`). The stream is `status` `PHASE_QUEUED`, then
+`PHASE_STARTED`; per source in request order a `PHASE_PROCESSING` status,
+then either the merged `final_document` and a successful `source_result`,
+or an `error` (typed `code` and `failure`) and a failed `source_result`,
+after which the next source runs; and last `PHASE_COMPLETED` when any
+source converted, else `PHASE_FAILED`. The call then finishes OK. Every
+envelope echoes `request_id` and carries `sequence_number`, counting from 1
+with no gaps, and `timestamp_ms`; source-scoped envelopes set
+`source_index`. The `part` arm is not sent: what streams is each source's
+result, not its pages (`StreamProcessDocument` streams pages). A request
+with no source, a `target` to deliver to, invalid options, or no room in
+the budget or the pool is refused with its status and no envelope; a
+client that cancels or stops reading ends the call `CANCELLED`. The server
+writes one source's envelopes before it parses the next, so a slow reader
+holds at most one finished `Document`.
 
 ## Collector scatter-gather
 

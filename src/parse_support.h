@@ -134,6 +134,13 @@ grpc::Status resolve_rapidocr_detect_orientation(
 // raises has one status class, and everything else is INTERNAL.
 grpc::Status status_from_exception(std::exception_ptr failure);
 
+// The client-facing account of a call or task that ended in `status`: its
+// FailureCategory (a refused request is POLICY, the rest classify as a
+// collector leg's status does), whether a retry can help (a deadline, a
+// full server or an unreachable peer), and `phase`.
+ai::pipestream::parse::v1::PublicFailureInfo public_failure(
+    const grpc::Status& status, ai::pipestream::parse::v1::FailurePhase phase);
+
 // A collector leg's failed outcome, from the exception that ended it,
 // carrying the status status_from_exception maps the throw to.
 CollectorOutcome outcome_from_exception(std::exception_ptr failure);
