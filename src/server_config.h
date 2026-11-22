@@ -126,6 +126,11 @@ std::string openvino_device_setting();
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
 
+// The streaming surface's admission cap and pool: GRPARSE_MAX_ACTIVE_STREAMS
+// (default 64), GRPARSE_STREAM_WORKERS (default 64) and GRPARSE_STREAM_QUEUE
+// (default 256), each 1 to 4096.
+StreamingLimits read_streaming_limits();
+
 // GRPARSE_EMBEDDING_BACKEND=off (default), cpu, openvino, or tensorrt. This
 // selection is independent of OCR's GRPARSE_ORT_EP. Model artifacts are read
 // only when explicitly enabled. See embedding.h for the backend factory.

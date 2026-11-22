@@ -343,6 +343,18 @@ struct CollectorDocumentTransferObserver {
   std::function<void()> after_transfer;
 };
 
+// StreamProcessDocument's bounds (GRPARSE_MAX_ACTIVE_STREAMS,
+// GRPARSE_STREAM_WORKERS, GRPARSE_STREAM_QUEUE; see read_streaming_limits).
+struct StreamingLimits {
+  // Calls open at once, server wide. One more finishes RESOURCE_EXHAUSTED
+  // naming GRPARSE_MAX_ACTIVE_STREAMS before it reads a chunk.
+  size_t max_active_streams = 64;
+  // The pool every stream's plan and collector legs run on. A leg the full
+  // queue refuses fails that collector with RESOURCE_EXHAUSTED, so the parse
+  // degrades collector by collector as for any failed leg.
+  CallExecutor::Options executor{.workers = 64, .queue_capacity = 256};
+};
+
 class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseStreamingService::CallbackService {
  public:
   // The stream has no merged Document: each collector's finished Document
@@ -355,11 +367,17 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
                            std::shared_ptr<CollectorEndpoints> endpoints,
                            std::optional<RepairOptions> repair = RepairOptions{},
                            std::shared_ptr<InflightBytes> inflight = {},
-                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {});
+                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {},
+                           StreamingLimits limits = {});
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
   StreamProcessDocument(grpc::CallbackServerContext* context) override;
+
+  // Streams admitted and not yet done. Sampled; for tests and gauges.
+  size_t active_streams() const { return active_streams_->load(); }
+  // Tasks waiting for a stream worker. Sampled, like CallExecutor::queued.
+  size_t queued_stream_tasks() const { return executor_.queued(); }
 
   // Page events this service's streams folded server side to compute their
   // repair events, summed over every stream since construction. A stream
@@ -374,6 +392,12 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   std::shared_ptr<std::atomic<uint64_t>> folded_pages_ =
       std::make_shared<std::atomic<uint64_t>>(0);
+  const size_t max_active_streams_;
+  std::shared_ptr<std::atomic<size_t>> active_streams_ =
+      std::make_shared<std::atomic<size_t>>(0);
+  // Last member: destroyed first, so its drain runs while everything a
+  // queued task may still reach through its reactor is alive.
+  CallExecutor executor_;
 };
 
 }  // namespace grparse

@@ -585,6 +585,19 @@ CallExecutor::Options read_executor_options() {
   return executor_options;
 }
 
+StreamingLimits read_streaming_limits() {
+  // StreamProcessDocument's own bounds. The stream cap counts open calls
+  // server wide, where GRPARSE_MAX_CONCURRENT_STREAMS counts them per
+  // connection; the pool runs every stream's plan and collector legs, so
+  // the threads a stream costs come out of it instead of out of the OS.
+  // Size the pool at or above the stream cap times the common leg count.
+  StreamingLimits limits;
+  limits.max_active_streams = configured_size("GRPARSE_MAX_ACTIVE_STREAMS", 64, 4096);
+  limits.executor.workers = configured_size("GRPARSE_STREAM_WORKERS", 64, 4096);
+  limits.executor.queue_capacity = configured_size("GRPARSE_STREAM_QUEUE", 256, 4096);
+  return limits;
+}
+
 std::optional<RepairOptions> configure_repair() {
   const char* configured = std::getenv("GRPARSE_REPAIR");
   const std::string mode = configured == nullptr ? "on" : configured;

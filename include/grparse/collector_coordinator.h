@@ -11,6 +11,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/markup/v1/markup.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "grparse/collector_cancel.h"
 
 namespace grparse {
 
@@ -25,13 +26,6 @@ using CollectorDeadline = std::chrono::system_clock::time_point;
 // cap. It is the default everywhere a deadline is threaded, so a caller that
 // has none to give keeps exactly today's behaviour.
 inline constexpr CollectorDeadline kNoCollectorDeadline = CollectorDeadline::max();
-
-// Answers true once the inbound call that asked for a parse has gone away
-// (cancelled by its client), so every collector leg it started can cancel
-// its own call instead of running out its cap for nobody. Called from a
-// helper thread while the leg runs; an empty hook (the default everywhere)
-// means nothing to watch.
-using CollectorCancelled = std::function<bool()>;
 
 // The deadline one leg's ClientContext gets: the sooner of the inbound
 // ceiling and the leg's own cap measured from now. A leg never outlives the

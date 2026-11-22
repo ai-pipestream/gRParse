@@ -563,6 +563,21 @@ waiting for a free worker; past it a conversion is refused with
 spends nearly all its life waiting on the page scheduler or on a collector, so
 both numbers bound concurrent conversions rather than CPU use.
 
+`StreamProcessDocument` has bounds of its own. `GRPARSE_MAX_ACTIVE_STREAMS`
+(default 64, 1 to 4096) caps the streams open at once across the whole
+server, where `GRPARSE_MAX_CONCURRENT_STREAMS` is a per-connection HTTP/2
+setting; one more stream finishes `RESOURCE_EXHAUSTED` naming the variable
+before it reads a chunk. Each admitted stream's plan and every collector leg
+it starts run on a pool sized by `GRPARSE_STREAM_WORKERS` (default 64) with
+`GRPARSE_STREAM_QUEUE` (default 256) waiting tasks, instead of a thread of
+their own; a leg the full queue refuses fails that collector with a capacity
+failure on the complete event while the other collectors' output still
+arrives. Size the pool at or above the stream cap times the usual leg count
+(two for a workbook with its calamine leg), or streams queue behind each
+other's legs. A stream that ends early (a client cancel, a client that
+stopped reading, a failed finish) cancels every outbound call its legs have
+open at that moment, rather than each leg noticing on its own poll.
+
 When the layout model is present (see
 [models/README.md](models/README.md)), every page also runs layout detection
 on the configured execution provider. `GRPARSE_LAYOUT_MODEL=heron|picodet`

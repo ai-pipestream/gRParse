@@ -2698,8 +2698,9 @@ class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
     received_.store(true);
     const auto ceiling = std::chrono::steady_clock::now() + 5s;
     while (!context->IsCancelled() && std::chrono::steady_clock::now() < ceiling) {
-      std::this_thread::sleep_for(5ms);
+      std::this_thread::sleep_for(1ms);
     }
+    cancelled_at_.store(std::chrono::steady_clock::now());
     cancelled_.store(context->IsCancelled());
     finished_.store(true);
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until cancelled");
@@ -2708,11 +2709,14 @@ class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
   bool received() const { return received_.load(); }
   bool cancelled() const { return cancelled_.load(); }
   bool finished() const { return finished_.load(); }
+  // When the call saw its cancel, to within the 1 ms poll above.
+  std::chrono::steady_clock::time_point cancelled_at() const { return cancelled_at_.load(); }
 
  private:
   std::atomic<bool> received_{false};
   std::atomic<bool> cancelled_{false};
   std::atomic<bool> finished_{false};
+  std::atomic<std::chrono::steady_clock::time_point> cancelled_at_{};
 };
 
 // Waits up to `limit` for `condition`, polling.
@@ -2727,7 +2731,10 @@ bool wait_for(Condition condition, std::chrono::milliseconds limit) {
 
 // A client that cancels mid-classification cancels the pdf routing leg's
 // own call too, like every other remote leg, instead of leaving it to run
-// to the call's deadline.
+// to the call's deadline. The cancel is pushed from the reactor's OnCancel,
+// so the inspector sees it within a couple of loopback round trips; the
+// 100 ms CancelWatch poll it replaced would miss the bound three times in
+// four.
 void verify_streaming_pdf_router_cancels_with_the_client() {
   HangingPdfInspector inspector;
   PdfInspectorServer inspector_server(&inspector);
@@ -2761,6 +2768,7 @@ void verify_streaming_pdf_router_cancels_with_the_client() {
   stream->WritesDone();
   require(wait_for([&inspector] { return inspector.received(); }, 5000ms),
           "the routing leg reaches the inspector");
+  const auto cancelled_at = std::chrono::steady_clock::now();
   context.TryCancel();
   pipestream::parse::v1::DocumentStreamEvent ignored;
   while (stream->Read(&ignored)) {
@@ -2769,8 +2777,343 @@ void verify_streaming_pdf_router_cancels_with_the_client() {
   require(wait_for([&inspector] { return inspector.finished(); }, 6000ms),
           "the inspector call ends");
   require(inspector.cancelled(), "the routing leg's own call is cancelled with the client");
+  const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+      inspector.cancelled_at() - cancelled_at);
+  std::println("pdf router cancel: the inspector saw it {} ms after the client", latency.count());
+  require(latency < 25ms, "the cancel reaches the routing leg pushed, not polled: " +
+                              std::to_string(latency.count()) + " ms");
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
+}
+
+// Holds every ParsePdf call until released, then fails it, so the routing
+// leg falls back to the CV path and the stream still completes.
+class GatedPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    ++received_;
+    arrived_.notify_all();
+    released_cv_.wait_for(lock, 10s, [this, context] { return released_ || context->IsCancelled(); });
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until released");
+  }
+
+  bool wait_received(int count, std::chrono::milliseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return arrived_.wait_for(lock, limit, [this, count] { return received_ >= count; });
+  }
+
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    released_cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable arrived_;
+  std::condition_variable released_cv_;
+  int received_ = 0;
+  bool released_ = false;
+};
+
+pipestream::parse::v1::DocumentChunk routed_pdf_chunk(const std::string& id) {
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id(id);
+  chunk.set_filename(id + ".pdf");
+  chunk.set_content_type("application/pdf");
+  chunk.set_data("%PDF-in-memory");
+  chunk.set_complete(true);
+  return chunk;
+}
+
+// GRPARSE_MAX_ACTIVE_STREAMS counts open streams server wide: with the cap
+// held by streams waiting on a slow collector, one more stream finishes
+// RESOURCE_EXHAUSTED naming the variable, and the held ones still complete.
+void verify_stream_admission_cap() {
+  GatedPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<RoutableDigitalSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  grparse::StreamingLimits limits;
+  limits.max_active_streams = 2;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets), grparse::RepairOptions{},
+      {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "admission stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  struct Held {
+    grpc::ClientContext context;
+    std::unique_ptr<grpc::ClientReaderWriter<pipestream::parse::v1::DocumentChunk,
+                                             pipestream::parse::v1::DocumentStreamEvent>>
+        stream;
+  };
+  std::array<Held, 2> held;
+  for (size_t index = 0; index < held.size(); ++index) {
+    held[index].context.set_deadline(std::chrono::system_clock::now() + 30s);
+    held[index].stream = client->StreamProcessDocument(&held[index].context);
+    require(held[index].stream->Write(routed_pdf_chunk("held-" + std::to_string(index))),
+            "a held stream could not write its chunk");
+    held[index].stream->WritesDone();
+  }
+  require(inspector.wait_received(2, 5000ms), "both admitted streams reach the inspector");
+  require(streaming_service.active_streams() == 2, "both streams hold a slot");
+
+  grpc::ClientContext refused_context;
+  refused_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto refused = client->StreamProcessDocument(&refused_context);
+  refused->Write(routed_pdf_chunk("refused"));
+  refused->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent event;
+  int refused_events = 0;
+  while (refused->Read(&event)) ++refused_events;
+  const grpc::Status refused_status = refused->Finish();
+  require(refused_status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "the stream past the cap is refused: " + refused_status.error_message());
+  require(refused_status.error_message().find("GRPARSE_MAX_ACTIVE_STREAMS") != std::string::npos,
+          "the refusal names the cap: " + refused_status.error_message());
+  require(refused_events == 0, "a refused stream emits nothing");
+
+  inspector.release();
+  for (auto& stream : held) {
+    bool complete = false;
+    while (stream.stream->Read(&event)) {
+      if (event.has_complete()) complete = true;
+    }
+    const grpc::Status status = stream.stream->Finish();
+    require(status.ok(), "an admitted stream completes: " + status.error_message());
+    require(complete, "an admitted stream ends with its complete event");
+  }
+  require(wait_for([&streaming_service] { return streaming_service.active_streams() == 0; },
+                   5000ms),
+          "finished streams return their slots");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// A leg the full stream queue refuses fails that collector alone: with one
+// worker (running the plan) and a queue of one (taken by the first leg),
+// the second leg is a capacity failure on the complete event while the
+// first leg's Document still arrives.
+void verify_refused_leg_is_a_capacity_failure() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::StreamingLimits limits;
+  limits.executor.workers = 1;
+  limits.executor.queue_capacity = 1;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::RepairOptions{}, {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "capacity stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("capacity");
+  source.set_filename("page.bin");
+  source.set_content_type(grparse::kConfluenceStorageMimetype);
+  source.set_data(kStorageBody);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+  source.set_complete(true);
+  const StreamRun run = run_chunks(client.get(), {source});
+  require(run.status.ok(), "one refused leg does not fail the parse: " + run.status.error_message());
+  bool storage_document = false;
+  for (const auto& event : run.events) {
+    if (event.has_collector_document() &&
+        event.collector_document().collector() == pipestream::parse::v1::COLLECTOR_CONFLUENCE) {
+      storage_document = true;
+    }
+  }
+  require(storage_document, "the admitted leg's Document still arrives");
+  require(!run.events.empty() && run.events.back().has_complete(), "the stream completes");
+  const auto& failures = run.events.back().complete().collector_failures();
+  require(failures.size() == 1 &&
+              failures[0].collector() == pipestream::parse::v1::COLLECTOR_EMAIL,
+          "the refused leg is the one failure");
+  require(failures[0].category() == pipestream::parse::v1::FAILURE_CATEGORY_CAPACITY,
+          "a refused leg is a capacity failure");
+  require(failures[0].error().find("GRPARSE_STREAM_QUEUE") != std::string::npos,
+          "the failure names the queue: " + failures[0].error());
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// Threads this process runs now, from /proc/self/status.
+size_t process_threads() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.starts_with("Threads:")) return std::stoul(line.substr(8));
+  }
+  return 0;
+}
+
+// Holds each ParseEmail call a little, then fails it, so many legs overlap.
+class SlowEmailService final : public ai::pipestream::email::v1::EmailParseService::Service {
+ public:
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::email::v1::ParseEmailResponse,
+                               ai::pipestream::email::v1::ParseEmailRequest>* stream) override {
+    ai::pipestream::email::v1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+    }
+    calls.fetch_add(1);
+    std::this_thread::sleep_for(100ms);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "slow email fake");
+  }
+
+  std::atomic<int> calls{0};
+};
+
+// The threads a stream costs come out of the stream pool, not the OS: 100
+// streams open at once, each with an in-process leg and a remote leg (an
+// upload thread, a pushed cancel registration, no watch thread), never
+// raise the thread count past the pool's own workers plus one upload per
+// running leg and a fixed allowance for gRPC's own threads. The detached
+// design this replaced ran 100 x 4 threads here.
+void verify_stream_threads_stay_bounded_under_load() {
+  SlowEmailService email;
+  grpc::ServerBuilder email_builder;
+  int email_port = 0;
+  email_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &email_port);
+  email_builder.RegisterService(&email);
+  auto email_server = email_builder.BuildAndStart();
+  require(email_server && email_port != 0, "slow email collector failed to start");
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.email = "127.0.0.1:" + std::to_string(email_port);
+  constexpr size_t kStreams = 100;
+  constexpr size_t kWorkers = 8;
+  grparse::StreamingLimits limits;
+  limits.max_active_streams = kStreams;
+  limits.executor.workers = kWorkers;
+  limits.executor.queue_capacity = 4 * kStreams;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets), grparse::RepairOptions{},
+      {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "load stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  // Warm the channels and gRPC's pools before taking the baseline.
+  {
+    pipestream::parse::v1::DocumentChunk warm;
+    warm.set_document_id("warm");
+    warm.set_filename("page.bin");
+    warm.set_content_type(grparse::kConfluenceStorageMimetype);
+    warm.set_data(kStorageBody);
+    warm.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+    warm.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    warm.set_complete(true);
+    require(run_chunks(client.get(), {warm}).status.ok(), "the warm-up stream completes");
+  }
+  const size_t baseline = process_threads();
+  require(baseline > 0, "the thread count is readable");
+  std::atomic<bool> sampling{true};
+  std::atomic<size_t> peak{baseline};
+  std::thread sampler([&sampling, &peak] {
+    while (sampling.load()) {
+      const size_t now = process_threads();
+      size_t seen = peak.load();
+      while (now > seen && !peak.compare_exchange_weak(seen, now)) {
+      }
+      std::this_thread::sleep_for(2ms);
+    }
+  });
+  struct Open {
+    grpc::ClientContext context;
+    std::unique_ptr<grpc::ClientReaderWriter<pipestream::parse::v1::DocumentChunk,
+                                             pipestream::parse::v1::DocumentStreamEvent>>
+        stream;
+  };
+  std::vector<std::unique_ptr<Open>> streams;
+  for (size_t index = 0; index < kStreams; ++index) {
+    auto open = std::make_unique<Open>();
+    open->context.set_deadline(std::chrono::system_clock::now() + 60s);
+    open->stream = client->StreamProcessDocument(&open->context);
+    pipestream::parse::v1::DocumentChunk source;
+    source.set_document_id("load-" + std::to_string(index));
+    source.set_filename("page.bin");
+    source.set_content_type(grparse::kConfluenceStorageMimetype);
+    source.set_data(kStorageBody);
+    source.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+    source.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    source.set_complete(true);
+    require(open->stream->Write(source), "a load stream could not write its chunk");
+    open->stream->WritesDone();
+    streams.push_back(std::move(open));
+  }
+  require(wait_for([&email] { return email.calls.load() >= static_cast<int>(kWorkers); },
+                   10000ms),
+          "the remote legs run");
+  size_t completed = 0;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  for (auto& open : streams) {
+    bool complete = false;
+    while (open->stream->Read(&event)) {
+      if (event.has_complete()) complete = true;
+    }
+    const grpc::Status status = open->stream->Finish();
+    require(status.ok(), "a load stream completes: " + status.error_message());
+    if (complete) ++completed;
+  }
+  sampling.store(false);
+  sampler.join();
+  require(completed == kStreams, "every load stream ends with its complete event");
+  require(email.calls.load() == static_cast<int>(kStreams + 1), "every remote leg ran");
+  // The stream workers already run in the baseline; what may grow is one
+  // upload thread per running remote leg (at most kWorkers), the email
+  // fake's per-call server threads (at most kWorkers more) and gRPC's own
+  // pools.
+  constexpr size_t kGrpcAllowance = 32;
+  const size_t ceiling = baseline + 2 * kWorkers + kGrpcAllowance;
+  std::println("stream load: {} streams, thread peak {} over a baseline of {} (ceiling {})",
+               kStreams, peak.load(), baseline, ceiling);
+  require(peak.load() <= ceiling, "threads stayed bounded under load: peak " +
+                                      std::to_string(peak.load()) + ", baseline " +
+                                      std::to_string(baseline) + ", ceiling " +
+                                      std::to_string(ceiling));
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  email_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  email_server->Wait();
 }
 
 void verify_pdf_fast_path_skips_the_cv_pipeline() {
@@ -5302,6 +5645,9 @@ int main() {
         verify_stream_charge_follows_the_bytes();
         verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();
+        verify_stream_admission_cap();
+        verify_refused_leg_is_a_capacity_failure();
+        verify_stream_threads_stay_bounded_under_load();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
