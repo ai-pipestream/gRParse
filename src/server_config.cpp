@@ -14,6 +14,7 @@
 #include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/lighton_ocr.h"
 #include "grparse/ocr_rect_render.h"
 #include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
@@ -416,6 +417,15 @@ CollectorTargets read_collector_targets() {
   vlm.timeout = std::chrono::milliseconds(
       configured_size("GRPARSE_VLM_CONVERT_TIMEOUT_MS", 120000, 600000));
   vlm.endpoint = collector_env("GRPARSE_VLM_CONVERT_ENDPOINT");
+  LightonOcrOptions lighton;
+  lighton.target = collector_env("GRPARSE_LIGHTON_TARGET");
+  lighton.timeout = std::chrono::milliseconds(
+      configured_size("GRPARSE_LIGHTON_TIMEOUT_MS", 300000, 3600000));
+  // The checkpoint grpc-lighton-ocr serves (its GRPC_LIGHTON_MODEL); the
+  // wire names it on every call and the peer refuses any other.
+  if (configured_mode("GRPARSE_LIGHTON_MODEL", "0.8b", {"0.8b", "4b"}) == "4b") {
+    lighton.model = ai::pipestream::lightonocr::v1::LIGHTON_MODEL_4B;
+  }
   return CollectorTargets{
       .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
       .asr = collector_env("GRPARSE_ASR_TARGET"),
@@ -443,6 +453,9 @@ CollectorTargets read_collector_targets() {
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
+      // The LightOnOCR leg through grpc-lighton-ocr: off unless a target is
+      // named; a VLM request naming the LightOnOCR model then goes there.
+      .lighton = std::move(lighton),
       // Request-named model endpoints: off unless the operator opts in.
       .enable_remote_services =
           configured_mode("GRPARSE_ENABLE_REMOTE_SERVICES", "off", {"on", "off"}) == "on",
@@ -533,6 +546,13 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
                      : ", endpoint " + redacted_endpoint(targets.vlm.endpoint));
   } else {
     std::println("gRParse vlm convert: not configured");
+  }
+  if (targets.lighton.enabled()) {
+    std::println("gRParse lighton ocr: {} ({} ms, {})", targets.lighton.target,
+                 targets.lighton.timeout.count(),
+                 ai::pipestream::lightonocr::v1::LightonModel_Name(targets.lighton.model));
+  } else {
+    std::println("gRParse lighton ocr: not configured");
   }
   std::println("gRParse request-named remote services: {}",
                targets.enable_remote_services

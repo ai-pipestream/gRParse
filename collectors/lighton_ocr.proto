@@ -1,0 +1,210 @@
+// grpc-lighton-ocr wire contract: whole-document parsing by LightOnOCR on
+// this service's own engine. The client streams page rasters; the service
+// streams per-page Document fragments and the folded Document.
+//
+// Every fact is a typed field. No JSON string, map, Struct, or opaque bytes
+// stands in for structure. The page raster is the only bytes field.
+syntax = "proto3";
+
+package ai.pipestream.lightonocr.v1;
+
+import "ai/pipestream/document/v1/document.proto";
+
+// LightOn OCR collector.
+service LightOnOcrService {
+  // Parses one document.
+  //
+  // The client sends ParseOptions first, then one PageImage per page, then
+  // half-closes. The server streams PageDocument as each page closes and,
+  // when asked, the folded Document, then one ParseComplete trailer.
+  //
+  // Errors: a missing or repeated ParseOptions, a page_count of zero, a
+  // page_no outside 1..page_count or sent twice, or fewer pages than
+  // page_count at half-close is INVALID_ARGUMENT. More pages or bytes than
+  // the server's caps is RESOURCE_EXHAUSTED.
+  rpc ParseDocument(stream ParseDocumentRequest) returns (stream ParseDocumentResponse);
+
+  // Build and model facts for this server process.
+  rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
+}
+
+// One client-to-server message on the ParseDocument stream.
+message ParseDocumentRequest {
+  // Exactly one payload kind per message.
+  oneof payload {
+    // Must be the first message on the stream and must not repeat.
+    ParseOptions options = 1;
+    // One page raster.
+    PageImage page = 2;
+  }
+}
+
+// Per-document options, sent once as the first message.
+message ParseOptions {
+  // Which LightOnOCR-3 checkpoint to run. Required: UNSPECIFIED is
+  // INVALID_ARGUMENT, and a checkpoint other than the one this process
+  // serves is FAILED_PRECONDITION.
+  LightonModel model = 1;
+  // Number of pages in the document. Required, and at least 1.
+  uint32 page_count = 2;
+  // Zero (including omitted) selects greedy decoding; positive values are 0.01..2.
+  float temperature = 3;
+  // Decode step cap for one page. 0 means the server default.
+  uint32 max_tokens_per_page = 4;
+  // Stream a Document fragment as each page closes.
+  bool emit_page_documents = 5;
+  // Send the folded Document before ParseComplete.
+  bool emit_document = 6;
+}
+
+// Which LightOnOCR-3 checkpoint this request runs.
+enum LightonModel {
+  // The server default, the 0.8B checkpoint.
+  LIGHTON_MODEL_UNSPECIFIED = 0;
+  // lightonai/LightOnOCR-3-0.8B.
+  LIGHTON_MODEL_0_8B = 1;
+  // lightonai/LightOnOCR-3-4B.
+  LIGHTON_MODEL_4B = 2;
+}
+
+// One page raster.
+message PageImage {
+  // 1-based page number, at most ParseOptions.page_count.
+  uint32 page_no = 1;
+  // The page raster, PNG or JPEG. The only bytes field on this contract:
+  // it is the page itself, not structure.
+  bytes png = 2;
+  // Raster width in pixels. 0 means read it from the image.
+  uint32 width_px = 3;
+  // Raster height in pixels. 0 means read it from the image.
+  uint32 height_px = 4;
+}
+
+// One server-to-client event on the ParseDocument stream.
+message ParseDocumentResponse {
+  // Exactly one event kind per message.
+  oneof event {
+    // A page closed: its Document fragment.
+    PageDocument page_document = 1;
+    // A page failed or was not decoded.
+    PageFailure page_failure = 2;
+    // The folded Document, when emit_document is set.
+    ai.pipestream.document.v1.Document document = 3;
+    // The trailer, last on every stream that completes.
+    ParseComplete complete = 4;
+  }
+}
+
+// A converted page.
+message PageDocument {
+  // 1-based page number.
+  uint32 page_no = 1;
+  // Verified runtime and model provenance.
+  InferenceProvenance provenance = 3;
+  // Items, pictures, and provenance for this page alone.
+  ai.pipestream.document.v1.Document document = 2;
+  // Why native generation ended.
+  FinishReason finish_reason = 4;
+}
+
+// A page the service could not turn into items.
+message PageFailure {
+  // 1-based page number.
+  uint32 page_no = 1;
+  // Why the page produced no items.
+  PageFailureCode code = 2;
+  // The same fact as prose, for a log line.
+  string message = 3;
+  // Available raw model output and tokens, even if grounding could not parse.
+  ai.pipestream.document.v1.GenerationTrace generation_trace = 4;
+  // Loaded artifacts that produced the available output.
+  InferenceProvenance provenance = 5;
+  // Typed termination cause; unspecified when inference did not start.
+  FinishReason finish_reason = 6;
+  // Recoverable grounded items from incomplete output, when parsing succeeded.
+  ai.pipestream.document.v1.Document partial_document = 7;
+}
+
+// Why a page produced no items.
+enum PageFailureCode {
+  // No code was set.
+  PAGE_FAILURE_CODE_UNSPECIFIED = 0;
+  // The native engine or its weights are not available in this process.
+  PAGE_FAILURE_CODE_ENGINE_UNAVAILABLE = 1;
+  // The raster was empty or not an image this server can read.
+  PAGE_FAILURE_CODE_BAD_IMAGE = 2;
+  // A bounded decode or output limit was reached.
+  PAGE_FAILURE_CODE_RESOURCE_LIMIT = 3;
+  // Native inference or structured output parsing failed.
+  PAGE_FAILURE_CODE_INFERENCE = 4;
+}
+
+// Trailer for one ParseDocument stream.
+message ParseComplete {
+  // Pages the client sent.
+  uint32 pages = 1;
+  // Pages that produced a Document fragment.
+  uint32 pages_ok = 2;
+  // Pages that produced a PageFailure.
+  uint32 pages_failed = 3;
+}
+
+// Empty request for GetServiceInfo.
+message GetServiceInfoRequest {}
+
+// What this process can do.
+message GetServiceInfoResponse {
+  // gRPC listen address, host:port.
+  string listen_address = 1;
+  // True when a native engine is linked and its weights loaded.
+  bool engine_loaded = 2;
+  // Hugging Face repo of the checkpoint this process serves.
+  string model_repo = 3;
+  reserved 4;
+  reserved "revision";
+  // The checkpoint this process serves, set from GRPC_LIGHTON_MODEL.
+  LightonModel model = 5;
+  // Present only when the engine is loaded.
+  InferenceProvenance provenance = 6;
+}
+
+// Verified artifacts and native runtime used for inference.
+message InferenceProvenance {
+  // Service release version.
+  string service_version = 1;
+  // Pinned native backend commit.
+  string backend_revision = 2;
+  // Original checkpoint revision.
+  string model_revision = 3;
+  // SHA256 of the loaded text GGUF.
+  string model_sha256 = 4;
+  // SHA256 of the loaded vision GGUF.
+  string projector_sha256 = 5;
+  // Execution device: cpu, or "openvino:<id> - <device name>" with the name
+  // the native runtime reports. An accelerator is named only after a real
+  // inference ran with every graph node placed on it.
+  string device = 6;
+  // Host or container instance that performed inference.
+  string server_instance = 7;
+  // SHA256 of the weights file of the exported vision encoder an accelerator
+  // runs in place of the vision GGUF's own graph. Empty on cpu.
+  string vision_encoder_sha256 = 8;
+}
+
+// Why a page stopped generating or could not become a complete document.
+enum FinishReason {
+  // No generation termination reason is available.
+  FINISH_REASON_UNSPECIFIED = 0;
+  // The model generated its end token.
+  FINISH_REASON_END_TOKEN = 1;
+  // The requested decode token cap was reached.
+  FINISH_REASON_TOKEN_LIMIT = 2;
+  // The generated text or trace byte cap was reached.
+  FINISH_REASON_OUTPUT_LIMIT = 3;
+  // The model output could not be projected to grounded items.
+  FINISH_REASON_PARSE_ERROR = 4;
+  // Native inference failed after emitting partial output.
+  FINISH_REASON_ENGINE_ERROR = 5;
+  // The server inference deadline elapsed after emitting partial output.
+  FINISH_REASON_DEADLINE = 6;
+}

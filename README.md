@@ -739,7 +739,8 @@ peer all start. The pool's channels differ in one channel argument
 (`grparse.channel_index`) so grpc-core gives each its own subchannel instead
 of sharing one connection. The startup log prints the pool size and the
 keepalive in one line (`gRParse collector channels: ...`). The enrich and
-vlm-convert legs keep one channel each; they are peers, not collectors.
+vlm-convert and lighton legs keep one channel each; they are peers, not
+collectors.
 
 Every collector, enrich, vlm-convert and PDF backend channel carries
 keepalive: while a call is open, a connection that has read nothing for
@@ -780,6 +781,21 @@ minute after the ping instead of after the keepalive timeout.
 
 The server's own port pings an idle client after 30 s (10 s timeout) and
 accepts client pings as often as every 20 s, with or without calls open.
+
+The `PROCESSING_PIPELINE_VLM` body comes from one of two peers. A request
+whose selection resolves to the LightOnOCR model (`VLM_MODEL_TYPE_LIGHTONOCR`)
+goes to grpc-lighton-ocr when `GRPARSE_LIGHTON_TARGET` names it
+(`GRPARSE_LIGHTON_TIMEOUT_MS`, default `300000`, caps the leg;
+`GRPARSE_LIGHTON_MODEL`, `0.8b` or `4b`, names the checkpoint the service
+serves). Pages render here and go up one at a time on the bidirectional
+`ParseDocument` stream while the page documents come back; they merge in
+page order under the claimant `lighton-ocr`, a page failure is a document
+warning (and fails the leg under `abort_on_error`), and the leg's warnings
+name `lighton-ocr` as their source. Once chosen there is no fallback: a peer
+error, a stream with no `ParseComplete` trailer, or no converted page fails
+the request with that status. With the variable unset the model stays on
+grpc-vlm-convert's LightOnOCR preset (`GRPARSE_VLM_CONVERT_TARGET`), like
+every other model.
 
 Two family members are *not* collectors, whatever `compose.stack.yaml` runs
 next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell

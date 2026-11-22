@@ -741,6 +741,11 @@ void verify_settings_digest_follows_settings_and_models() {
   ::setenv("GRPARSE_REPAIR", "off", 1);
   require(grparse::read_settings_digest() != swapped, "the repair setting enters the digest");
   ::unsetenv("GRPARSE_REPAIR");
+  ::setenv("GRPARSE_LIGHTON_TARGET", "", 1);
+  require(grparse::read_settings_digest() == swapped, "an empty collector target is an unset one");
+  ::setenv("GRPARSE_LIGHTON_TARGET", "lighton-ocr:50074", 1);
+  require(grparse::read_settings_digest() != swapped, "a configured LightOnOCR target enters the digest");
+  ::unsetenv("GRPARSE_LIGHTON_TARGET");
   ::unsetenv("GRPARSE_UNARY_WORKERS");
   ::unsetenv("GRPARSE_MODELS_DIR");
   fs::remove_all(models);

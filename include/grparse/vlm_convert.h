@@ -97,7 +97,18 @@ void apply_vlm_convert_options(
     const ai::pipestream::parse::v1::ConvertDocumentOptions& convert,
     VlmConvertOptions* options);
 
+// The engine a PROCESSING_PIPELINE_VLM body came from: grpc-vlm-convert
+// with the resolved preset, or grpc-lighton-ocr (lighton_ocr.h). Recorded on
+// the leg's report, and named ("vlm-convert" or "lighton-ocr") as the
+// claimant its pages merge under and the source of its document warnings.
+enum class VlmBodyEngine {
+  kVlmConvert,
+  kLightonOcr,
+};
+
 struct VlmConvertReport {
+  // Which engine this report is from; set by the leg that ran.
+  VlmBodyEngine engine = VlmBodyEngine::kVlmConvert;
   int pages_sent = 0;
   int pages_ok = 0;
   int pages_failed = 0;

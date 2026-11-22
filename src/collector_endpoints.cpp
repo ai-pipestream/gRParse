@@ -115,4 +115,10 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::vlm_channel() {
   return next_channel(vlm_channel_, targets_.vlm.target, 1);
 }
 
+std::shared_ptr<grpc::Channel> CollectorEndpoints::lighton_channel() {
+  if (!has_lighton()) return nullptr;
+  std::lock_guard<std::mutex> lock(mutex_);
+  return next_channel(lighton_channel_, targets_.lighton.target, 1);
+}
+
 }  // namespace grparse

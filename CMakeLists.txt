@@ -1348,6 +1348,51 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
 
+# ---- LightOnOCR leg: grpc-lighton-ocr contract, collector, and tests ---------
+# Appended as one block, mirroring the VLM convert leg above. The contract is
+# vendored under collectors/ (its document.proto is this repo's, pinned in
+# collectors/PINS.tsv) and compiled by its own protoc step; the stubs join
+# grparse_proto, the collector joins grparse_core, and the test joins the
+# suite.
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1")
+configure_file(collectors/lighton_ocr.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto" COPYONLY)
+set(LIGHTON_OCR_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto")
+set(LIGHTON_OCR_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${LIGHTON_OCR_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${LIGHTON_OCR_PROTO}
+  DEPENDS collectors/lighton_ocr.proto document.proto
+          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+          protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc")
+target_sources(grparse_core PRIVATE src/collectors/lighton_collector.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_LIGHTON_TESTS lighton-ocr-test)
+  foreach(test_name IN LISTS GRPARSE_LIGHTON_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_LIGHTON_TESTS})
+  set_tests_properties(${GRPARSE_LIGHTON_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()
+
 # ---- orientation recovery: turned scans re-read upright -----------------------
 # Appended as one block, like the data plane above: the source joins
 # grparse_core and the test joins the grparse suite with the same timeout and

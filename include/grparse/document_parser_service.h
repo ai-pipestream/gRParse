@@ -26,6 +26,7 @@
 #include "grparse/chunk_embeddings.h"
 #include "grparse/document_repair.h"
 #include "grparse/inflight_bytes.h"
+#include "grparse/lighton_ocr.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/remote_fetch_slots.h"
@@ -113,6 +114,11 @@ struct CollectorTargets {
   // PROCESSING_PIPELINE_VLM body producer. Empty target means that pipeline
   // is unavailable.
   VlmConvertOptions vlm;
+  // The LightOnOCR leg (grpc-lighton-ocr, GRPARSE_LIGHTON_TARGET): the
+  // PROCESSING_PIPELINE_VLM body producer for a request that names the
+  // LightOnOCR model. Empty target leaves that model on grpc-vlm-convert's
+  // preset.
+  LightonOcrOptions lighton;
   // GRPARSE_ENABLE_REMOTE_SERVICES: whether a request may name its own
   // remote model endpoint (picture_description_api.url, an http(s)
   // vlm_pipeline_model_api.url), which a peer then calls on the caller's
@@ -213,6 +219,13 @@ class CollectorEndpoints {
   bool has_vlm() const { return targets_.vlm.enabled(); }
   std::shared_ptr<grpc::Channel> vlm_channel();
 
+  // The LightOnOCR leg's options and its lazily created channel (one, with
+  // the collector channels' arguments); null when GRPARSE_LIGHTON_TARGET is
+  // unset.
+  const LightonOcrOptions& lighton() const { return targets_.lighton; }
+  bool has_lighton() const { return targets_.lighton.enabled(); }
+  std::shared_ptr<grpc::Channel> lighton_channel();
+
   // Whether requests may name their own remote model endpoints
   // (GRPARSE_ENABLE_REMOTE_SERVICES).
   bool remote_services_enabled() const { return targets_.enable_remote_services; }
@@ -238,6 +251,7 @@ class CollectorEndpoints {
   std::map<ai::pipestream::parse::v1::Collector, ChannelPool> channels_;
   ChannelPool enrich_channel_;
   ChannelPool vlm_channel_;
+  ChannelPool lighton_channel_;
 };
 
 // Every unary surface runs on gRPC's callback API. The parsing surfaces block
