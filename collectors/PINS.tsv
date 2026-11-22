@@ -10,6 +10,7 @@ collectors/epub_service.proto	grpc-epub	proto/ai/pipestream/epub/v1/epub_service
 collectors/epub_types.proto	grpc-epub	proto/ai/pipestream/epub/v1/types.proto	8f61f4a3e3b053c7fd7e254ec52cf90aad81dd65
 collectors/lolhtml_service.proto	grpc-lol-html	proto/lolhtml/v1/lolhtml_service.proto	03c0a2888e11009f01769efd3f7ae7907913f3dc
 collectors/lolhtml_types.proto	grpc-lol-html	proto/lolhtml/v1/types.proto	03c0a2888e11009f01769efd3f7ae7907913f3dc
+collectors/lighton_ocr.proto	grpc-lighton-ocr	proto/ai/pipestream/lightonocr/v1/lighton_ocr.proto	7a918242ac85afe1c987c77a584f05161084e993
 collectors/markup.proto	grpc-markup	proto/ai/pipestream/markup/v1/markup.proto	cc88700960cf81383da847dacfe1f0709022a5cd
 collectors/markup_service.proto	grpc-markup	proto/ai/pipestream/markup/v1/markup_service.proto	cc88700960cf81383da847dacfe1f0709022a5cd
 collectors/opennlp_annotations.proto	grpc-asr	proto/org/apache/opennlp/grpc/v1/opennlp_annotations.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
@@ -30,6 +31,7 @@ document.proto	grpc-email	proto/ai/pipestream/document/v1/document.proto	d17b72a
 document.proto	grpc-enrich	proto/ai/pipestream/document/v1/document.proto	a2a2822ca6523025c84b858dbf8f0c22a0055276
 document.proto	grpc-epub	proto/ai/pipestream/document/v1/document.proto	8f61f4a3e3b053c7fd7e254ec52cf90aad81dd65
 document.proto	grpc-libreoffice	proto/ai/pipestream/document/v1/document.proto	5bf35d7f1a8d216a25291f1bb4592f57693a3b3d
+document.proto	grpc-lighton-ocr	proto/ai/pipestream/document/v1/document.proto	7a918242ac85afe1c987c77a584f05161084e993
 document.proto	grpc-markup	proto/ai/pipestream/document/v1/document.proto	cc88700960cf81383da847dacfe1f0709022a5cd
 document.proto	grpc-pdf-inspector	proto/ai/pipestream/document/v1/document.proto	7502cb7e9a9f943b522a64bb91ce891d18540c06
 document.proto	grpc-vlm-convert	proto/ai/pipestream/document/v1/document.proto	ea3990a2eb1e950c2e07d466b62340a82b111778

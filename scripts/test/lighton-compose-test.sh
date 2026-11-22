@@ -4,7 +4,7 @@ set -euo pipefail
 root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 work=$(mktemp -d)
 trap 'rm -rf "$work"' EXIT
-unset LIGHTON_MODEL LIGHTON_MODELS_DIR LIGHTON_IMAGE STACK_TAG
+unset LIGHTON_MODEL LIGHTON_MODELS_DIR LIGHTON_IMAGE STACK_TAG GRPARSE_LIGHTON_TARGET
 compose=(docker compose --project-directory "$root" -f "$root/compose.stack.yaml")
 "${compose[@]}" --profile heavy config --services > "$work/heavy"
 if grep -qx lighton-ocr "$work/heavy"; then
@@ -13,6 +13,7 @@ if grep -qx lighton-ocr "$work/heavy"; then
 fi
 "${compose[@]}" --profile lighton config --format json > "$work/base.json"
 LIGHTON_MODEL=4b LIGHTON_MODELS_DIR="$work/models" LIGHTON_IMAGE=lighton:test STACK_TAG=0.3.0 \
+  GRPARSE_LIGHTON_TARGET=lighton-ocr:50074 \
   "${compose[@]}" --profile lighton config --format json > "$work/custom.json"
 "${compose[@]}" -f "$root/compose.stack.standalone.yaml" --profile lighton \
   config --format json > "$work/standalone.json"
@@ -33,6 +34,11 @@ for config in configs.values():
     assert mount['target'] == '/models' and mount['read_only'] is True
     assert mount.get('bind', {}).get('create_host_path', False) is False
     assert 'GRPARSE_LIGHTON_OCR_TARGET' not in config['services']['grparse']['environment']
+# gRParse dials LightOn only when the operator exports the target: empty by
+# default, so a VLM request naming LightOnOCR stays on vlm-convert's preset.
+for name in ('base', 'standalone'):
+    assert configs[name]['services']['grparse']['environment'].get('GRPARSE_LIGHTON_TARGET') in ('', None)
+assert configs['custom']['services']['grparse']['environment']['GRPARSE_LIGHTON_TARGET'] == 'lighton-ocr:50074'
 base = configs['base']['services']['lighton-ocr']
 assert base['environment']['GRPC_LIGHTON_MODEL'] == '0.8b'
 assert base['image'] == 'grpc-lighton-ocr:local'

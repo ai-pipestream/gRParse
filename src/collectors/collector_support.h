@@ -109,6 +109,12 @@ class ConcurrentUpload {
                  fill_chunk = std::move(fill_chunk)]() mutable {
           upload_stream(stream, request, bytes, always_send_chunk, fill_chunk);
         }) {}
+  // For a wire whose upload is not one byte payload (page rasters rendered
+  // one at a time): `upload()` runs on the thread, writes its own frames and
+  // half-closes, under the same join and cancel rules.
+  template <typename Upload>
+  ConcurrentUpload(grpc::ClientContext& context, Upload upload)
+      : context_(context), thread_(std::move(upload)) {}
   ~ConcurrentUpload() {
     if (!thread_.joinable()) return;
     context_.TryCancel();

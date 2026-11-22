@@ -43,6 +43,7 @@
 #include "grparse/document_passwords.h"
 #include "grparse/heading_hierarchy.h"
 #include "grparse/input_format.h"
+#include "grparse/lighton_ocr.h"
 #include "grparse/page_previews.h"
 #include "grparse/pdf_form_widgets.h"
 #include "grparse/prometheus_metrics.h"
@@ -2515,13 +2516,21 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                        "AcroForm widgets (GRPARSE_PDF_BACKEND names none)");
     }
     if (inputs.vlm_pipeline) {
-      if (collectors == nullptr || !collectors->has_vlm()) {
+      // A request that names the LightOnOCR model goes to grpc-lighton-ocr
+      // when GRPARSE_LIGHTON_TARGET is set, and to grpc-vlm-convert's
+      // LightOnOCR preset otherwise; every other selection goes to
+      // grpc-vlm-convert. Once grpc-lighton-ocr is chosen its failure is the
+      // parse's: there is no second try on the other peer.
+      VlmConvertOptions vlm = collectors == nullptr ? VlmConvertOptions{} : collectors->vlm();
+      apply_vlm_convert_options(request.options(), &vlm);
+      const VlmBodyEngine engine = choose_vlm_body_engine(
+          vlm, collectors != nullptr && collectors->has_lighton());
+      if (engine == VlmBodyEngine::kVlmConvert &&
+          (collectors == nullptr || !collectors->has_vlm())) {
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             surface + ": pipeline VLM needs grpc-vlm-convert "
                                       "(GRPARSE_VLM_CONVERT_TARGET)");
       }
-      VlmConvertOptions vlm = collectors->vlm();
-      apply_vlm_convert_options(request.options(), &vlm);
       if (inputs.tuning.render_dpi > 0.0 && vlm.render_dpi <= 0.0) {
         vlm.render_dpi = inputs.tuning.render_dpi;
       }
@@ -2531,11 +2540,26 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       CoordinatorResult result;
       result.document = std::move(base);
       parsed->collectors_ran = true;
+      const auto request_cancelled = [context] { return context->IsCancelled(); };
       const VlmConvertReport report =
-          convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
-                            inputs.inbound_deadline, [context] { return context->IsCancelled(); });
-      for (const std::string& warning : report.warnings) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
+          engine == VlmBodyEngine::kLightonOcr
+              ? convert_lighton_pages(collectors->lighton_channel(), collectors->lighton(), vlm,
+                                      bytes, pdf, &result.document, inputs.inbound_deadline,
+                                      request_cancelled)
+              : convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
+                                  inputs.inbound_deadline, request_cancelled);
+      // grpc-lighton-ocr has no Collector value of its own: its warnings
+      // name it directly, the way its items' CollectorSource does.
+      if (report.engine == VlmBodyEngine::kLightonOcr) {
+        for (const std::string& warning : report.warnings) {
+          auto* stamped = result.document.add_warnings();
+          stamped->mutable_source()->set_collector(kLightonCollectorName);
+          stamped->set_message(warning);
+        }
+      } else {
+        for (const std::string& warning : report.warnings) {
+          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
+        }
       }
       if (!report.success) {
         return grpc::Status(report.code, report.error.empty()
@@ -2679,6 +2703,8 @@ constexpr std::string_view kIdentitySettings[] = {
     "GRPARSE_LAYOUT",
     "GRPARSE_LAYOUT_MODEL",
     "GRPARSE_LIBREOFFICE_TARGET",
+    "GRPARSE_LIGHTON_MODEL",
+    "GRPARSE_LIGHTON_TARGET",
     "GRPARSE_LOL_HTML_TARGET",
     "GRPARSE_MARKUP_TARGET",
     "GRPARSE_MAX_IMAGE_PIXELS",
@@ -2727,6 +2753,10 @@ std::string read_settings_digest() {
   for (const std::string_view name : kIdentitySettings) {
     const char* value = std::getenv(std::string(name).c_str());
     if (value == nullptr) continue;
+    // An empty target is an unconfigured collector, the same as an unset
+    // one, so a compose file that passes one through empty by default
+    // (GRPARSE_LIGHTON_TARGET) leaves the digest where it was.
+    if (*value == '\0' && name.ends_with("_TARGET")) continue;
     manifest += std::format("{}={}\n", name, value);
   }
   manifest += std::format("models/MANIFEST={}\n", models_manifest_digest());
