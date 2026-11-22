@@ -1,9 +1,11 @@
-// grpc-calamine client: the wire is handle-based and carries no document
-// event, so the fold happens here. OpenWorkbook uploads the bytes once,
-// one StreamWorksheetRange per sheet streams the cells, and each sheet
-// folds into a sheet group holding one TableItem in absolute row and column
-// offsets (the shape the office fold gives libreoffice sheets). The handle
-// is closed on every path, success or failure.
+// grpc-calamine client: the wire carries no document event, so the fold
+// happens here. One ParseWorkbook stream uploads the bytes and streams every
+// sheet's cells back, and each sheet folds into a sheet group holding one
+// TableItem in absolute row and column offsets (the shape the office fold
+// gives libreoffice sheets). The workbook lives on the server for that
+// stream only. A server older than ParseWorkbook answers UNIMPLEMENTED and
+// gets the handle path instead: OpenWorkbook, one StreamWorksheetRange per
+// sheet, and CloseWorkbook on every path, success or failure.
 
 #include "grparse/document_collectors.h"
 
@@ -299,6 +301,15 @@ class CalamineFold {
 
   int sheets_folded() const { return sheets_folded_; }
 
+  // Cells folded so far, across every sheet.
+  int64_t cells_folded() const {
+    int64_t cells = 0;
+    for (const docv1::TableItem& table : document_.tables()) {
+      cells += table.data().table_cells_size();
+    }
+    return cells;
+  }
+
  private:
   void cell(uint32_t row_index, uint32_t column, const calaminev1::CellData& data) {
     std::string text;
@@ -393,6 +404,52 @@ class CalamineFold {
   int sheets_folded_ = 0;
 };
 
+// Folds one event of a sheet's range stream. Returns true for a terminal
+// in-band error, whose message lands in `error`; non-terminal ones become
+// warnings.
+bool fold_range_event(CalamineFold& fold, const std::string& sheet_name,
+                      const calaminev1::StreamWorksheetRangeResponse& event,
+                      std::vector<std::string>& warnings, std::string& error) {
+  switch (event.event_case()) {
+    case calaminev1::StreamWorksheetRangeResponse::kStarted:
+      fold.merged(event.started());
+      break;
+    case calaminev1::StreamWorksheetRangeResponse::kRow:
+      fold.row(event.row());
+      break;
+    case calaminev1::StreamWorksheetRangeResponse::kRows:
+      for (const calaminev1::WorksheetRow& row : event.rows().rows()) {
+        fold.row(row);
+      }
+      break;
+    case calaminev1::StreamWorksheetRangeResponse::kRowGap:
+      // A run of rows holding nothing: the fold places populated cells
+      // at their absolute rows, so the run needs no blank rows spelled
+      // out, and a gap is never the last row event of a range.
+      break;
+    case calaminev1::StreamWorksheetRangeResponse::kError:
+      if (event.error().terminal()) {
+        error = event.error().error().message();
+        return true;
+      }
+      warnings.push_back("sheet " + sheet_name + ": " + event.error().error().message());
+      break;
+    default:
+      break;
+  }
+  return false;
+}
+
+// Closes a folded sheet, warning when its header band was inferred.
+void end_sheet(CalamineFold& fold, const std::string& sheet_name,
+               std::vector<std::string>& warnings) {
+  if (fold.end_sheet() > 0) {
+    warnings.push_back("sheet '" + sheet_name
+                       + "': header row inferred by the labels-over-data band "
+                         "rule; no database range declares it");
+  }
+}
+
 // Closes the workbook handle however the leg ends: the server holds the
 // parsed workbook per handle, so a leg that fails mid-read still owes the
 // close. Best effort with its own short leash; the inbound deadline may
@@ -419,15 +476,12 @@ class WorkbookGuard {
   std::string workbook_id_;
 };
 
-}  // namespace
-
-CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
-                                           const std::string& bytes,
-                                           CollectorDeadline inbound_deadline,
-                                           CollectorCancelled cancelled) {
+// The handle path, for a server that predates ParseWorkbook.
+CollectorOutcome collect_via_handle(calaminev1::CalamineService::Stub* stub,
+                                    const std::string& bytes,
+                                    CollectorDeadline inbound_deadline,
+                                    const CollectorCancelled& cancelled) {
   CollectorOutcome outcome;
-  auto stub = calaminev1::CalamineService::NewStub(channel);
-
   grpc::ClientContext open_context;
   open_context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
   const CancelWatch open_watch(open_context, cancelled);
@@ -449,7 +503,7 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
     return outcome;
   }
 
-  const WorkbookGuard close_handle(stub.get(), opened.workbook_id());
+  const WorkbookGuard close_handle(stub, opened.workbook_id());
   CalamineFold fold(outcome.document);
   fold.defined_names(opened.metadata());
 
@@ -469,43 +523,12 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
     std::string sheet_error;
     calaminev1::StreamWorksheetRangeResponse event;
     while (stream->Read(&event)) {
-      switch (event.event_case()) {
-        case calaminev1::StreamWorksheetRangeResponse::kStarted:
-          fold.merged(event.started());
-          break;
-        case calaminev1::StreamWorksheetRangeResponse::kRow:
-          fold.row(event.row());
-          break;
-        case calaminev1::StreamWorksheetRangeResponse::kRows:
-          for (const calaminev1::WorksheetRow& row : event.rows().rows()) {
-            fold.row(row);
-          }
-          break;
-        case calaminev1::StreamWorksheetRangeResponse::kRowGap:
-          // A run of rows holding nothing: the fold places populated cells
-          // at their absolute rows, so the run needs no blank rows spelled
-          // out, and a gap is never the last row event of a range.
-          break;
-        case calaminev1::StreamWorksheetRangeResponse::kError:
-          if (event.error().terminal()) {
-            terminal_error = true;
-            sheet_error = event.error().error().message();
-          } else {
-            outcome.warnings.push_back("sheet " + sheet.name() + ": " +
-                                       event.error().error().message());
-          }
-          break;
-        default:
-          break;
-      }
+      terminal_error = fold_range_event(fold, sheet.name(), event, outcome.warnings,
+                                        sheet_error);
       event.Clear();
       if (terminal_error) break;
     }
-    if (fold.end_sheet() > 0) {
-      outcome.warnings.push_back("sheet '" + sheet.name()
-                                 + "': header row inferred by the labels-over-data band "
-                                   "rule; no database range declares it");
-    }
+    end_sheet(fold, sheet.name(), outcome.warnings);
     // A terminal error left the stream unread: Finish would wait on the
     // messages still in flight, so the call is cancelled first.
     if (terminal_error) sheet_context.TryCancel();
@@ -513,11 +536,7 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
     ++sheet_index;
     if (status.ok() && !terminal_error) continue;
     const std::string why = terminal_error ? sheet_error : status.error_message();
-    int64_t cells_folded = 0;
-    for (const docv1::TableItem& table : outcome.document.tables()) {
-      cells_folded += table.data().table_cells_size();
-    }
-    if (cells_folded == 0) {
+    if (fold.cells_folded() == 0) {
       // Nothing folded at all: the failure is the outcome, not an empty
       // workbook that happens to report success.
       outcome.error = "calamine collector: sheet " + sheet.name() + ": " + why;
@@ -533,6 +552,168 @@ CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>&
 
   outcome.success = true;
   return outcome;
+}
+
+// The ParseWorkbook stream. `unimplemented` is set when the server answered
+// UNIMPLEMENTED before sending anything, which is the one case the caller
+// falls back on.
+CollectorOutcome collect_via_parse_workbook(calaminev1::CalamineService::Stub* stub,
+                                            const std::string& bytes,
+                                            CollectorDeadline inbound_deadline,
+                                            const CollectorCancelled& cancelled,
+                                            bool* unimplemented) {
+  CollectorOutcome outcome;
+  grpc::ClientContext context;
+  context.set_deadline(capped_collector_deadline(inbound_deadline, kDeadline));
+  const CancelWatch watch(context, cancelled);
+  auto stream = stub->ParseWorkbook(&context);
+
+  calaminev1::ParseWorkbookRequest frame;
+  calaminev1::ParseWorkbookOpen* open = frame.mutable_open();
+  // Auto-detect from the bytes; the default header-row rule stays the
+  // server's, the fold reads cells positionally either way. Metadata
+  // always comes first and carries the defined names, so ranges are the
+  // only part asked for.
+  open->mutable_options();
+  open->set_emit_ranges(true);
+  open->mutable_range_options()->set_include_formulas(true);
+  // The upload half-closes when it is through, which ends it; nothing here
+  // cancels from the request side, the context's watch does that.
+  ConcurrentUpload upload(context, *stream, frame, bytes, /*always_send_chunk=*/false,
+                          [&bytes](calaminev1::ParseWorkbookRequest& chunk_frame,
+                                   size_t offset, size_t length, bool /*last*/) {
+                            chunk_frame.mutable_chunk()->set_data(bytes.data() + offset,
+                                                                  length);
+                          });
+
+  CalamineFold fold(outcome.document);
+  std::vector<calaminev1::Sheet> sheets;
+  bool anything_read = false;
+  bool done_seen = false;
+  bool protocol_error = false;
+  std::string protocol_detail;
+  int current = -1;
+  bool current_failed = false;
+  int sheets_failed = 0;
+  std::string first_failure;
+  calaminev1::ParseWorkbookResponse event;
+  while (stream->Read(&event)) {
+    anything_read = true;
+    switch (event.event_case()) {
+      case calaminev1::ParseWorkbookResponse::kMetadata:
+        for (const calaminev1::Sheet& sheet : event.metadata().metadata().sheets()) {
+          sheets.push_back(sheet);
+        }
+        fold.defined_names(event.metadata().metadata());
+        break;
+      case calaminev1::ParseWorkbookResponse::kRange: {
+        const uint32_t index = event.range().sheet_index();
+        if (index >= sheets.size()) {
+          protocol_error = true;
+          protocol_detail = "range event for sheet " + std::to_string(index)
+                            + " beyond the metadata's " + std::to_string(sheets.size());
+          break;
+        }
+        if (static_cast<int>(index) != current) {
+          if (current >= 0) end_sheet(fold, sheets[current].name(), outcome.warnings);
+          current = static_cast<int>(index);
+          current_failed = false;
+          fold.begin_sheet(current, sheets[current]);
+        }
+        // A terminal error ends this sheet's part only; the server moves on
+        // to the next sheet, and so does the fold.
+        if (current_failed) break;
+        std::string error;
+        if (fold_range_event(fold, sheets[current].name(), event.range().event(),
+                             outcome.warnings, error)) {
+          current_failed = true;
+          ++sheets_failed;
+          if (first_failure.empty()) {
+            first_failure = "sheet " + sheets[current].name() + ": " + error;
+          }
+          outcome.warnings.push_back("sheet " + sheets[current].name()
+                                     + " failed: " + error);
+        }
+        break;
+      }
+      case calaminev1::ParseWorkbookResponse::kDone:
+        done_seen = true;
+        break;
+      default:
+        // Parts this client did not ask for, and events a later server may
+        // add: the contract says to ignore them.
+        break;
+    }
+    event.Clear();
+    if (protocol_error) break;
+  }
+  if (current >= 0) end_sheet(fold, sheets[current].name(), outcome.warnings);
+  // An abandoned read leaves messages in flight; Finish would wait on them.
+  if (protocol_error) context.TryCancel();
+  upload.join();
+  const grpc::Status status = stream->Finish();
+
+  if (status.error_code() == grpc::StatusCode::UNIMPLEMENTED && !anything_read) {
+    *unimplemented = true;
+    outcome.error = collector_status_text("calamine", status);
+    outcome.code = map_code(status.error_code());
+    return outcome;
+  }
+
+  std::string why;
+  grpc::StatusCode code = grpc::StatusCode::OK;
+  if (protocol_error) {
+    why = protocol_detail;
+    code = grpc::StatusCode::INTERNAL;
+  } else if (!status.ok()) {
+    why = status.error_message();
+    code = map_code(status.error_code());
+  } else if (!done_seen) {
+    why = "the stream ended without its done event";
+    code = grpc::StatusCode::UNAVAILABLE;
+  }
+  if (code == grpc::StatusCode::OK && sheets_failed > 0 && fold.cells_folded() == 0) {
+    // Every sheet that had anything failed: the failure is the outcome, not
+    // an empty workbook that happens to report success.
+    outcome.error = "calamine collector: " + first_failure;
+    outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
+    return outcome;
+  }
+  if (code != grpc::StatusCode::OK) {
+    if (fold.cells_folded() == 0) {
+      outcome.error = protocol_error || status.ok()
+                          ? "calamine collector: " + why
+                          : collector_status_text("calamine", status);
+      outcome.code = code;
+      return outcome;
+    }
+    // Sheets already folded survive a later failure: a partially read
+    // workbook is a partial success, not a failed parse.
+    outcome.warnings.push_back("calamine stream failed after "
+                               + std::to_string(fold.sheets_folded())
+                               + " sheet(s): " + why);
+  }
+  outcome.success = true;
+  return outcome;
+}
+
+}  // namespace
+
+CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
+                                           const std::string& bytes,
+                                           CollectorDeadline inbound_deadline,
+                                           CollectorCancelled cancelled) {
+  auto stub = calaminev1::CalamineService::NewStub(channel);
+  bool unimplemented = false;
+  CollectorOutcome outcome = collect_via_parse_workbook(stub.get(), bytes, inbound_deadline,
+                                                        cancelled, &unimplemented);
+  if (!unimplemented) return outcome;
+  CollectorOutcome fallback = collect_via_handle(stub.get(), bytes, inbound_deadline, cancelled);
+  fallback.protocol = CollectorProtocol::kLegacyFallback;
+  fallback.warnings.insert(fallback.warnings.begin(),
+                           "calamine collector: the server does not implement ParseWorkbook "
+                           "(" + outcome.error + "); used the OpenWorkbook handle path");
+  return fallback;
 }
 
 }  // namespace grparse
