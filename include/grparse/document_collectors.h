@@ -168,11 +168,14 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
                                                kNoCollectorDeadline,
                                            CollectorCancelled cancelled = {});
 
-// grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire is
-// handle-based and carries no document event: OpenWorkbook uploads the
-// bytes, one StreamWorksheetRange per sheet streams the cells, and the fold
-// happens here — one sheet group and one TableItem per sheet. CloseWorkbook
-// runs on every path, success or failure.
+// grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire carries no
+// document event, so the fold happens here: one sheet group and one
+// TableItem per sheet. One ParseWorkbook stream uploads the bytes and
+// streams every sheet back, with no handle left on the server. A server
+// that answers UNIMPLEMENTED (one older than the RPC) gets the handle path
+// instead, OpenWorkbook, one StreamWorksheetRange per sheet, and
+// CloseWorkbook on every path; the outcome then says so in its `protocol`
+// and in a warning.
 CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =

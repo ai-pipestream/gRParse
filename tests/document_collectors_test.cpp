@@ -2466,11 +2466,166 @@ void verify_fastwarc_payload_text_is_utf8() {
 
 namespace {
 
-// The handle lifecycle: OpenWorkbook uploads and names two sheets,
-// StreamWorksheetRange serves typed cells per sheet index, CloseWorkbook
+// The two-sheet workbook every calamine fake serves, on both wires: the
+// metadata names two sheets and a defined name, and each sheet's range
+// events carry typed cells. ParseWorkbook serves it on one stream; with
+// `bidi` off the fake predates that RPC and answers UNIMPLEMENTED, and the
+// handle lifecycle serves it instead: OpenWorkbook uploads and names the
+// sheets, StreamWorksheetRange serves cells per sheet index, CloseWorkbook
 // counts its calls so the tests can prove the handle is always released.
+void fill_calamine_metadata(calaminev1::Metadata* metadata) {
+  auto* properties = metadata->mutable_properties();
+  properties->set_title("Quarterly totals");
+  properties->set_creator("Example author");
+  properties->set_created("2026-01-02T03:04:05Z");
+  properties->set_modified("source-specific date");
+  properties->set_revision("003");
+  properties->set_company("Example Ltd");
+  properties->set_description("Declared workbook metadata");
+  calaminev1::Sheet* first = metadata->add_sheets();
+  first->set_name("First");
+  first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+  first->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+  calaminev1::Sheet* second = metadata->add_sheets();
+  second->set_name("Second");
+  second->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+  second->set_visible(calaminev1::SHEET_VISIBLE_HIDDEN);
+  calaminev1::DefinedName* name = metadata->add_defined_names();
+  name->set_name("Answer");
+  name->set_definition("First!$B$2");
+}
+
+std::vector<calaminev1::StreamWorksheetRangeResponse> calamine_sheet_events(uint32_t index) {
+  std::vector<calaminev1::StreamWorksheetRangeResponse> events;
+  calaminev1::StreamWorksheetRangeResponse event;
+  event.mutable_started()->set_sheet_name(index == 0 ? "First" : "Second");
+  if (index == 0) {
+    auto* declared = event.mutable_started()->add_tables();
+    declared->set_name("Scores");
+    declared->mutable_range()->mutable_start()->set_row(0);
+    declared->mutable_range()->mutable_start()->set_col(0);
+    declared->mutable_range()->mutable_end()->set_row(2);
+    declared->mutable_range()->mutable_end()->set_col(5);
+    declared->set_header_row_count(1);
+    for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
+      declared->add_columns(name);
+    }
+    auto* format = event.mutable_started()->add_number_formats();
+    format->set_style_id(2);
+    format->set_format_id(2);
+    format->set_code("0.00");
+    format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
+  }
+  if (index == 1) {
+    // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
+    calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
+    area->mutable_start()->set_row(0);
+    area->mutable_start()->set_col(1);
+    area->mutable_end()->set_row(0);
+    area->mutable_end()->set_col(2);
+  }
+  events.push_back(event);
+  if (index == 0) {
+    event.Clear();
+    calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
+    calaminev1::WorksheetRow* header = batch->add_rows();
+    header->set_row_index(0);
+    header->add_values()->set_string_value("Name");
+    header->add_values()->set_string_value("Score");
+    auto* styled_empty = header->add_values();
+    styled_empty->mutable_empty();
+    styled_empty->set_style_id(2);
+    events.push_back(event);
+    // Row 1 holds nothing: the contract says so with one row_gap event
+    // rather than a blank row, and the fold must not count it as data.
+    event.Clear();
+    calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
+    gap->set_first_row_index(1);
+    gap->set_row_count(1);
+    events.push_back(event);
+    event.Clear();
+    batch = event.mutable_rows();
+    calaminev1::WorksheetRow* data = batch->add_rows();
+    data->set_row_index(2);
+    data->add_values()->set_int_value(7);
+    auto* formula_cell = data->add_values();
+    formula_cell->set_float_value(2.5);
+    formula_cell->set_formula("5/2");
+    formula_cell->set_style_id(2);
+    data->add_values()->set_bool_value(true);
+    // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
+    // contract's own example); 45000 is 2023-03-15 with no time of day.
+    calaminev1::CellData* when = data->add_values();
+    when->mutable_date_time()->set_value(45943.5);
+    calaminev1::CellData* day = data->add_values();
+    day->mutable_date_time()->set_value(45000);
+    data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
+    data->add_values()->mutable_empty();
+    events.push_back(event);
+  } else {
+    // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
+    event.Clear();
+    calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+    row->set_row_index(0);
+    row->add_values()->mutable_date_time()->set_value(45000.999999);
+    // ODS spells its dates as ISO text; a bare time of day stays text.
+    row->add_values()->set_date_time_iso("2015-04-13");
+    row->add_values()->set_date_time_iso("09:30:00");
+    // An eight-digit reference keeps plain notation.
+    row->add_values()->set_float_value(10412459);
+    events.push_back(event);
+  }
+  return events;
+}
+
 class FakeCalamineService final : public calaminev1::CalamineService::Service {
  public:
+  explicit FakeCalamineService(bool bidi = true) : bidi_(bidi) {}
+
+  grpc::Status ParseWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<calaminev1::ParseWorkbookResponse,
+                               calaminev1::ParseWorkbookRequest>* stream) override {
+    if (!bidi_) {
+      return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ParseWorkbook");
+    }
+    calaminev1::ParseWorkbookRequest frame;
+    if (!stream->Read(&frame) || !frame.has_open()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "open must come first");
+    }
+    const calaminev1::ParseWorkbookOpen open = frame.open();
+    if (!open.emit_ranges() || !open.range_options().include_formulas()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "ranges with formulas must be requested");
+    }
+    while (stream->Read(&frame)) {
+      if (!frame.has_chunk()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "only chunks follow open");
+      }
+      bytes_received_ += frame.chunk().data().size();
+      if (frame.chunk().last()) break;
+    }
+    if (bytes_received_ == 0) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "no bytes");
+    }
+    calaminev1::ParseWorkbookResponse event;
+    event.mutable_metadata()->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
+    fill_calamine_metadata(event.mutable_metadata()->mutable_metadata());
+    stream->Write(event);
+    for (uint32_t index = 0; index < 2; ++index) {
+      for (const auto& range : calamine_sheet_events(index)) {
+        event.Clear();
+        event.mutable_range()->set_sheet_index(index);
+        *event.mutable_range()->mutable_event() = range;
+        stream->Write(event);
+      }
+    }
+    event.Clear();
+    event.mutable_done()->set_range_sheets(2);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
   grpc::Status OpenWorkbook(
       grpc::ServerContext*,
       grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
@@ -2491,26 +2646,7 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     }
     response->set_workbook_id("wb-1");
     response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
-    calaminev1::Metadata* metadata = response->mutable_metadata();
-    auto* properties = metadata->mutable_properties();
-    properties->set_title("Quarterly totals");
-    properties->set_creator("Example author");
-    properties->set_created("2026-01-02T03:04:05Z");
-    properties->set_modified("source-specific date");
-    properties->set_revision("003");
-    properties->set_company("Example Ltd");
-    properties->set_description("Declared workbook metadata");
-    calaminev1::Sheet* first = metadata->add_sheets();
-    first->set_name("First");
-    first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
-    first->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
-    calaminev1::Sheet* second = metadata->add_sheets();
-    second->set_name("Second");
-    second->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
-    second->set_visible(calaminev1::SHEET_VISIBLE_HIDDEN);
-    calaminev1::DefinedName* name = metadata->add_defined_names();
-    name->set_name("Answer");
-    name->set_definition("First!$B$2");
+    fill_calamine_metadata(response->mutable_metadata());
     return grpc::Status::OK;
   }
 
@@ -2523,83 +2659,7 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     if (!request->include_formulas()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "formulas must be requested");
     }
-    calaminev1::StreamWorksheetRangeResponse event;
-    event.mutable_started()->set_sheet_name(
-        request->sheet().sheet_index() == 0 ? "First" : "Second");
-    if (request->sheet().sheet_index() == 0) {
-      auto* declared = event.mutable_started()->add_tables();
-      declared->set_name("Scores");
-      declared->mutable_range()->mutable_start()->set_row(0);
-      declared->mutable_range()->mutable_start()->set_col(0);
-      declared->mutable_range()->mutable_end()->set_row(2);
-      declared->mutable_range()->mutable_end()->set_col(5);
-      declared->set_header_row_count(1);
-      for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
-        declared->add_columns(name);
-      }
-      auto* format = event.mutable_started()->add_number_formats();
-      format->set_style_id(2);
-      format->set_format_id(2);
-      format->set_code("0.00");
-      format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
-    }
-    if (request->sheet().sheet_index() == 1) {
-      // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
-      calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
-      area->mutable_start()->set_row(0);
-      area->mutable_start()->set_col(1);
-      area->mutable_end()->set_row(0);
-      area->mutable_end()->set_col(2);
-    }
-    writer->Write(event);
-    if (request->sheet().sheet_index() == 0) {
-      event.Clear();
-      calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
-      calaminev1::WorksheetRow* header = batch->add_rows();
-      header->set_row_index(0);
-      header->add_values()->set_string_value("Name");
-      header->add_values()->set_string_value("Score");
-      auto* styled_empty = header->add_values();
-      styled_empty->mutable_empty();
-      styled_empty->set_style_id(2);
-      writer->Write(event);
-      // Row 1 holds nothing: the contract says so with one row_gap event
-      // rather than a blank row, and the fold must not count it as data.
-      event.Clear();
-      calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
-      gap->set_first_row_index(1);
-      gap->set_row_count(1);
-      writer->Write(event);
-      event.Clear();
-      batch = event.mutable_rows();
-      calaminev1::WorksheetRow* data = batch->add_rows();
-      data->set_row_index(2);
-      data->add_values()->set_int_value(7);
-      auto* formula_cell = data->add_values();
-      formula_cell->set_float_value(2.5);
-      formula_cell->set_formula("5/2");
-      formula_cell->set_style_id(2);
-      data->add_values()->set_bool_value(true);
-      // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
-      // contract's own example); 45000 is 2023-03-15 with no time of day.
-      calaminev1::CellData* when = data->add_values();
-      when->mutable_date_time()->set_value(45943.5);
-      calaminev1::CellData* day = data->add_values();
-      day->mutable_date_time()->set_value(45000);
-      data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
-      data->add_values()->mutable_empty();
-      writer->Write(event);
-    } else {
-      // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
-      event.Clear();
-      calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
-      row->set_row_index(0);
-      row->add_values()->mutable_date_time()->set_value(45000.999999);
-      // ODS spells its dates as ISO text; a bare time of day stays text.
-      row->add_values()->set_date_time_iso("2015-04-13");
-      row->add_values()->set_date_time_iso("09:30:00");
-      // An eight-digit reference keeps plain notation.
-      row->add_values()->set_float_value(10412459);
+    for (const auto& event : calamine_sheet_events(request->sheet().sheet_index())) {
       writer->Write(event);
     }
     return grpc::Status::OK;
@@ -2616,9 +2676,12 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
   }
 
   int closed() const { return closed_; }
+  size_t bytes_received() const { return bytes_received_; }
 
  private:
+  bool bidi_;
   int closed_ = 0;
+  size_t bytes_received_ = 0;
 };
 
 // Opens the handle, then fails the only sheet's read.
@@ -2658,15 +2721,8 @@ class FailingSheetCalamineService final : public calaminev1::CalamineService::Se
   int closed_ = 0;
 };
 
-void verify_calamine_folds_sheets() {
-  FakeCalamineService service;
-  ServerFixture server(&service);
-  // Large enough to prove multi-chunk uploads reassemble.
-  const std::string bytes(600U * 1024U, 'c');
-  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
-  require(outcome.success, "calamine collection succeeds: " + outcome.error);
-  require(service.closed() == 1, "the workbook handle is closed on success");
-
+// What both wires must fold the fake's workbook into.
+void require_calamine_fold(const grparse::CollectorOutcome& outcome) {
   const docv1::Document& document = outcome.document;
   require(document.groups_size() == 2 && document.tables_size() == 2,
           "each sheet folds into a group holding one table");
@@ -2699,7 +2755,6 @@ void verify_calamine_folds_sheets() {
               && data.columns_size() == 6 && data.columns(1).name() == "Score"
               && data.table_cells(0).column_header(),
           "declared table headers and column names replace inference");
-  require(outcome.warnings.empty(), "declared headers produce no inference warning");
   require(data.num_rows() == 3 && data.num_cols() == 6,
           "the table sizes from the populated cells, gaps included");
   require(data.table_cells_size() == 9, "only unstyled empty cells fold to nothing");
@@ -2760,6 +2815,161 @@ void verify_calamine_folds_sheets() {
               second.table_cells(0).value().datetime().day() == 16 &&
               second.table_cells(0).value().datetime().hour() == 0,
           "a time that rounds up to midnight lands on the next day");
+}
+
+void verify_calamine_folds_sheets() {
+  FakeCalamineService service;
+  ServerFixture server(&service);
+  // Large enough to prove multi-chunk uploads reassemble.
+  const std::string bytes(600U * 1024U, 'c');
+  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
+  require(outcome.success, "calamine collection succeeds: " + outcome.error);
+  require(outcome.protocol == grparse::CollectorProtocol::kCurrent,
+          "a server with ParseWorkbook is read over it");
+  require(service.bytes_received() == bytes.size(),
+          "every chunk of the upload reaches the stream");
+  require(service.closed() == 0, "the stream leaves no handle to close");
+  require(outcome.warnings.empty(), "declared headers produce no inference warning");
+  require_calamine_fold(outcome);
+}
+
+void verify_calamine_falls_back_to_handles_on_unimplemented() {
+  FakeCalamineService service(/*bidi=*/false);
+  ServerFixture server(&service);
+  const std::string bytes(600U * 1024U, 'c');
+  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
+  require(outcome.success, "the handle path succeeds: " + outcome.error);
+  require(outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
+          "the fallback is recorded in the outcome's protocol");
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("ParseWorkbook")
+              && outcome.warnings[0].contains("handle path"),
+          "the fallback is announced as a warning, never silent");
+  require(service.closed() == 1, "the workbook handle is closed on success");
+  require_calamine_fold(outcome);
+}
+
+// ParseWorkbook outcomes the fold has to survive, one script per test.
+enum class CalamineScript {
+  kFirstSheetFails,    // sheet 0 terminal in band, sheet 1 has a cell
+  kOnlySheetFails,     // the only sheet terminal in band
+  kNoDoneAfterCells,   // one cell, then the stream ends without done
+  kNoDoneNoCells,      // metadata, then the stream ends without done
+  kExhausted,          // metadata, then RESOURCE_EXHAUSTED
+};
+
+class ScriptedParseWorkbookService final : public calaminev1::CalamineService::Service {
+ public:
+  explicit ScriptedParseWorkbookService(CalamineScript script) : script_(script) {}
+
+  grpc::Status ParseWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<calaminev1::ParseWorkbookResponse,
+                               calaminev1::ParseWorkbookRequest>* stream) override {
+    calaminev1::ParseWorkbookRequest frame;
+    while (stream->Read(&frame)) {
+    }
+    const bool two = script_ == CalamineScript::kFirstSheetFails;
+    calaminev1::ParseWorkbookResponse event;
+    for (const char* name : {"Alpha", "Beta"}) {
+      calaminev1::Sheet* sheet = event.mutable_metadata()->mutable_metadata()->add_sheets();
+      sheet->set_name(name);
+      sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+      if (!two) break;
+    }
+    stream->Write(event);
+    auto range = [&](uint32_t index, auto fill) {
+      event.Clear();
+      event.mutable_range()->set_sheet_index(index);
+      fill(event.mutable_range()->mutable_event());
+      stream->Write(event);
+    };
+    auto fail = [](calaminev1::StreamWorksheetRangeResponse* inner) {
+      inner->mutable_error()->set_terminal(true);
+      inner->mutable_error()->mutable_error()->set_message("cell table corrupt");
+    };
+    auto one_cell = [](calaminev1::StreamWorksheetRangeResponse* inner) {
+      calaminev1::WorksheetRow* row = inner->mutable_rows()->add_rows();
+      row->set_row_index(0);
+      row->add_values()->set_int_value(42);
+    };
+    switch (script_) {
+      case CalamineScript::kFirstSheetFails:
+        range(0, fail);
+        range(1, one_cell);
+        break;
+      case CalamineScript::kOnlySheetFails:
+        range(0, fail);
+        break;
+      case CalamineScript::kNoDoneAfterCells:
+        range(0, one_cell);
+        return grpc::Status::OK;
+      case CalamineScript::kNoDoneNoCells:
+        return grpc::Status::OK;
+      case CalamineScript::kExhausted:
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "dense-cell budget");
+    }
+    event.Clear();
+    event.mutable_done();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status OpenWorkbook(grpc::ServerContext*,
+                            grpc::ServerReader<calaminev1::OpenWorkbookRequest>*,
+                            calaminev1::OpenWorkbookResponse*) override {
+    ++handle_calls_;
+    return grpc::Status(grpc::StatusCode::INTERNAL, "the handle path must not run");
+  }
+
+  int handle_calls() const { return handle_calls_; }
+
+ private:
+  CalamineScript script_;
+  std::atomic<int> handle_calls_{0};
+};
+
+bool has_calamine_warning(const grparse::CollectorOutcome& outcome, const std::string& needle) {
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains(needle)) return true;
+  }
+  return false;
+}
+
+grparse::CollectorOutcome run_calamine_script(CalamineScript script, int* handle_calls) {
+  ScriptedParseWorkbookService service(script);
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  *handle_calls = service.handle_calls();
+  return outcome;
+}
+
+void verify_calamine_stream_failures() {
+  int handle_calls = 0;
+  auto outcome = run_calamine_script(CalamineScript::kFirstSheetFails, &handle_calls);
+  require(outcome.success && outcome.document.tables_size() == 2
+              && outcome.document.tables(1).data().table_cells_size() == 1,
+          "a sheet after a failed one still folds: " + outcome.error);
+  require(has_calamine_warning(outcome, "Alpha failed: cell table corrupt"),
+          "the failed sheet is a warning naming it");
+
+  outcome = run_calamine_script(CalamineScript::kOnlySheetFails, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT
+              && outcome.error.contains("cell table corrupt"),
+          "a workbook whose every sheet failed is a failed leg: " + outcome.error);
+
+  outcome = run_calamine_script(CalamineScript::kNoDoneAfterCells, &handle_calls);
+  require(outcome.success && has_calamine_warning(outcome, "without its done event"),
+          "a stream cut short after cells is a partial success with a warning");
+
+  outcome = run_calamine_script(CalamineScript::kNoDoneNoCells, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a stream cut short before any cell fails the leg: " + outcome.error);
+
+  outcome = run_calamine_script(CalamineScript::kExhausted, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::RESOURCE_EXHAUSTED
+              && outcome.protocol == grparse::CollectorProtocol::kCurrent,
+          "the collector's own status class survives: " + outcome.error);
+  require(handle_calls == 0, "only UNIMPLEMENTED falls back to the handle path");
 }
 
 // A terminal in-band sheet error, then a server that keeps the stream open:
@@ -3632,6 +3842,8 @@ int main() {
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
       verify_calamine_folds_sheets,
+      verify_calamine_falls_back_to_handles_on_unimplemented,
+      verify_calamine_stream_failures,
       verify_calamine_sheet_failure_still_closes,
       verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,
