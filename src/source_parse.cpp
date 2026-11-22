@@ -1540,11 +1540,11 @@ using CvConfidence = std::shared_ptr<std::optional<pipestream::parse::v1::Confid
 // page set applied.
 class CvCollector {
  public:
-  CvCollector(grpc::CallbackServerContext* context, PageScheduler& scheduler,
+  CvCollector(const ParseCall& call, PageScheduler& scheduler,
               std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets,
               CvConfidence confidence, HeadingOptions heading_options,
               CollectorDeadline deadline)
-      : context_(context),
+      : call_(call),
         scheduler_(scheduler),
         bytes_(std::move(bytes)),
         pdf_(pdf),
@@ -1615,7 +1615,7 @@ class CvCollector {
   std::optional<CollectorOutcome> collect_pages(const PageScheduler::OcrTuning& tuning,
                                                 PageSet* collected) const {
     Run state;
-    auto* context = context_;
+    const ParseCall call = call_;
     const auto ticket = scheduler_.submit(
         bytes_, pdf_, tuning,
         PageScheduler::Callbacks{
@@ -1624,8 +1624,8 @@ class CvCollector {
               state.total_pages = total_pages;
               state.changed.notify_all();
             },
-            [&state, context](int page_number, std::shared_ptr<const OcrPage> page) {
-              if (context->IsCancelled()) return PageScheduler::DeliveryResult::kCancelled;
+            [&state, call](int page_number, std::shared_ptr<const OcrPage> page) {
+              if (call.cancelled()) return PageScheduler::DeliveryResult::kCancelled;
               std::lock_guard<std::mutex> lock(state.mutex);
               state.pages.emplace(page_number, std::move(page));
               return PageScheduler::DeliveryResult::kAcceptedAndRelease;
@@ -1642,9 +1642,9 @@ class CvCollector {
     while (!state.finished) {
       state.changed.wait_for(lock, std::chrono::milliseconds(25));
       if (!expired && std::chrono::system_clock::now() >= deadline_) expired = true;
-      if (context_->IsCancelled() || expired) ticket.cancel();
+      if (call_.cancelled() || expired) ticket.cancel();
     }
-    if (context_->IsCancelled()) return cancelled_outcome();
+    if (call_.cancelled()) return cancelled_outcome();
     if (expired) {
       CollectorOutcome outcome;
       outcome.error = "document deadline exceeded before every page was read";
@@ -1702,7 +1702,7 @@ class CvCollector {
     return outcome;
   }
 
-  grpc::CallbackServerContext* context_;
+  ParseCall call_;
   PageScheduler& scheduler_;
   std::shared_ptr<const std::string> bytes_;
   bool pdf_;
@@ -1717,7 +1717,7 @@ class CvCollector {
 // identity, the endpoints they dial, and the ceilings they run under. Copied
 // into each leg, which is why every member is a value or a shared handle.
 struct ParseInputs {
-  grpc::CallbackServerContext* context = nullptr;
+  ParseCall call;
   std::shared_ptr<CollectorEndpoints> endpoints;
   std::shared_ptr<const std::string> bytes;
   std::shared_ptr<const CollectorRules> collector_rules;
@@ -1872,7 +1872,7 @@ HeadingOptions heading_options_from(const pipestream::parse::v1::ConvertDocument
 // One parse's inputs, read off the request once. The mimetype is the
 // origin's own resolved type, so the routing and every dialed collector see
 // what the bytes were decided to be.
-ParseInputs parse_inputs(grpc::CallbackServerContext* context,
+ParseInputs parse_inputs(const ParseCall& call,
                          const pipestream::parse::v1::ConvertDocumentRequest& request,
                          const PageScheduler& scheduler,
                          const std::shared_ptr<CollectorEndpoints>& collectors,
@@ -1883,7 +1883,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
                          const DocumentPasswords& passwords) {
   const auto& options = request.options();
   ParseInputs inputs;
-  inputs.context = context;
+  inputs.call = call;
   inputs.endpoints = collectors;
   inputs.bytes = std::move(bytes);
   // validate_options already refused rules that do not resolve.
@@ -2018,7 +2018,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   // its own static cap exactly as before. document_timeout (seconds) further
   // caps that ceiling when set — parity with Docling Convert options.
   inputs.inbound_deadline = deadline_with_document_timeout(
-      context->deadline(), options.has_document_timeout(), options.document_timeout());
+      call.deadline(), options.has_document_timeout(), options.document_timeout());
   inputs.tuning.deadline = inputs.inbound_deadline;
   inputs.tuning.passwords = passwords;
   // A collector-folded PDF never rasterized; when previews are on, it gets
@@ -2087,7 +2087,7 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
   if (inputs.previews) {
     attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
                          [&inputs] {
-                           return inputs.context->IsCancelled() ||
+                           return inputs.call.cancelled() ||
                                   std::chrono::system_clock::now() >= inputs.inbound_deadline;
                          },
                          inputs.inbound_deadline);
@@ -2116,11 +2116,11 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
 CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run_cv) {
   // Same pre-dial cancellation check as the plain collector legs: a call
   // that died after the dequeue check must not dial the inspector either.
-  if (inputs.context->IsCancelled()) return cancelled_outcome();
+  if (inputs.call.cancelled()) return cancelled_outcome();
   const PdfParseResult parsed =
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
                   *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range,
-                  [context = inputs.context] { return context->IsCancelled(); });
+                  [call = inputs.call] { return call.cancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     return take_inspector_extraction(inputs, parsed, route);
@@ -2238,14 +2238,14 @@ std::vector<PlannedCollector> build_plan(
         // The dequeue check answered "still listening" before this parse
         // started; a cancel can land any time after. Ask again before
         // dialing so a dead call costs no collector leg.
-        if (inputs.context->IsCancelled()) return cancelled_outcome();
+        if (inputs.call.cancelled()) return cancelled_outcome();
         // The leg's own call ends with this one: a client that cancels
         // mid-leg leaves no collector working for nobody.
         return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
                                     *inputs.bytes, *inputs.collector_rules,
                                     inputs.inbound_deadline,
-                                    [context = inputs.context] { return context->IsCancelled(); });
+                                    [call = inputs.call] { return call.cancelled(); });
       };
     }
     plan.push_back(std::move(collector));
@@ -2271,10 +2271,10 @@ grpc::Status all_failed_status(const CoordinatorResult& result) {
 // Advisory and bounded: it edits picture annotations only, never the text or
 // the arenas, and its failures are warnings.
 void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& collectors,
-                                   grpc::CallbackServerContext* context,
+                                   const ParseCall& call,
                                    CollectorDeadline inbound_deadline,
                                    const ParseInputs& inputs, CoordinatorResult* result) {
-  if (collectors == nullptr || !collectors->has_derender() || context->IsCancelled()) return;
+  if (collectors == nullptr || !collectors->has_derender() || call.cancelled()) return;
   ChartDerenderOptions enrich = collectors->derender();
   // Explicit false on the request turns chart extraction off even when enrich
   // is wired. Unset keeps the historical env opt-in (do_chart_extraction true
@@ -2307,13 +2307,13 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   if (!enrich.any_job()) return;
   std::vector<ChartCandidate> item_crops = enrich_item_crops(
       enrich, inputs.bytes, result->document,
-      [context, inbound_deadline] {
-        return context->IsCancelled() || std::chrono::system_clock::now() >= inbound_deadline;
+      [call, inbound_deadline] {
+        return call.cancelled() || std::chrono::system_clock::now() >= inbound_deadline;
       },
       inbound_deadline);
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
-                      [context] { return context->IsCancelled(); }, std::move(item_crops));
+                      [call] { return call.cancelled(); }, std::move(item_crops));
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
@@ -2332,7 +2332,13 @@ void stamp_collector_warnings(CoordinatorResult* result) {
 
 }  // namespace
 
-grpc::Status parse_source(grpc::CallbackServerContext* context,
+grpc::Status ParseCall::read_passwords(DocumentPasswords* passwords) const {
+  if (context_ != nullptr) return read_document_passwords(*context_, passwords);
+  *passwords = passwords_;
+  return grpc::Status::OK;
+}
+
+grpc::Status parse_source(const ParseCall& call,
                           const pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
@@ -2386,7 +2392,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   // Candidate passwords for an encrypted document come from the call's
   // metadata only; see document_passwords.h.
   DocumentPasswords passwords;
-  if (const grpc::Status read = read_document_passwords(*context, &passwords); !read.ok()) {
+  if (const grpc::Status read = call.read_passwords(&passwords); !read.ok()) {
     return grpc::Status(read.error_code(), surface + ": " + read.error_message());
   }
   // A storage or plugin source resolves to the one document it names; a
@@ -2408,7 +2414,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // the fetched copy is charged.
     RemoteFetchSlots::Slot slot;
     if (remote_source && admission.fetch_slots != nullptr) {
-      slot = admission.fetch_slots->acquire([context] { return context->IsCancelled(); });
+      slot = admission.fetch_slots->acquire([&call] { return call.cancelled(); });
       if (!slot.held()) {
         return grpc::Status(grpc::StatusCode::CANCELLED,
                             surface + ": request cancelled while waiting for a remote fetch "
@@ -2494,7 +2500,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     }
 
     const ParseInputs inputs =
-        parse_inputs(context, request, scheduler, collectors, bytes, requested_name,
+        parse_inputs(call, request, scheduler, collectors, bytes, requested_name,
                      base.origin().mimetype(), std::move(*chart_extraction),
                      std::move(*picture_description), passwords);
 
@@ -2540,7 +2546,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       CoordinatorResult result;
       result.document = std::move(base);
       parsed->collectors_ran = true;
-      const auto request_cancelled = [context] { return context->IsCancelled(); };
+      const auto request_cancelled = [&call] { return call.cancelled(); };
       const VlmConvertReport report =
           engine == VlmBodyEngine::kLightonOcr
               ? convert_lighton_pages(collectors->lighton_channel(), collectors->lighton(), vlm,
@@ -2567,18 +2573,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                              : report.error);
       }
       result.succeeded = 1;
-      if (context->IsCancelled()) {
+      if (call.cancelled()) {
         return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
       }
       const bool repaired_text =
           repair.has_value() &&
           run_repair_pass(&result.document, *repair).changed_text_or_arenas();
       (void)repaired_text;
-      derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
+      derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs,
                                     &result);
       // The VLM body gets AcroForm widgets only when the request asks:
       // unset keeps this path's output as it was.
-      if (pdf && form_fields_requested && !context->IsCancelled()) {
+      if (pdf && form_fields_requested && !call.cancelled()) {
         if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
                                                               &result.document)) {
           result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
@@ -2600,7 +2606,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       parsed->result = std::move(result);
       return grpc::Status::OK;
     }
-    const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
+    const CvCollector run_cv(call, scheduler, bytes, pdf, cv_offsets, cv_confidence,
                              inputs.heading, inputs.inbound_deadline);
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
@@ -2620,7 +2626,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     CoordinatorResult result = run_collectors(
         build_plan(routed.ids, routed.pdf_routing, routed.office_fanout, inputs, run_cv),
         std::move(base));
-    if (context->IsCancelled()) {
+    if (call.cancelled()) {
       return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
     }
     if (result.succeeded == 0) return all_failed_status(result);
@@ -2632,7 +2638,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const bool repaired_text =
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-    derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs, &result);
+    derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs, &result);
     // AcroForm widgets join the finished body as field items, whichever
     // path produced it; the backend that owns the PDF layer supplies them
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
@@ -2643,7 +2649,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                    "AcroForm widgets to read");
       record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
     }
-    if (pdf && !form_fields_off && !context->IsCancelled()) {
+    if (pdf && !form_fields_off && !call.cancelled()) {
       if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
                                                             &result.document,
                                                             run_cv.computed_sha256())) {

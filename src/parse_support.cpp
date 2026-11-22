@@ -355,6 +355,34 @@ grpc::StatusCode status_code_for(PdfBackendFailure reason) {
 
 }  // namespace
 
+ai::pipestream::parse::v1::PublicFailureInfo public_failure(
+    const grpc::Status& status, ai::pipestream::parse::v1::FailurePhase phase) {
+  ai::pipestream::parse::v1::PublicFailureInfo failure;
+  switch (status.error_code()) {
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::PERMISSION_DENIED:
+    case grpc::StatusCode::UNIMPLEMENTED:
+      failure.set_category(ai::pipestream::parse::v1::FAILURE_CATEGORY_POLICY);
+      break;
+    default:
+      failure.set_category(failure_category_for(status.error_code()));
+      break;
+  }
+  switch (status.error_code()) {
+    case grpc::StatusCode::DEADLINE_EXCEEDED:
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+    case grpc::StatusCode::UNAVAILABLE:
+    case grpc::StatusCode::ABORTED:
+      failure.set_retryable(true);
+      break;
+    default:
+      break;
+  }
+  failure.set_message(status.error_message());
+  failure.set_phase(phase);
+  return failure;
+}
+
 grpc::Status status_from_exception(std::exception_ptr failure) {
   try {
     if (failure) std::rethrow_exception(failure);

@@ -333,7 +333,16 @@ int main() {
     service.set_response_byte_cap(grparse::read_response_byte_cap());
     std::println("gRParse unary response: at most {} MiB (GRPARSE_MAX_RESPONSE_BYTES)",
                  service.response_byte_cap() / (1024 * 1024));
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight);
+    const grparse::TaskRegistryOptions task_options = grparse::read_task_registry_options();
+    service.set_task_options(task_options);
+    std::println("gRParse async tasks: at most {} held, results kept {} s, at most {} watchers "
+                 "(GRPARSE_MAX_TASKS, GRPARSE_TASK_RESULT_TTL_SECONDS, GRPARSE_MAX_WATCHERS)",
+                 task_options.max_tasks,
+                 std::chrono::duration_cast<std::chrono::seconds>(task_options.result_ttl).count(),
+                 task_options.max_watchers);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight, {},
+                                                        executor_options);
+    streaming_service.set_remote_fetch_slots(service.remote_fetch_slots());
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());
     if (!server) {

@@ -4,6 +4,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <expected>
 #include <functional>
 #include <map>
 #include <memory>
@@ -33,7 +34,10 @@
 
 namespace grparse {
 
+class ParseCall;
 struct SourceParse;
+class TaskRegistry;
+struct TaskRegistryOptions;
 
 // GRPARSE_COLLECTOR_CHANNELS when unset: two HTTP/2 connections per
 // collector, so a peer's SETTINGS_MAX_CONCURRENT_STREAMS (grpc-java's
@@ -269,6 +273,15 @@ class DocumentParserService final
                         std::shared_ptr<EmbeddingEngine> embedding_engine = {},
                         EmbeddingConfig embedding_config = {},
                         std::shared_ptr<InflightBytes> inflight = {});
+  // Stops the task registry first, so queued and running async tasks end
+  // CANCELLED before the executor joins them.
+  ~DocumentParserService() override;
+
+  // The async task registry's bounds (GRPARSE_MAX_TASKS,
+  // GRPARSE_TASK_RESULT_TTL_SECONDS, GRPARSE_MAX_WATCHERS); the defaults
+  // until set. Set before serving: it replaces the registry.
+  void set_task_options(const TaskRegistryOptions& options);
+  TaskRegistry& tasks() { return *tasks_; }
 
   // The largest serialized response a unary surface sends (see
   // refuse_oversized_response); kMaxMessageBytes until set.
@@ -289,8 +302,7 @@ class DocumentParserService final
       const ai::pipestream::parse::v1::ConvertSourceRequest* request,
       ai::pipestream::parse::v1::ConvertSourceResponse* response) override;
   // The two synchronous chunkers parse the source exactly the way
-  // ConvertSource does and chunk the document that comes out of it. Their
-  // async and watch variants stay unimplemented.
+  // ConvertSource does and chunk the document that comes out of it.
   grpc::ServerUnaryReactor* ChunkHierarchicalSource(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::ChunkHierarchicalSourceRequest* request,
@@ -303,6 +315,71 @@ class DocumentParserService final
   grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamChunksResponse>* StreamChunks(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::StreamChunksRequest* request) override;
+  // ConvertSource's conversion as a server stream of one message, written
+  // once the conversion is done (the contract's "single response when
+  // complete"); kept for existing clients, StreamDocument is the envelope
+  // feed.
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::ConvertSourceStreamResponse>*
+  ConvertSourceStream(grpc::CallbackServerContext* context,
+                      const ai::pipestream::parse::v1::ConvertSourceStreamRequest* request) override;
+
+  // The async task surfaces, over a bounded in-memory registry (see
+  // src/task_registry.h). The *Async RPCs validate the request, register
+  // a task, queue the same work their synchronous RPC runs on the executor,
+  // and answer at once with the pending status; the work records its
+  // transitions and result in the registry. Task ids are per process.
+  grpc::ServerUnaryReactor* ConvertSourceAsync(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::ConvertSourceAsyncRequest* request,
+      ai::pipestream::parse::v1::ConvertSourceAsyncResponse* response) override;
+  grpc::ServerUnaryReactor* ChunkHierarchicalSourceAsync(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::ChunkHierarchicalSourceAsyncRequest* request,
+      ai::pipestream::parse::v1::ChunkHierarchicalSourceAsyncResponse* response) override;
+  grpc::ServerUnaryReactor* ChunkHybridSourceAsync(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::ChunkHybridSourceAsyncRequest* request,
+      ai::pipestream::parse::v1::ChunkHybridSourceAsyncResponse* response) override;
+  // The task's status; with wait_time, held until the task finishes or that
+  // many seconds pass, whichever is first, without holding a thread.
+  grpc::ServerUnaryReactor* PollTaskStatus(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::PollTaskStatusRequest* request,
+      ai::pipestream::parse::v1::PollTaskStatusResponse* response) override;
+  grpc::ServerUnaryReactor* GetConvertResult(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::GetConvertResultRequest* request,
+      ai::pipestream::parse::v1::GetConvertResultResponse* response) override;
+  grpc::ServerUnaryReactor* GetChunkResult(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::GetChunkResultRequest* request,
+      ai::pipestream::parse::v1::GetChunkResultResponse* response) override;
+  // This server keeps no per-task converters: acknowledged.
+  grpc::ServerUnaryReactor* ClearConverters(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::ClearConvertersRequest* request,
+      ai::pipestream::parse::v1::ClearConvertersResponse* response) override;
+  // Drops finished tasks older than older_than seconds (3600 when unset).
+  grpc::ServerUnaryReactor* ClearResults(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::ClearResultsRequest* request,
+      ai::pipestream::parse::v1::ClearResultsResponse* response) override;
+  // Submit as the *Async RPC does, then stream every status the task takes,
+  // from the pending one to SUCCESS or FAILURE, and close OK; the result is
+  // then read with GetConvertResult or GetChunkResult by the task_id every
+  // message carries.
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::WatchConvertSourceResponse>*
+  WatchConvertSource(grpc::CallbackServerContext* context,
+                     const ai::pipestream::parse::v1::WatchConvertSourceRequest* request) override;
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::WatchChunkHierarchicalSourceResponse>*
+  WatchChunkHierarchicalSource(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::WatchChunkHierarchicalSourceRequest* request) override;
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::WatchChunkHybridSourceResponse>*
+  WatchChunkHybridSource(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::WatchChunkHybridSourceRequest* request) override;
+
   grpc::ServerUnaryReactor* Health(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::HealthRequest* request,
@@ -313,26 +390,57 @@ class DocumentParserService final
       ai::pipestream::parse::v1::GetServiceInfoResponse* response) override;
 
  private:
+  // The conversion behind ConvertSource, ConvertSourceStream and the
+  // convert tasks: parse, exports, chunks, target delivery and timings into
+  // `converted`. `partial_success` is set when a collector or the delivery
+  // failed beside a converted document. Blocking: executor workers only.
+  grpc::Status convert_source(const ParseCall& call,
+                              const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
+                              const std::string& surface, SourceParse* parsed,
+                              ai::pipestream::parse::v1::ConvertDocumentResponse* converted,
+                              bool* partial_success);
   // The parse, chunking and embedding behind the unary and streamed chunk
   // surfaces. `chunks` receives the chunks; `response` receives everything
   // else a ChunkDocumentResponse carries. Blocking: executor workers only.
   grpc::Status chunk_hierarchical_source(
-      grpc::CallbackServerContext* context,
+      const ParseCall& call,
       const ai::pipestream::parse::v1::HierarchicalChunkRequest& chunk_request,
       const std::string& surface, SourceParse* parsed,
       std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
       ai::pipestream::parse::v1::ChunkDocumentResponse* response);
   grpc::Status chunk_hybrid_source(
-      grpc::CallbackServerContext* context,
+      const ParseCall& call,
       const ai::pipestream::parse::v1::HybridChunkRequest& chunk_request,
       const std::string& surface, SourceParse* parsed,
       std::vector<ai::pipestream::parse::v1::Chunk>* chunks,
       ai::pipestream::parse::v1::ChunkDocumentResponse* response);
   grpc::Status parse_chunk_source(
-      grpc::CallbackServerContext* context,
+      const ParseCall& call,
       const google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::Source>& sources,
       const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
       const std::string& surface, SourceParse* parsed);
+  // What the *Async and Watch* RPCs check before a task is registered,
+  // the checks their synchronous RPC makes before it parses.
+  grpc::Status validate_convert_task(const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
+                                     const std::string& surface);
+  template <typename ChunkRequest>
+  grpc::Status validate_chunk_task(const ChunkRequest& request, const std::string& surface);
+  // Registers a task of `kind` and queues `work` for it: the call's
+  // passwords are read now, `charge` bytes stay charged to the in-flight
+  // budget until the work is done, and the work runs under a ParseCall
+  // that the registry's stop flag cancels. The pending status, or the
+  // status that refused the task.
+  using TaskWork = std::function<void(const ParseCall& call, const std::string& task_id)>;
+  std::expected<ai::pipestream::parse::v1::TaskStatusPollResponse, grpc::Status> submit_task(
+      grpc::CallbackServerContext* context, ai::pipestream::parse::v1::TaskType kind,
+      uint64_t charge, TaskWork work);
+  // The queued work of each task kind, run on the executor.
+  TaskWork convert_task(const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
+                        const std::string& surface);
+  TaskWork hierarchical_task(const ai::pipestream::parse::v1::HierarchicalChunkRequest& request,
+                             const std::string& surface);
+  TaskWork hybrid_task(const ai::pipestream::parse::v1::HybridChunkRequest& request,
+                       const std::string& surface);
 
   PageScheduler& scheduler_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
@@ -343,6 +451,9 @@ class DocumentParserService final
   uint64_t response_byte_cap_ = static_cast<uint64_t>(kMaxMessageBytes);
   std::shared_ptr<RemoteFetchSlots> fetch_slots_ =
       std::make_shared<RemoteFetchSlots>(kDefaultRemoteFetchConcurrency);
+  // Outlives the executor below: a task's worker records into it to the
+  // end.
+  std::unique_ptr<TaskRegistry> tasks_;
   // Declared last so it is torn down first: joining the workers before the
   // endpoints and the scheduler reference go away is what keeps an in-flight
   // parse from outliving what it reads.
@@ -365,11 +476,34 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   // `inflight` is the budget every stream's chunks are charged to as they
   // arrive (see InflightBytes); null leaves the 500 MiB per-stream limit as
   // the only bound.
+  // `executor_options` sizes the pool StreamDocument's source parses run
+  // on, a pool of this service's own (the server passes the unary pool's
+  // GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE).
   DocumentStreamingService(PageScheduler& scheduler,
                            std::shared_ptr<CollectorEndpoints> endpoints,
                            std::optional<RepairOptions> repair = RepairOptions{},
                            std::shared_ptr<InflightBytes> inflight = {},
-                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {});
+                           std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer = {},
+                           CallExecutor::Options executor_options = {});
+
+  // The slots StreamDocument's remote source fetches hold, as on
+  // DocumentParserService; the server hands both services the same set, so
+  // GRPARSE_REMOTE_FETCH_CONCURRENCY bounds the fetches of both. Set before
+  // serving; null leaves fetches unbounded.
+  void set_remote_fetch_slots(std::shared_ptr<RemoteFetchSlots> slots) {
+    fetch_slots_ = std::move(slots);
+  }
+  const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
+
+  // The source-based entry to the envelope feed: each source of the
+  // ConvertDocumentRequest is fetched and parsed exactly as ConvertSource
+  // parses it, one after another on this service's executor, and the stream
+  // carries status envelopes around each source's final_document and
+  // source_result. Every envelope echoes request_id and carries the next
+  // sequence_number, from 1.
+  grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamDocumentResponse>* StreamDocument(
+      grpc::CallbackServerContext* context,
+      const ai::pipestream::parse::v1::StreamDocumentRequest* request) override;
 
   grpc::ServerBidiReactor<ai::pipestream::parse::v1::DocumentChunk,
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
@@ -388,6 +522,11 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   std::shared_ptr<std::atomic<uint64_t>> folded_pages_ =
       std::make_shared<std::atomic<uint64_t>>(0);
+  std::shared_ptr<RemoteFetchSlots> fetch_slots_ =
+      std::make_shared<RemoteFetchSlots>(kDefaultRemoteFetchConcurrency);
+  // Declared last so it is torn down first, as on DocumentParserService:
+  // StreamDocument's parses are joined before what they read goes away.
+  CallExecutor executor_;
 };
 
 }  // namespace grparse

@@ -149,13 +149,19 @@ preview, waiting for assembly, and being delivered to the stream, with the
 page's OCR line, region, table and figure counts. A page that is slow names
 its stage, and the counts say whether the page is simply denser.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented: `ConvertSourceAsync`, the chunk `*Async` RPCs, `PollTaskStatus`, `GetConvertResult`, `GetChunkResult`, `ClearConverters`, `ClearResults`, `ConvertSourceStream`, and the `Watch*` RPCs all return `UNIMPLEMENTED`.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. `ConvertSourceStream` runs the same conversion and answers with it as a stream of one message, written when the conversion is done; it is kept for existing clients, and `StreamDocument` (below) is the envelope feed.
+
+### Async tasks
+
+`ConvertSourceAsync`, `ChunkHierarchicalSourceAsync` and `ChunkHybridSourceAsync` check the request the way their synchronous RPC does before it parses, register a task, queue the same work on the unary executor, and answer at once with the task's `TaskStatusPollResponse` (`TASK_STATUS_PENDING`, its `task_id`, `task_kind`, and `task_position`, the number of pending tasks ahead of it). The work moves the task to `STARTED`, then to `SUCCESS` with the result stored or `FAILURE` with `error_message` and a classified `failure`. `PollTaskStatus` returns the current status; with `wait_time` it answers as soon as the task finishes or when that many seconds pass, without holding a thread. `GetConvertResult` and `GetChunkResult` return the stored result as many times as asked: `FAILED_PRECONDITION` while the task runs, the task's own failure status when it failed, `INVALID_ARGUMENT` for a task of the other kind, and the `GRPARSE_MAX_RESPONSE_BYTES` cap as on the unary RPCs. `WatchConvertSource`, `WatchChunkHierarchicalSource` and `WatchChunkHybridSource` submit the same task and stream every status it takes, from the pending one to the terminal one, each once and in order, then close OK; the result is read with the `task_id` every message carries. `ClearResults` drops the finished tasks older than `older_than` seconds (3600 when unset, every finished task at 0); `ClearConverters` is acknowledged, since this server keeps no per-task converters.
+
+Tasks live in memory only, in keeping with the diskless rule: ids are per process, and a poll after a restart answers `NOT_FOUND`, as does an unknown, expired or cleared id. The registry holds at most `GRPARSE_MAX_TASKS` tasks (default 256, 1 to 65536; finished ones included until they go) and a submission past it is refused with `RESOURCE_EXHAUSTED` naming the variable; a finished task is kept for `GRPARSE_TASK_RESULT_TTL_SECONDS` (default 3600, 1 to 604800), then expires; at most `GRPARSE_MAX_WATCHERS` (default 256, 1 to 65536) watch streams and waiting polls run at once. A stored result is charged to `GRPARSE_MAX_INFLIGHT_BYTES` for its serialized size until it expires or is cleared, and a result the budget has no room for fails its task with `RESOURCE_EXHAUSTED`. The request is charged while its task is queued or running, as on the unary RPCs. A task's document passwords come from the submitting call's metadata, read at submission. No RPC cancels a task; on shutdown, queued and running tasks are cancelled before the executor drains.
 
 Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). The export responses carry no warning channel, so a truncated export is reported only by one line on the server's stderr per document.
 
 ### Chunking
 
-`ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants stay unimplemented.
+`ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants run the same work as tasks (see "Async tasks" above).
 
 `StreamChunks` takes either chunk request (`hierarchical` or `hybrid`) and returns the same chunks as a server stream: one `chunk` message per chunk in `chunk_index` order, then one `summary` with the chunk count, `documents`, `chunking_info` and `processing_time`. The parse and any embedding finish before the first message, so the stream saves the consumer from holding the whole chunk list in one response, not from waiting for the parse. Each chunk message is one chunk; with `include_converted_doc` the summary carries the whole `Document`, which can be as large as a unary response and can still exceed a client's default 4 MiB receive limit. Any failure, including a missing chunker, closes the stream with its status before a single message is sent.
 
@@ -181,8 +187,8 @@ A chunk's `typed_metadata` carries `language` when every text item in it has the
 
 The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach
 `Chunk.embedding` after chunking. Without that opt-in, chunk output and model
-usage are unchanged. Async/watch chunk RPCs remain `UNIMPLEMENTED`, including
-requests with embedding options. Embeddings live in `parse_types.proto`; the
+usage are unchanged. `StreamChunks` and the async and watch chunk tasks accept
+the same options. Embeddings live in `parse_types.proto`; the
 fleet's `document.proto` is unchanged.
 
 The supported model is `sentence-transformers/all-MiniLM-L6-v2`, FP32 revision
@@ -395,9 +401,8 @@ privilege escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts any format the collector routing does (below), up to 500 MiB;
-the same service's `StreamDocument` RPC is not implemented and returns
-`UNIMPLEMENTED`, whatever `parse_stream.proto` says of it. `collectors`
+server accepts any format the collector routing does (below), up to 500 MiB.
+`collectors`
 values validate like the unary options: an unknown value fails the stream
 with `INVALID_ARGUMENT` naming it. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
@@ -654,6 +659,31 @@ preview's pixel size rides its `ImageRef`; the page size stays in the
 page's own coordinate space (PDF points for digital pages), same aspect
 ratio.
 
+### Source streams (`StreamDocument`)
+
+`ParseStreamingService/StreamDocument` is the source-based entry to the same
+service: it takes a `ConvertDocumentRequest` (inline, HTTP or storage
+sources, the unary options) and answers with a server stream of
+`StreamDocumentResponse` envelopes. Each source is fetched and parsed
+exactly as `ConvertSource` parses it (the same remote fetch slots,
+in-flight budget, collectors, merge and repair), one source after another
+on a pool sized like the unary one (`GRPARSE_UNARY_WORKERS`,
+`GRPARSE_UNARY_QUEUE`). The stream is `status` `PHASE_QUEUED`, then
+`PHASE_STARTED`; per source in request order a `PHASE_PROCESSING` status,
+then either the merged `final_document` and a successful `source_result`,
+or an `error` (typed `code` and `failure`) and a failed `source_result`,
+after which the next source runs; and last `PHASE_COMPLETED` when any
+source converted, else `PHASE_FAILED`. The call then finishes OK. Every
+envelope echoes `request_id` and carries `sequence_number`, counting from 1
+with no gaps, and `timestamp_ms`; source-scoped envelopes set
+`source_index`. The `part` arm is not sent: what streams is each source's
+result, not its pages (`StreamProcessDocument` streams pages). A request
+with no source, a `target` to deliver to, invalid options, or no room in
+the budget or the pool is refused with its status and no envelope; a
+client that cancels or stops reading ends the call `CANCELLED`. The server
+writes one source's envelopes before it parses the next, so a slow reader
+holds at most one finished `Document`.
+
 ## Collector scatter-gather
 
 gRParse is the coordinator of a set of parser collectors. Two of them parse
@@ -666,7 +696,7 @@ unconfigured otherwise:
 | Collector | Target env | Routed by default for |
 |---|---|---|
 | `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. On workbooks libreoffice gives the document its shape (sheet groups, charts, pictures, metadata) and the calamine leg below gives the sheet tables their cells; with libreoffice down, calamine's reading is the whole body |
-| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | the cell reader for workbooks: a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) runs a calamine leg beside libreoffice when configured, and calamine's cells replace libreoffice's in every sheet table (`src/workbook_cells.cpp`). The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, with the merged areas the range header lists (XLS, XLSX) spanned and the header band marked, and the handle closes on every path |
+| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | the cell reader for workbooks: a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) runs a calamine leg beside libreoffice when configured, and calamine's cells replace libreoffice's in every sheet table (`src/workbook_cells.cpp`). One bidirectional `ParseWorkbook` stream uploads the bytes and streams every sheet back with no handle left on the server; each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, with the merged areas the range header lists (XLS, XLSX) spanned and the header band marked. A server that answers `UNIMPLEMENTED` gets the older handle path (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`, the handle closed on every path), recorded as `CollectorProtocol::kLegacyFallback` on the outcome and as a warning |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ optional `GRPARSE_ASR_MODEL` fallback) | audio and video; a request-level ASR model or preset takes precedence over the deployment fallback. Unsupported selectors return an explicit error from grpc-asr |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
