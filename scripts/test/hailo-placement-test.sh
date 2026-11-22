@@ -29,7 +29,10 @@
 #      return OCR text and advance grparse_hailo_frames_total for the
 #      detector, the recognizer and the layout model (a frame is counted
 #      only when HailoRT reports it complete from the device);
-#   4. one boot with the query layout detector: the series must equal
+#   4. one boot with the test hook that makes every model abort itself on
+#      the chip before every fifth batch: the reload counter must rise and the
+#      page must come back item for item as in boot 1;
+#   5. one boot with the query layout detector: the series must equal
 #      tests/data/gpu_placement/hailo-query-layout.prom, where layout is a
 #      CPU pin with its reason.
 set -euo pipefail
@@ -99,7 +102,9 @@ run_in() {
   local env=(GRPARSE_ORT_EP=hailo GRPARSE_PAGE_WORKERS=2 "GRPARSE_METRICS_PORT=$metrics_port"
              "GRPARSE_LISTEN_ADDRESS=127.0.0.1:$grpc_port" GRPARSE_MODELS_DIR=/mnt/models
              "GRPARSE_HAILO_HEF_DIR=$hefs" "GRPARSE_LAYOUT_MODEL=${LAYOUT_MODEL:-picodet}"
-             LD_LIBRARY_PATH=/usr/local/lib HAILORT_LOGGER_PATH=NONE)
+             LD_LIBRARY_PATH=/usr/local/lib HAILORT_LOGGER_PATH=NONE
+             GRPARSE_STREAM_CLIENT_ITEMS=1)
+  [ -z "${ABORT_EVERY:-}" ] || env+=("GRPARSE_HAILO_TEST_ABORT_EVERY=$ABORT_EVERY")
   if [ "$mode" = docker ]; then
     local args=(--rm --name "$name" --network host -v "$models:/mnt/models:ro"
                 -v "$root/tests/data:/mnt/data:ro" -v "$work/empty:/mnt/empty-hefs:ro")
@@ -195,6 +200,8 @@ convert_and_check() {
     "127.0.0.1:$grpc_port" > "$work/convert-$pass.out" 2>&1 ||
     { cat "$work/convert-$pass.out"; fail "boot $pass: conversion failed"; }
   grep -E '^page=' "$work/convert-$pass.out"
+  # What the page came back as, without the timings: every item's label and box.
+  grep -vE '^complete ' "$work/convert-$pass.out" | sed -E 's/ ms=[0-9]+$//' > "$work/items-$pass.txt"
   grep -Eq 'ocr_items=[1-9]' "$work/convert-$pass.out" || fail "boot $pass: the page came back with no OCR text"
   curl -sf "http://127.0.0.1:$metrics_port/metrics" > "$work/metrics-$pass-after.prom"
   for model in "$@"; do
@@ -206,8 +213,10 @@ convert_and_check() {
     [ -n "$before" ] && [ -n "$after" ] && [ "$after" -gt "$before" ] ||
       fail "boot $pass: $model ran no frame on the Hailo device"
   done
-  ! grep '^grparse_hailo_model_reloads_total' "$work/metrics-$pass-after.prom" | grep -qv ' 0$' ||
-    fail "boot $pass: the chip aborted a model during the conversion"
+  if [ -z "${ABORT_EVERY:-}" ]; then
+    ! grep '^grparse_hailo_model_reloads_total' "$work/metrics-$pass-after.prom" | grep -qv ' 0$' ||
+      fail "boot $pass: the chip aborted a model during the conversion"
+  fi
 }
 
 for pass in 1 2; do
@@ -216,6 +225,21 @@ for pass in 1 2; do
   stop_server
 done
 cmp -s "$work/placement-1.prom" "$work/placement-2.prom" || fail "placement changed between boots"
+cmp -s "$work/items-1.txt" "$work/items-2.txt" || fail "the page came back differently on the second boot"
+
+# Recovery: every model aborts itself on the chip before every fifth batch
+# (the test hook of src/hailo/hailo_runtime.cpp). Each abort must be answered
+# by a reload on the chip, and the page must come back exactly as it did
+# without the faults.
+ABORT_EVERY=5 boot recovery "$golden_dir/hailo.prom"
+ABORT_EVERY=5 convert_and_check recovery "OCR detection" "OCR recognition" "layout"
+reloads=$(grep -F 'grparse_hailo_model_reloads_total{model="OCR recognition"}' \
+  "$work/metrics-recovery-after.prom" | awk '{print $NF}')
+echo "boot recovery: recognizer reloads on the chip ${reloads:-none}"
+[ -n "$reloads" ] && [ "$reloads" -gt 0 ] || fail "boot recovery: no model was reloaded"
+diff -u "$work/items-1.txt" "$work/items-recovery.txt" ||
+  fail "boot recovery: the page came back differently after the reloads"
+stop_server
 
 if ls "$models" | grep -E '^(ch_|layout_|figure_)' ; then
   fail "an OCR, layout or figure ONNX file was in the device models directory"

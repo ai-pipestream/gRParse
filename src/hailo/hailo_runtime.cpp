@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdlib>
 #include <format>
 #include <mutex>
 #include <print>
@@ -32,8 +33,25 @@ struct ModelCounters {
   std::atomic<uint64_t> reloads{0};
 };
 
+// GRPARSE_HAILO_TEST_ABORT_EVERY=<n>, for the device suite only: each
+// model shuts itself down on the device before every n-th batch, which
+// leaves it as a device abort does (the batch fails there, and so would
+// every later one).  The reload and the second run are then the real ones.
+// Unset in every deployment; a value that is not a positive integer throws.
+int test_abort_every_from_env() {
+  const char* value = std::getenv("GRPARSE_HAILO_TEST_ABORT_EVERY");
+  if (value == nullptr || *value == '\0') return 0;
+  char* end = nullptr;
+  const long parsed = std::strtol(value, &end, 10);
+  if (*end != '\0' || parsed < 1 || parsed > 1000000) {
+    throw std::invalid_argument("GRPARSE_HAILO_TEST_ABORT_EVERY must be a positive integer");
+  }
+  return static_cast<int>(parsed);
+}
+
 struct Runtime {
   std::mutex mutex;
+  int test_abort_every = 0;
   std::shared_ptr<hailort::VDevice> vdevice;
   DeviceIdentity identity;
   std::vector<std::pair<std::string, std::shared_ptr<ModelCounters>>> counters;
@@ -56,8 +74,11 @@ std::vector<int64_t> frame_shape(const hailo_3d_image_shape_t& shape) {
 class Model final : public HailoModel {
  public:
   Model(const HailoModelSpec& spec, std::shared_ptr<hailort::VDevice> vdevice,
-        std::shared_ptr<ModelCounters> counters)
-      : spec_(spec), vdevice_(std::move(vdevice)), counters_(std::move(counters)) {
+        std::shared_ptr<ModelCounters> counters, int test_abort_every)
+      : spec_(spec),
+        vdevice_(std::move(vdevice)),
+        counters_(std::move(counters)),
+        test_abort_every_(test_abort_every) {
     if (!std::filesystem::is_regular_file(spec_.hef)) {
       throw std::runtime_error(std::format("gRParse {}: the HEF is missing: {}", spec_.what,
                                            spec_.hef.string()));
@@ -135,6 +156,9 @@ class Model final : public HailoModel {
           broken_ = false;
         }
         for (int64_t first = 0; first < frames; first += batch) {
+          if (attempt == 1 && test_abort_every_ > 0 && ++batches_ % test_abort_every_ == 0) {
+            (void)configured_.shutdown();
+          }
           run_batch(inputs, outputs, first, std::min(batch, frames - first));
         }
         break;
@@ -311,6 +335,9 @@ class Model final : public HailoModel {
   std::vector<RawOutput> raw_outputs_;
   std::mutex run_mutex_;
   bool broken_ = false;
+  // Test fault injection (test_abort_every_from_env); 0 in every deployment.
+  int test_abort_every_ = 0;
+  uint64_t batches_ = 0;
 };
 
 }  // namespace
@@ -321,6 +348,13 @@ DeviceIdentity open_device() {
   Runtime& state = runtime();
   const std::lock_guard<std::mutex> lock(state.mutex);
   if (state.vdevice) return state.identity;
+  state.test_abort_every = test_abort_every_from_env();
+  if (state.test_abort_every > 0) {
+    std::println(stderr,
+                 "gRParse Hailo: TEST fault injection is on: every model aborts itself on the "
+                 "device before every batch number {} (GRPARSE_HAILO_TEST_ABORT_EVERY)",
+                 state.test_abort_every);
+  }
   auto ids = hailort::Device::scan();
   if (!ids) {
     throw std::runtime_error("no Hailo device: the HailoRT scan failed: " +
@@ -375,12 +409,14 @@ std::unique_ptr<HailoModel> make_hailo_model(const HailoModelSpec& spec) {
   Runtime& state = runtime();
   std::shared_ptr<hailort::VDevice> vdevice;
   std::shared_ptr<ModelCounters> counters;
+  int test_abort_every = 0;
   {
     const std::lock_guard<std::mutex> lock(state.mutex);
     if (!state.vdevice) {
       throw std::logic_error(std::format("gRParse {}: the Hailo device is not open", spec.what));
     }
     vdevice = state.vdevice;
+    test_abort_every = state.test_abort_every;
     for (auto& [name, existing] : state.counters) {
       if (name == spec.what) counters = existing;
     }
@@ -389,7 +425,7 @@ std::unique_ptr<HailoModel> make_hailo_model(const HailoModelSpec& spec) {
       state.counters.emplace_back(spec.what, counters);
     }
   }
-  return std::make_unique<Model>(spec, std::move(vdevice), std::move(counters));
+  return std::make_unique<Model>(spec, std::move(vdevice), std::move(counters), test_abort_every);
 }
 
 std::vector<ModelFrames> model_frame_counts() {
