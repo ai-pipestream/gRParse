@@ -104,12 +104,15 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 
 // grpc-epub, then grpc-markup once per chapter: the whole book. The epub
 // stream's chapter XHTML and image bytes are kept instead of dropped, each
-// chapter is dialed through `markup` with the HTML hint, and the chapters'
-// Documents and the images plug into the skeleton (see epub_book.h). A
-// chapter the markup collector cannot parse leaves its group empty and
-// says so in a warning; the book never fails for one chapter. The chapter
-// dials share one ceiling (the leg's cap from when they start), not a cap
-// each; chapters past it stay empty, with a warning. With no
+// chapter is dialed through `markup` with the HTML hint as soon as its
+// chapter event arrives (at most eight dials at once, while the rest of the
+// book is still being inflated), and once the stream ends the chapters'
+// Documents and the images plug into the skeleton in spine order (see
+// epub_book.h), whatever order the dials finished in. A chapter the markup
+// collector cannot parse leaves its group empty and says so in a warning;
+// the book never fails for one chapter. The epub stream and the chapter
+// dials share one ceiling (the leg's cap from when the epub call starts),
+// not a cap each; chapters past it stay empty, with a warning. With no
 // markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
 // outcome, with a warning naming the variable, so the degradation is
 // visible rather than silent. An image spine item (a cover or plate in the
@@ -117,9 +120,12 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 // bytes its chapter event carried.
 //
 // The chapters and images the stream carries are decompressed archive
-// entries, so a small book can inflate far past its upload: once they
-// pass `stream_byte_cap` together the call is cancelled and the leg fails
-// with RESOURCE_EXHAUSTED.
+// entries, so a small book can inflate far past its upload: once the bytes
+// held at one time pass `stream_byte_cap` the call is cancelled and the leg
+// fails with RESOURCE_EXHAUSTED. A chapter's XHTML counts from its arrival
+// until its dial returns, so the cap bounds bytes in flight: a long book
+// whose chapters are parsed as fast as they arrive fits, a book whose
+// markup dials stall does not.
 inline constexpr size_t kEpubStreamByteCap = 512U * 1024U * 1024U;
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
