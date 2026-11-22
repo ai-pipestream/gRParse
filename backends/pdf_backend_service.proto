@@ -58,6 +58,22 @@ service PdfBackendService {
   // BackendCapabilities carries for any document, so an orchestrator can
   // label a backend without loading one.
   rpc GetServiceInfo(ServiceInfoRequest) returns (ServiceInfoResponse);
+
+  // Parse and Render over one bidirectional stream, with the document
+  // uploaded in chunks instead of inside one message, so a PDF is not
+  // capped by the message size limit and its bytes start crossing the wire
+  // before the client has read all of them. The stream opens with a
+  // ParseStreamOpen, then PdfChunk messages carry the bytes in order until
+  // one marked last. The open's own parse (request 0) answers like Parse
+  // once the upload completes; ParsePages and RenderPages may follow at any
+  // time after the open, even mid-upload, and are answered like Parse and
+  // Render on the same bytes, so a client loads a document once and asks
+  // for pages as it needs them. Every request ends with a RequestDone, and
+  // the stream ends with one ParseStreamDone after the client half-closes
+  // or sends a Cancel for the whole stream. Probe, Parse and Render stay;
+  // a server that predates this RPC answers UNIMPLEMENTED, and a client
+  // falls back to them.
+  rpc ParseStream(stream ParseStreamRequest) returns (stream ParseStreamResponse);
 }
 
 // A contiguous range of pages. Zero-based, half-open: begin is the first
@@ -296,6 +312,175 @@ message RenderResponse {
   // success a server may omit head entirely and send only rasters, so a
   // message with raster set is the success signal.
   RenderHeader head = 2;
+}
+
+// The first ParseStream message: what the document is and what the open's
+// own parse (request 0) asks for. families, pages and options mean what
+// they mean on ParseRequest.
+message ParseStreamOpen {
+  // Families the open's parse emits; empty means every supported family.
+  repeated PdfFamily families = 1;
+  // Pages the open's parse emits page-level families for. Unset means all
+  // pages.
+  optional PageRange pages = 2;
+  // Heavy-payload switches for the open's parse.
+  ParseOptions options = 3;
+  // Password to open the document with, as PdfDocument.password. It
+  // applies to every request on the stream.
+  optional string password = 4;
+  // Caller-chosen correlation id, as PdfDocument.doc_id.
+  optional string doc_id = 5;
+  // Lowercase hex SHA-256 of the whole upload. When set, the server checks
+  // the assembled bytes against it and answers LOAD_STATUS_HASH_MISMATCH
+  // in the open's header when they differ; a match MAY be cached for later
+  // Probe, Parse and Render calls addressed by hash.
+  optional string sha256 = 6;
+  // Total bytes the upload will carry. When set, an upload that runs past
+  // it, or ends short of it, fails the stream with INVALID_ARGUMENT.
+  optional uint64 declared_size = 7;
+  // Answer the open with the header alone (capabilities and the page
+  // inventory, what Probe and a Parse header carry) and no families, for a
+  // client that asks for pages later with ParsePages. families, pages and
+  // options are then ignored.
+  bool header_only = 8;
+}
+
+// A slice of the document bytes. Chunks arrive in order with no gaps:
+// offset is the count of bytes sent before this chunk. A chunk out of
+// order, or any chunk after the last, fails the stream with
+// INVALID_ARGUMENT, as does a half-close before the last chunk.
+message PdfChunk {
+  // Byte offset of data within the document.
+  uint64 offset = 1;
+  // The bytes. May be empty only on the last chunk.
+  bytes data = 2;
+  // This chunk completes the upload.
+  bool last = 3;
+}
+
+// Parse more of the stream's document, answered exactly like Parse:
+// header, page chunks and document-level families, trailer.
+message ParsePages {
+  // Caller-chosen id echoed on every response message for this request.
+  // Nonzero (0 is the open's parse) and never reused on one stream;
+  // anything else fails the stream with INVALID_ARGUMENT.
+  uint32 request_id = 1;
+  // As ParseRequest.families.
+  repeated PdfFamily families = 2;
+  // As ParseRequest.pages.
+  optional PageRange pages = 3;
+  // As ParseRequest.options.
+  ParseOptions options = 4;
+}
+
+// Rasterize pages of the stream's document, answered exactly like Render.
+message RenderPages {
+  // Caller-chosen id, under the same rules as ParsePages.request_id.
+  uint32 request_id = 1;
+  // As RenderRequest.pages.
+  optional PageRange pages = 2;
+  // As RenderRequest.dpi.
+  double dpi = 3;
+  // As RenderRequest.pixel_format.
+  PixelFormat pixel_format = 4;
+  // As RenderRequest.background.
+  optional Color background = 5;
+  // As RenderRequest.omit_annotations.
+  bool omit_annotations = 6;
+}
+
+// Stop work the client no longer wants.
+message Cancel {
+  // The request to stop. Unset cancels the whole stream: the server stops
+  // every request, sends ParseStreamDone with cancelled set, and ends the
+  // stream OK without reading further. A request that already finished,
+  // or an id never sent, is ignored.
+  optional uint32 request_id = 1;
+}
+
+// One client message on ParseStream. The first is the open; chunks follow,
+// with page requests and cancels interleaved as the client likes.
+message ParseStreamRequest {
+  // Exactly one message kind per stream message.
+  oneof payload {
+    // First message, exactly once.
+    ParseStreamOpen open = 1;
+    // Document bytes.
+    PdfChunk chunk = 2;
+    // A parse of more pages or families.
+    ParsePages parse = 3;
+    // A render of pages.
+    RenderPages render = 4;
+    // Stop a request, or the stream.
+    Cancel cancel = 5;
+  }
+}
+
+// How one request on a ParseStream ended. Load failures are not outcomes:
+// they ride typed in the request's header or render head, as on Parse and
+// Render, and the request still ends OK.
+enum RequestOutcome {
+  // Never emitted.
+  REQUEST_OUTCOME_UNSPECIFIED = 0;
+  // Every message for the request was sent.
+  REQUEST_OUTCOME_OK = 1;
+  // A Cancel stopped the request before it finished.
+  REQUEST_OUTCOME_CANCELLED = 2;
+  // The request was malformed (a bad page range or dpi), where Parse or
+  // Render would answer INVALID_ARGUMENT.
+  REQUEST_OUTCOME_INVALID_ARGUMENT = 3;
+  // The request needed more than the server allows (a raster past its
+  // pixel limit, no free worker for the whole wait).
+  REQUEST_OUTCOME_RESOURCE_EXHAUSTED = 4;
+  // The document never loaded (the open's header carried a load status
+  // other than LOAD_STATUS_OK), so the request was not served.
+  REQUEST_OUTCOME_NOT_LOADED = 5;
+  // The engine or a worker failed while serving the request.
+  REQUEST_OUTCOME_ENGINE_ERROR = 6;
+  // The server stopped the request for taking too long.
+  REQUEST_OUTCOME_DEADLINE_EXCEEDED = 7;
+}
+
+// The last message of one request: request 0 (the open's parse) or a
+// ParsePages or RenderPages.
+message RequestDone {
+  // How the request ended.
+  RequestOutcome outcome = 1;
+  // The server's message when outcome is not REQUEST_OUTCOME_OK.
+  optional string detail = 2;
+}
+
+// The last message of a ParseStream.
+message ParseStreamDone {
+  // Document bytes the server received.
+  uint64 bytes_received = 1;
+  // Lowercase hex SHA-256 of the bytes received, so a client can confirm
+  // the upload arrived whole. Empty when the upload never completed.
+  string sha256 = 2;
+  // The stream ended on a Cancel for the whole stream.
+  bool cancelled = 3;
+}
+
+// One server message on ParseStream. Messages of different requests may
+// interleave; within one request they keep the order Parse or Render
+// gives them. The open's header is the first message of the stream, and no
+// other request is answered before it.
+message ParseStreamResponse {
+  // The request this message answers: 0 for the open's parse, otherwise a
+  // ParsePages or RenderPages request_id. Unused on done.
+  uint32 request_id = 1;
+  // Exactly one message kind per stream message.
+  oneof payload {
+    // A Parse stream message (header, page chunk, document-level family,
+    // trailer) for request 0 or a ParsePages.
+    ParseResponse parse = 2;
+    // A Render stream message for a RenderPages.
+    RenderResponse render = 3;
+    // The request named by request_id has ended.
+    RequestDone request_done = 4;
+    // Last message of the stream.
+    ParseStreamDone done = 5;
+  }
 }
 
 // Request for GetServiceInfo. Empty: it exists so future options have a
