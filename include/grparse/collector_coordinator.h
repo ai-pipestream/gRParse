@@ -45,6 +45,18 @@ CollectorDeadline deadline_with_document_timeout(CollectorDeadline inbound,
 grpc::Status validate_document_timeout(bool has_timeout, double timeout_seconds,
                                        std::string_view surface);
 
+// Which of its wires a collector leg ended up speaking. A client written for
+// a collector's bidirectional RPC falls back to the collector's older calls
+// only when the collector answers UNIMPLEMENTED, and the fallback is
+// recorded here, never silent.
+enum class CollectorProtocol {
+  // The leg spoke the collector's current wire.
+  kCurrent,
+  // The collector did not implement the current wire; the leg used the
+  // older one.
+  kLegacyFallback,
+};
+
 // One collector's complete output: its projected Document (source-tagged by
 // the collector itself) or the reason it could not contribute.
 struct CollectorOutcome {
@@ -57,6 +69,7 @@ struct CollectorOutcome {
   // The collector's extraction warnings, verbatim.
   std::vector<std::string> warnings;
   ai::pipestream::document::v1::Document document;
+  CollectorProtocol protocol = CollectorProtocol::kCurrent;
 };
 
 // One collector planned into a parse: its wire identity and the callable

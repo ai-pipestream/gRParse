@@ -4,6 +4,7 @@
 #include <atomic>
 #include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
@@ -37,8 +38,10 @@
 #include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
+#include "source_parse.h"
 #include "structure_validation.h"
 #include "targets/sha256.h"
+#include "targets/target_step.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -1602,6 +1605,347 @@ class DocumentStreamReactor final
   bool cv_recorded_ = false;
 };
 
+// The surface StreamDocument's rejections name.
+constexpr const char* kSourceStreamSurface = "StreamDocument";
+
+// The stable class of a source's failure on the envelope feed.
+pipestream::parse::v1::StreamErrorCode stream_error_code(grpc::StatusCode code) {
+  switch (code) {
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::PERMISSION_DENIED:
+    case grpc::StatusCode::UNIMPLEMENTED:
+    case grpc::StatusCode::OUT_OF_RANGE:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_INVALID_ARGUMENT;
+    case grpc::StatusCode::NOT_FOUND:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_NOT_FOUND;
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_RESOURCE_EXHAUSTED;
+    case grpc::StatusCode::INTERNAL:
+    case grpc::StatusCode::UNKNOWN:
+    case grpc::StatusCode::DATA_LOSS:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_INTERNAL;
+    default:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_CONVERT_FAILED;
+  }
+}
+
+// StreamDocument's reactor. Each source of the request is parsed in turn by
+// parse_source, the fetch (behind the remote fetch slots and the in-flight
+// budget), plan, collector legs, merge and repair ConvertSource runs, on an
+// executor worker; the reaction threads only write. The feed is:
+//
+//   status QUEUED                      once the call is admitted
+//   status STARTED                     when a worker picks it up
+//   per source, in request order:
+//     status PROCESSING                source_index set
+//     final_document, source_result    the merged Document, then success
+//   or error, source_result            a failed source; the next one runs
+//   status COMPLETED                   at least one source converted
+//   or status FAILED                   none did
+//
+// and the call then finishes OK. A request refused before any work (no
+// source, a target to deliver to, invalid options, no room in the budget
+// or the executor) finishes with that status and no envelope; a client
+// that goes away ends the call CANCELLED.
+//
+// The worker waits for each source's envelopes to be written before it
+// parses the next, so at most one source's Document is held beyond the one
+// being parsed, and a remote source's fetched copy stays charged until its
+// Document is on the wire.
+class SourceStreamReactor final
+    : public grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse> {
+ public:
+  using Envelope = pipestream::parse::v1::StreamDocumentResponse;
+  using Phase = pipestream::parse::v1::StreamStatus::Phase;
+
+  // A call refused before any work: finished at once with `status`.
+  explicit SourceStreamReactor(grpc::Status status) { Finish(std::move(status)); }
+
+  SourceStreamReactor(grpc::CallbackServerContext* context,
+                      const pipestream::parse::v1::StreamDocumentRequest* request,
+                      PageScheduler& scheduler, std::shared_ptr<CollectorEndpoints> endpoints,
+                      std::optional<RepairOptions> repair, SourceAdmission admission,
+                      CallExecutor& executor)
+      : context_(context),
+        request_(request),
+        scheduler_(&scheduler),
+        endpoints_(std::move(endpoints)),
+        repair_(std::move(repair)),
+        admission_(std::move(admission)) {
+    const auto& sources = request_->request().sources();
+    // The wire message, the per-source request each parse copies its source
+    // into, and the copies base64 sources decode to; a remote source's
+    // fetched copy is charged after its fetch (parse_source).
+    uint64_t charge = request_->ByteSizeLong() + decoded_source_bytes(sources);
+    for (const auto& source : sources) charge += source.ByteSizeLong();
+    if (admission_.inflight != nullptr && !admission_.inflight->try_acquire(charge)) {
+      record_document_completion("other", DocumentCompletionStatus::kRejected, 0);
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+      return;
+    }
+    charge_ = charge;
+    // Queued, not yet written: a refused submit must finish a call that
+    // wrote nothing. The reactor is bound only once the handler returns, so
+    // nothing the worker starts can complete, nor the call end, before then.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_QUEUED, std::nullopt);
+    }
+    if (!executor.submit([this] { run(); })) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        envelopes_.clear();
+      }
+      record_document_completion("other", DocumentCompletionStatus::kRejected, 0);
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "StreamDocument executor is saturated"));
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    pump_locked();
+  }
+
+  void OnWriteDone(bool ok) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    write_in_flight_ = false;
+    if (!envelopes_.empty()) envelopes_.pop_front();
+    if (!ok) {
+      // The client stopped reading: nothing more is written, and the worker
+      // ends the call at its next check.
+      broken_ = true;
+      envelopes_.clear();
+    }
+    pump_locked();
+    drained_.notify_all();
+  }
+
+  void OnDone() override {
+    if (admission_.inflight != nullptr) admission_.inflight->release(charge_);
+    delete this;
+  }
+
+ private:
+  // The worker's whole share of the call; its last statement finishes it,
+  // after which the reactor may already be gone.
+  void run() {
+    const auto& convert = request_->request();
+    const int total = convert.sources_size();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_STARTED, std::nullopt);
+      pump_locked();
+    }
+    for (int index = 0; index < total && !stopped(); ++index) {
+      const auto source_index = static_cast<uint32_t>(index);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_PROCESSING, source_index);
+        pump_locked();
+      }
+      // parse_source converts one source; each gets the request's options.
+      pipestream::parse::v1::ConvertDocumentRequest single;
+      *single.add_sources() = convert.sources(index);
+      *single.mutable_options() = convert.options();
+      const auto started = std::chrono::steady_clock::now();
+      SourceParse parsed;
+      grpc::Status status;
+      try {
+        status = parse_source(ParseCall(context_), single, *scheduler_, endpoints_, repair_,
+                              admission_, kSourceStreamSurface, &parsed);
+      } catch (...) {
+        status = status_from_exception(std::current_exception());
+      }
+      auto final_document = std::make_unique<Envelope>();
+      if (status.ok()) {
+        *final_document->mutable_final_document() = std::move(parsed.result.document);
+        // The write limit is the transport's; a Document past it is this
+        // source's failure, not the stream's.
+        if (final_document->ByteSizeLong() > static_cast<uint64_t>(kMaxMessageBytes)) {
+          status = grpc::Status(
+              grpc::StatusCode::RESOURCE_EXHAUSTED,
+              std::string(kSourceStreamSurface) + ": the Document of sources[" +
+                  std::to_string(index) + "] is " +
+                  std::to_string(final_document->ByteSizeLong()) + " bytes, over the " +
+                  std::to_string(kMaxMessageBytes) +
+                  " byte message limit; StreamProcessDocument delivers the same conversion "
+                  "page by page");
+        }
+      }
+      if (stopped()) {
+        record_source_completion(parsed, grpc::Status(grpc::StatusCode::CANCELLED, ""), started);
+        break;
+      }
+      record_source_completion(parsed, status, started);
+      pipestream::parse::v1::StreamSourceResult result;
+      result.set_source_index(source_index);
+      // A source that failed before it was named keeps the name it was sent
+      // with.
+      result.set_filename(!parsed.filename.empty() || !single.sources(0).has_file()
+                              ? parsed.filename.string()
+                              : single.sources(0).file().filename());
+      result.set_success(status.ok());
+      std::unique_lock<std::mutex> lock(mutex_);
+      ++processed_;
+      if (status.ok()) {
+        ++(parsed.result.failures.empty() ? succeeded_ : partially_succeeded_);
+        result.set_document_name(final_document->final_document().name());
+        // A partial success names the collectors that could not contribute.
+        std::string failures;
+        for (const auto& failure : parsed.result.failures) {
+          if (!failures.empty()) failures += "; ";
+          failures += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
+        }
+        if (!failures.empty()) result.set_error_message(failures);
+        final_document->set_source_index(source_index);
+        queue_locked(std::move(final_document));
+      } else {
+        ++failed_;
+        result.set_error_message(status.error_message());
+        auto error = std::make_unique<Envelope>();
+        error->set_source_index(source_index);
+        auto* stream_error = error->mutable_error();
+        stream_error->set_message(status.error_message());
+        stream_error->set_code(stream_error_code(status.error_code()));
+        *stream_error->mutable_failure() = public_failure(
+            status, parsed.collectors_ran ? pipestream::parse::v1::FAILURE_PHASE_EXECUTION
+                                          : pipestream::parse::v1::FAILURE_PHASE_ADMISSION);
+        queue_locked(std::move(error));
+      }
+      auto closing = std::make_unique<Envelope>();
+      closing->set_source_index(source_index);
+      *closing->mutable_source_result() = std::move(result);
+      queue_locked(std::move(closing));
+      pump_locked();
+      // Backpressure: this source's Document, and the fetched copy charged
+      // for it, are held until the client has read them.
+      wait_drained(lock);
+    }
+    bool cancelled = false;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cancelled = broken_ || context_->IsCancelled();
+      if (!cancelled) {
+        queue_status_locked(succeeded_ + partially_succeeded_ > 0
+                                ? pipestream::parse::v1::StreamStatus::PHASE_COMPLETED
+                                : pipestream::parse::v1::StreamStatus::PHASE_FAILED,
+                            std::nullopt);
+        pump_locked();
+      }
+      wait_drained(lock);
+      cancelled = cancelled || broken_;
+    }
+    Finish(cancelled ? grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled")
+                     : grpc::Status::OK);
+  }
+
+  bool stopped() {
+    if (context_->IsCancelled()) return true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return broken_;
+  }
+
+  // Waits until every queued envelope is written or the stream broke. A
+  // cancelled call's write in flight still completes (with ok false), so
+  // the wait always ends.
+  void wait_drained(std::unique_lock<std::mutex>& lock) {
+    drained_.wait(lock, [this] { return envelopes_.empty() && !write_in_flight_; });
+  }
+
+  void record_source_completion(const SourceParse& parsed, const grpc::Status& status,
+                                std::chrono::steady_clock::time_point started) {
+    const auto elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+    DocumentCompletionStatus completion = DocumentCompletionStatus::kSuccess;
+    if (!status.ok()) {
+      completion = (!parsed.collectors_ran && is_stream_rejection_code(status.error_code()))
+                       ? DocumentCompletionStatus::kRejected
+                       : DocumentCompletionStatus::kFailure;
+    } else if (!parsed.result.failures.empty()) {
+      completion = DocumentCompletionStatus::kPartialSuccess;
+    }
+    record_document_completion(parsed.doctype, completion, elapsed_ns);
+  }
+
+  void queue_status_locked(Phase phase, std::optional<uint32_t> source_index) {
+    auto envelope = std::make_unique<Envelope>();
+    if (source_index.has_value()) envelope->set_source_index(*source_index);
+    auto* status = envelope->mutable_status();
+    status->set_phase(phase);
+    const auto total = static_cast<uint32_t>(request_->request().sources_size());
+    status->set_num_docs(total);
+    status->set_num_processed(processed_);
+    status->set_num_succeeded(succeeded_);
+    status->set_num_failed(failed_);
+    status->set_num_partially_succeeded(partially_succeeded_);
+    if (total > 0) {
+      status->set_progress_percentage(static_cast<float>(processed_) /
+                                      static_cast<float>(total));
+    }
+    switch (phase) {
+      case pipestream::parse::v1::StreamStatus::PHASE_QUEUED:
+        status->set_message("admitted; waiting for a worker");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_STARTED:
+        status->set_message("converting " + std::to_string(total) + " source(s)");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_PROCESSING:
+        status->set_message("converting sources[" + std::to_string(*source_index) + "]");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_COMPLETED:
+        status->set_message("every source processed");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_FAILED:
+        status->set_message("no source converted");
+        break;
+      default:
+        break;
+    }
+    queue_locked(std::move(envelope));
+  }
+
+  // Stamps the envelope with the call's request_id, the next sequence
+  // number and the time, and queues it behind the others.
+  void queue_locked(std::unique_ptr<Envelope> envelope) {
+    if (broken_) return;
+    if (request_->has_request_id()) envelope->set_request_id(request_->request_id());
+    envelope->set_sequence_number(++sequence_);
+    envelope->set_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count());
+    envelopes_.push_back(std::move(envelope));
+  }
+
+  void pump_locked() {
+    if (write_in_flight_ || envelopes_.empty() || broken_) return;
+    write_in_flight_ = true;
+    StartWrite(envelopes_.front().get());
+  }
+
+  grpc::CallbackServerContext* context_ = nullptr;
+  const pipestream::parse::v1::StreamDocumentRequest* request_ = nullptr;
+  PageScheduler* scheduler_ = nullptr;
+  std::shared_ptr<CollectorEndpoints> endpoints_;
+  std::optional<RepairOptions> repair_;
+  SourceAdmission admission_;
+  uint64_t charge_ = 0;
+
+  std::mutex mutex_;
+  std::condition_variable drained_;
+  // Written front first; the front is the write in flight, if any.
+  std::deque<std::unique_ptr<Envelope>> envelopes_;
+  bool write_in_flight_ = false;
+  // A write failed: the client is gone and nothing more is queued.
+  bool broken_ = false;
+  uint64_t sequence_ = 0;
+  uint32_t processed_ = 0;
+  uint32_t succeeded_ = 0;
+  uint32_t partially_succeeded_ = 0;
+  uint32_t failed_ = 0;
+};
+
 }  // namespace
 
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
@@ -1617,6 +1961,30 @@ DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
       transfer_observer_(std::move(transfer_observer)),
       max_active_streams_(std::max<size_t>(1, limits.max_active_streams)),
       executor_(limits.executor) {}
+
+grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse>*
+DocumentStreamingService::StreamDocument(
+    grpc::CallbackServerContext* context,
+    const pipestream::parse::v1::StreamDocumentRequest* request) {
+  // What can be refused without a worker is refused here, before any
+  // envelope: the request as a whole, not one of its sources, is wrong.
+  const auto& convert = request->request();
+  if (convert.sources().empty()) {
+    return new SourceStreamReactor(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "StreamDocument needs at least one source"));
+  }
+  if (targets::needs_delivery(convert.target())) {
+    return new SourceStreamReactor(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "StreamDocument does not deliver to a target; its documents return on the stream only"));
+  }
+  if (grpc::Status options = validate_options(convert.options(), kSourceStreamSurface);
+      !options.ok()) {
+    return new SourceStreamReactor(std::move(options));
+  }
+  return new SourceStreamReactor(context, request, scheduler_, endpoints_, repair_,
+                                 SourceAdmission{inflight_, fetch_slots_}, executor_);
+}
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {

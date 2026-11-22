@@ -27,6 +27,7 @@
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/table_structure_engine.h"
+#include "task_registry.h"
 
 namespace grparse {
 
@@ -130,6 +131,11 @@ CallExecutor::Options read_executor_options();
 // (default 64), GRPARSE_STREAM_WORKERS (default 64) and GRPARSE_STREAM_QUEUE
 // (default 256), each 1 to 4096.
 StreamingLimits read_streaming_limits();
+
+// The async task registry's bounds: GRPARSE_MAX_TASKS (default 256),
+// GRPARSE_TASK_RESULT_TTL_SECONDS (default 3600) and GRPARSE_MAX_WATCHERS
+// (default 256).
+TaskRegistryOptions read_task_registry_options();
 
 // GRPARSE_EMBEDDING_BACKEND=off (default), cpu, openvino, or tensorrt. This
 // selection is independent of OCR's GRPARSE_ORT_EP. Model artifacts are read
