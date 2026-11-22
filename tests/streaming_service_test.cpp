@@ -393,6 +393,198 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
           "profiling sample matches the timings total");
 }
 
+// One StreamDocument call, read to the end.
+struct EnvelopeRun {
+  std::vector<pipestream::parse::v1::StreamDocumentResponse> envelopes;
+  grpc::Status status;
+};
+
+EnvelopeRun run_stream_document(pipestream::parse::v1::ParseStreamingService::Stub* client,
+                                const pipestream::parse::v1::StreamDocumentRequest& request,
+                                std::chrono::milliseconds deadline = 20s) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + deadline);
+  auto reader = client->StreamDocument(&context, request);
+  EnvelopeRun run;
+  pipestream::parse::v1::StreamDocumentResponse envelope;
+  while (reader->Read(&envelope)) run.envelopes.push_back(envelope);
+  run.status = reader->Finish();
+  return run;
+}
+
+pipestream::parse::v1::StreamDocumentRequest stream_document_request(
+    const pipestream::parse::v1::ConvertSourceRequest& convert) {
+  pipestream::parse::v1::StreamDocumentRequest request;
+  *request.mutable_request() = convert.request();
+  return request;
+}
+
+// Every envelope echoes the request_id (or carries none when the request
+// set none) and the sequence counts 1, 2, 3, ... with no gap.
+void require_envelope_order(const EnvelopeRun& run, const std::optional<std::string>& request_id,
+                            const std::string& label) {
+  uint64_t expected = 0;
+  for (const auto& envelope : run.envelopes) {
+    ++expected;
+    require(envelope.sequence_number() == expected,
+            label + ": sequence_number " + std::to_string(envelope.sequence_number()) +
+                " where " + std::to_string(expected) + " was due");
+    require(envelope.has_request_id() == request_id.has_value() &&
+                (!request_id.has_value() || envelope.request_id() == *request_id),
+            label + ": every envelope echoes the request_id");
+    require(envelope.timestamp_ms() > 0, label + ": every envelope carries its emit time");
+  }
+}
+
+bool is_status(const pipestream::parse::v1::StreamDocumentResponse& envelope,
+               pipestream::parse::v1::StreamStatus::Phase phase) {
+  return envelope.has_status() && envelope.status().phase() == phase;
+}
+
+// StreamDocument over inline sources: the envelopes run QUEUED, STARTED,
+// then per source PROCESSING and the final_document with its
+// source_result, or an error with a failed source_result, and close with
+// COMPLETED. The final_document is the Document the unary ConvertSource
+// returns for the same bytes and options, and a failed source does not
+// stop the next one.
+void verify_stream_document_inline_sources(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->stub();
+  const auto convert = unary_request();
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  parsev1::ConvertSourceResponse unary;
+  require(server->unary_stub()->ConvertSource(&unary_context, convert, &unary).ok(),
+          "the unary conversion the stream is compared with");
+
+  auto request = stream_document_request(convert);
+  request.set_request_id("req-377");
+  auto* broken = request.mutable_request()->add_sources()->mutable_file();
+  broken->set_filename("broken.png");
+  broken->set_base64_string("%%%%");
+  *request.mutable_request()->add_sources() = convert.request().sources(0);
+
+  const EnvelopeRun run = run_stream_document(client.get(), request);
+  require(run.status.ok(), "StreamDocument finishes OK: " + run.status.error_message());
+  require_envelope_order(run, "req-377", "inline sources");
+  const auto& envelopes = run.envelopes;
+  require(envelopes.size() == 12,
+          "QUEUED, STARTED, three sources of three envelopes, COMPLETED; got " +
+              std::to_string(envelopes.size()));
+  require(is_status(envelopes[0], parsev1::StreamStatus::PHASE_QUEUED) &&
+              !envelopes[0].has_source_index() && envelopes[0].status().num_docs() == 3,
+          "the stream opens QUEUED with the source count");
+  require(is_status(envelopes[1], parsev1::StreamStatus::PHASE_STARTED), "then STARTED");
+  for (uint32_t index = 0; index < 3; ++index) {
+    const auto& processing = envelopes[2 + index * 3];
+    const auto& outcome = envelopes[3 + index * 3];
+    const auto& result = envelopes[4 + index * 3];
+    const std::string label = "sources[" + std::to_string(index) + "]";
+    require(is_status(processing, parsev1::StreamStatus::PHASE_PROCESSING) &&
+                processing.source_index() == index &&
+                processing.status().num_processed() == index,
+            label + " opens with PROCESSING");
+    require(outcome.has_source_index() && outcome.source_index() == index &&
+                result.has_source_result() && result.source_index() == index &&
+                result.source_result().source_index() == index,
+            label + "'s envelopes are scoped to it");
+    if (index == 1) {
+      require(outcome.has_error() && !outcome.error().terminal() &&
+                  outcome.error().code() == parsev1::STREAM_ERROR_CODE_INVALID_ARGUMENT &&
+                  outcome.error().has_failure() &&
+                  outcome.error().failure().category() == parsev1::FAILURE_CATEGORY_POLICY &&
+                  !outcome.error().failure().retryable(),
+              "an undecodable source fails with a typed, classified error");
+      require(!result.source_result().success() && result.source_result().has_error_message() &&
+                  result.source_result().filename() == "broken.png",
+              "its source_result reports the failure");
+      continue;
+    }
+    require(outcome.has_final_document(), label + " streams its final_document");
+    require(same_message(outcome.final_document(), unary.response().document().doc()),
+            label + "'s final_document is the unary ConvertSource Document");
+    require(result.source_result().success() && result.source_result().filename() == "image.png" &&
+                !result.source_result().has_error_message(),
+            label + "'s source_result reports success");
+  }
+  const auto& closing = envelopes.back();
+  require(is_status(closing, parsev1::StreamStatus::PHASE_COMPLETED) &&
+              closing.status().num_processed() == 3 && closing.status().num_succeeded() == 2 &&
+              closing.status().num_failed() == 1 && closing.status().progress_percentage() == 1.0F,
+          "the stream closes COMPLETED with the counts");
+
+  // No source converted: the stream still runs every source and closes
+  // FAILED, OK on the wire; the envelopes carry the failure.
+  parsev1::StreamDocumentRequest failing;
+  *failing.mutable_request()->add_sources()->mutable_file() = *broken;
+  const EnvelopeRun failed = run_stream_document(client.get(), failing);
+  require(failed.status.ok(), "a stream whose every source failed still finishes OK");
+  require_envelope_order(failed, std::nullopt, "failing source");
+  require(failed.envelopes.size() == 6 && failed.envelopes[3].has_error() &&
+              is_status(failed.envelopes.back(), parsev1::StreamStatus::PHASE_FAILED) &&
+              failed.envelopes.back().status().num_failed() == 1,
+          "and closes FAILED");
+}
+
+// What the stream refuses as a whole is refused before any envelope, with
+// the status the unary surface would give.
+void verify_stream_document_refuses_requests(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->stub();
+  const EnvelopeRun empty = run_stream_document(client.get(), {});
+  require(empty.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              empty.envelopes.empty(),
+          "a request without a source is refused without an envelope");
+
+  auto targeted = stream_document_request(unary_request());
+  targeted.mutable_request()->mutable_target()->mutable_zip();
+  const EnvelopeRun target = run_stream_document(client.get(), targeted);
+  require(target.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              target.status.error_message().contains("target") && target.envelopes.empty(),
+          "a delivery target is refused: " + target.status.error_message());
+
+  auto unsupported = stream_document_request(unary_request());
+  unsupported.mutable_request()->mutable_options()->set_ocr_engine(
+      parsev1::OCR_ENGINE_EASYOCR);
+  grpc::ClientContext unary_context;
+  parsev1::ConvertSourceRequest unary;
+  *unary.mutable_request() = unsupported.request();
+  parsev1::ConvertSourceResponse ignored;
+  const grpc::Status unary_status =
+      server->unary_stub()->ConvertSource(&unary_context, unary, &ignored);
+  const EnvelopeRun options = run_stream_document(client.get(), unsupported);
+  require(!options.status.ok() && options.status.error_code() == unary_status.error_code() &&
+              options.envelopes.empty(),
+          "invalid options are refused as ConvertSource refuses them: " +
+              options.status.error_message());
+}
+
+// A client that cancels mid-stream ends the call CANCELLED, and the page
+// work still queued for it is cancelled rather than run.
+void verify_stream_document_cancels_with_the_client() {
+  TestServer server(200ms);
+  auto client = server.stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto reader = client->StreamDocument(&context, stream_document_request(unary_request()));
+  pipestream::parse::v1::StreamDocumentResponse envelope;
+  bool processing = false;
+  while (!processing && reader->Read(&envelope)) {
+    processing = is_status(envelope, pipestream::parse::v1::StreamStatus::PHASE_PROCESSING);
+  }
+  require(processing, "the stream reaches its first source");
+  context.TryCancel();
+  bool final_document = false;
+  while (reader->Read(&envelope)) final_document = final_document || envelope.has_final_document();
+  require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+          "a cancelled StreamDocument ends CANCELLED");
+  require(!final_document, "no final_document follows the cancel");
+  for (int attempt = 0; attempt < 100 && server.metrics().pages_cancelled == 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(server.metrics().pages_cancelled > 0, "the cancel reached the queued page work");
+}
+
 void verify_unsupported_options_are_rejected(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
@@ -2514,6 +2706,104 @@ void verify_remote_fetches_wait_for_a_slot() {
   wait_for_charges_returned(*inflight, "every charge is returned");
 }
 
+// A StreamDocument service over a fake CV scheduler, with the budget and
+// fetch slots a test hands it.
+class BudgetedStreamServer final {
+ public:
+  BudgetedStreamServer(std::shared_ptr<grparse::InflightBytes> inflight,
+                       std::shared_ptr<grparse::RemoteFetchSlots> slots)
+      : scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                     return std::make_shared<FakeSource>();
+                   }),
+        service_(scheduler_,
+                 std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+                 grparse::RepairOptions{}, std::move(inflight)) {
+    service_.set_remote_fetch_slots(std::move(slots));
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&service_);
+    server_ = builder.BuildAndStart();
+    require(server_ && port_ != 0, "budgeted stream server failed to start");
+    stub_ = pipestream::parse::v1::ParseStreamingService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  ~BudgetedStreamServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  pipestream::parse::v1::ParseStreamingService::Stub& stub() { return *stub_; }
+
+ private:
+  FakeRecognizer recognizer_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentStreamingService service_;
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub_;
+};
+
+// StreamDocument fetches a remote source the way ConvertSource does: behind
+// a fetch slot (a call that goes away while it waits never fetches) and
+// charged to the in-flight budget, every charge returned with the call.
+void verify_stream_document_fetches_remote_sources() {
+  RemoteSourceOrigin origin;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+  const auto slots = std::make_shared<grparse::RemoteFetchSlots>(1);
+  BudgetedStreamServer server(inflight, slots);
+  const auto request = stream_document_request(origin.request("/image.png"));
+
+  auto held = slots->acquire([] { return true; });
+  require(held.held(), "the test holds the only fetch slot");
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    auto reader = server.stub().StreamDocument(&context, request);
+    wait_until([&] { return slots->waiting() == 1; }, "the remote source waits for the slot");
+    context.TryCancel();
+    pipestream::parse::v1::StreamDocumentResponse ignored;
+    while (reader->Read(&ignored)) {
+    }
+    require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled stream ends while it waits");
+  }
+  wait_until([&] { return slots->waiting() == 0; }, "the cancelled parse stops waiting");
+  held.reset();
+  require(origin.connections() == 0, "the stream that went away never fetched");
+
+  const EnvelopeRun run = run_stream_document(&server.stub(), request);
+  require(run.status.ok(), "a fetched source streams: " + run.status.error_message());
+  require_envelope_order(run, std::nullopt, "fetched source");
+  require(origin.connections() == 1, "the source was fetched once");
+  const auto final_document =
+      std::ranges::find_if(run.envelopes, [](const auto& envelope) {
+        return envelope.has_final_document();
+      });
+  require(final_document != run.envelopes.end() &&
+              final_document->final_document().texts_size() == 3,
+          "the fetched source's Document streams whole");
+  require(slots->in_use() == 0, "the fetch returned its slot");
+  wait_for_charges_returned(*inflight, "every charge the stream took is returned");
+
+  // A fetched copy past the budget is that source's failure, typed.
+  const auto small = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong() * 3);
+  BudgetedStreamServer tight(small, std::make_shared<grparse::RemoteFetchSlots>(1));
+  const EnvelopeRun refused =
+      run_stream_document(&tight.stub(), stream_document_request(origin.request("/large.png")));
+  require(refused.status.ok(), "the stream reports the refused fetch on its envelopes");
+  const auto error = std::ranges::find_if(
+      refused.envelopes, [](const auto& envelope) { return envelope.has_error(); });
+  require(error != refused.envelopes.end() &&
+              error->error().code() ==
+                  pipestream::parse::v1::STREAM_ERROR_CODE_RESOURCE_EXHAUSTED &&
+              error->error().failure().retryable() &&
+              error->error().message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+          "a fetched copy past the budget is a RESOURCE_EXHAUSTED source error");
+  wait_for_charges_returned(*small, "the refused stream returns every charge");
+}
+
 // The chunk RPCs have nowhere to report a delivery, so a target is refused
 // rather than skipped; and a collector that failed beside a surviving one
 // shows up even when the converted document was not asked for.
@@ -4116,6 +4406,18 @@ docv1::Document convert_unary(const WorkerCountServer& server, const std::string
   return response.response().document().doc();
 }
 
+// The final_document StreamDocument sends for the unary request, after
+// checking the envelopes around it arrive in sequence.
+docv1::Document stream_document(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.stub();
+  const EnvelopeRun run = run_stream_document(client.get(), stream_document_request(unary_request()));
+  require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+  require_envelope_order(run, std::nullopt, label);
+  require(run.envelopes.size() == 6 && run.envelopes[3].has_final_document(),
+          label + ": QUEUED, STARTED, PROCESSING, final_document, source_result, COMPLETED");
+  return run.envelopes[3].final_document();
+}
+
 // Where two renderings first part, with a little of each side.
 std::string first_difference(const std::string& expected, const std::string& actual) {
   const auto mismatch = std::ranges::mismatch(expected, actual);
@@ -4200,6 +4502,11 @@ void verify_stream_is_invariant_under_worker_counts() {
           grparse::render_canonical_json(rebuilt_part(convert_unary(server, label + " unary")));
       require(unary_json == *expected, label + " unary differs from " + expected_label + ": " +
                                            first_difference(*expected, unary_json));
+      const std::string source_stream_json = grparse::render_canonical_json(
+          rebuilt_part(stream_document(server, label + " StreamDocument")));
+      require(source_stream_json == *expected,
+              label + " StreamDocument differs from " + expected_label + ": " +
+                  first_difference(*expected, source_stream_json));
     }
   }
 }
@@ -5239,6 +5546,9 @@ int main() {
         verify_ordered_page_stream(&server);
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
+        verify_stream_document_inline_sources(&server);
+        verify_stream_document_refuses_requests(&server);
+        verify_stream_document_cancels_with_the_client();
         verify_unsupported_options_are_rejected(&server);
         verify_a_calendar_input_is_not_implemented(&server);
         verify_parity_options_and_confidence(&server);
@@ -5284,6 +5594,7 @@ int main() {
         verify_stream_total_bytes_hint();
         verify_remote_source_is_charged_after_the_fetch();
         verify_remote_fetches_wait_for_a_slot();
+        verify_stream_document_fetches_remote_sources();
         verify_stream_chunks_holds_the_fetched_charge_until_written();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
