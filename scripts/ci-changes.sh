@@ -19,6 +19,7 @@ while IFS= read -r path; do
     Dockerfile|Dockerfile.openvino|.dockerignore|CMakeLists.txt) ep=true ;;
     cmake/*|patches/*|compat/*) ep=true ;;
     src/ort_session_ep.cpp|src/embeddings/*|src/embedding.cpp|src/embed_text_client.cpp) ep=true ;;
+    src/inference_model.cpp|src/tensorrt/*) ep=true ;;
     include/grparse/embedding.h) ep=true ;;
     scripts/stage-runtime-closure.sh|scripts/smoke-test.sh) ep=true ;;
     scripts/find-seed.sh|scripts/ccache-mount.sh|scripts/build-jobs.sh|scripts/stamp-sources.sh) ep=true ;;

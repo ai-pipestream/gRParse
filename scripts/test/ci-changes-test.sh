@@ -27,6 +27,9 @@ printf '' | sh "$script" | grep -qx 'ep=false' || { echo "FAIL: empty diff" >&2;
 
 # Execution-provider code and the image plumbing pull both legs in.
 expect true src/ort_session_ep.cpp
+expect true src/inference_model.cpp
+expect true src/tensorrt/tensorrt_model.cpp
+expect true docs/COLLECTORS.md src/tensorrt/ocr_profiles.h
 expect true src/source_parse.cpp src/embeddings/engine.cpp
 expect true src/embeddings/nvidia_backend.cpp
 expect true src/embedding.cpp
@@ -46,6 +49,7 @@ expect true scripts/ci-changes.sh
 
 # Look-alike paths stay out.
 expect false src/embeddings_notes.md docs/Dockerfile.md tests/cmake_test.cpp
+expect false src/tensorrt_notes.md tests/tensorrt_profiles_test.cpp
 
 [ "$fail" -eq 0 ] && echo "ci-changes-test: ok"
 exit "$fail"

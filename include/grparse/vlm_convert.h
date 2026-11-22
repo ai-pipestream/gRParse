@@ -39,6 +39,9 @@ struct VlmConvertOptions {
   // as ConvertOptions.response_format_raw; empty when no format is named.
   std::string response_format_raw;
   std::string prompt;
+  // Nemotron Parse 3.5 passes (docling's NemotronParseOptions), forwarded
+  // as ConvertOptions.nemotron_parse; unset keeps the single page pass.
+  std::optional<ai::pipestream::vlm::v1::NemotronParseOptions> nemotron_parse;
   // Rasterization DPI for PDF pages; rasters ignore it. Zero keeps 200 DPI.
   double render_dpi = 0.0;
   // Optional ConvertOptions.scale hint forwarded to the peer.

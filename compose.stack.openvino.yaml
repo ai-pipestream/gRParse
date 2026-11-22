@@ -45,7 +45,9 @@ services:
       GRPARSE_ORT_EP: openvino
       GRPARSE_OPENVINO_DEVICE: GPU
       GRPARSE_OPENVINO_CACHE_DIR: /var/cache/openvino
-    volumes:
+      # No TensorRT in this image: its engine cache volume and variable go.
+      GRPARSE_TENSORRT_CACHE_DIR: !reset null
+    volumes: !override
       - ./models:/models:ro
       - openvino-cache:/var/cache/openvino
 

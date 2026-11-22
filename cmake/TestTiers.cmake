@@ -5,7 +5,9 @@
 #   unit       pure functions on fixtures; well under a second each
 #   loopback   an in-process gRPC server, fake backend or loopback HTTP
 #   models     the model files under models/ (skip 77 without them, a
-#              failure under GRPARSE_TEST_REQUIRE_MODELS=1)
+#              failure under GRPARSE_TEST_REQUIRE_MODELS=1); tensorrt-model-test
+#              also needs an NVIDIA GPU and runs from the shipped image
+#              (grparse-tensorrt-check, scripts/test/gpu-placement-cuda-test.sh)
 #   embeddings the embedding model bundle (GRPARSE_EMBEDDING_TEST_MODELS);
 #              skip 77 inside every image build, run after the openvino build
 #              through the shipped grparse-embedding-check binaries
@@ -34,7 +36,7 @@ set(GRPARSE_TIER_LOOPBACK
   ort-session-ep-test)
 set(GRPARSE_TIER_MODELS
   layout-engine-test table-structure-engine-test figure-classifier-test
-  chunk-hf-model-test)
+  chunk-hf-model-test tensorrt-model-test)
 set(GRPARSE_TIER_EMBEDDINGS embedding-model-test embedding-reference-test)
 set(GRPARSE_TIER_EMULATORS
   storage-connectors-e2e-test remote-sources-e2e-test chart-outputs-e2e-test)
@@ -45,7 +47,8 @@ set(GRPARSE_TIER_EMULATORS
 # GRPARSE_STACK_SUITES names it or says `all`.
 set(GRPARSE_TIER_STACK
   stack-e2e s3-corpus-eval ocr-presets-e2e embedding-rpc
-  compose-preflight observability-compose gpu-placement hailo-placement)
+  compose-preflight observability-compose gpu-placement gpu-placement-cuda
+  hailo-placement)
 foreach(suite IN LISTS GRPARSE_TIER_STACK)
   add_test(NAME ${suite}
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stack-suite.sh ${suite}

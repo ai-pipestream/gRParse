@@ -4,7 +4,7 @@ from pathlib import Path
 
 from s3.run import SKIP, companion_layout, main
 from s3.source import ObjectRef, select_keys
-from s3.tests.fixtures import FakeClient, FakeSource, result, scan_document, word_document
+from s3.tests.fixtures import FakeClient, FakeSource, ebcdic_document, result, scan_document, word_document
 
 ENV = {"EVAL_S3_ENDPOINT": "http://127.0.0.1:1", "EVAL_S3_BUCKET": "b", "EVAL_S3_ACCESS_KEY": "k",
        "EVAL_S3_SECRET_KEY": "s", "GRPARSE_TARGET": "fake:1", "EVAL_LABEL": "unit"}
@@ -83,13 +83,13 @@ def test_ebcdic_uses_the_companion_layout_or_skips() -> None:
     assert companion_layout("r/statement.ebc", refs) == "r/statement.layout.json"
     assert companion_layout("r/other.ebc", refs) is None
     objects = {"r/statement.ebc": b"\xc1", "r/statement.layout.json": b"{}", "r/other.ebc": b"\xc2"}
-    code, report, markdown, source, clients, _ = _run(objects, {"ebc": result(word_document())})
+    code, report, markdown, source, clients, _ = _run(objects, {"ebc": result(ebcdic_document())})
     assert report["totals"]["skipped"] == 1 and "no <stem>.layout.json" in markdown
     layouts = [call for call in clients[0].calls if call[1] == ("EBCDIC",)]
     assert layouts and all(call[2] == b"{}" for call in layouts)
     assert not any(call[0] == "statement" for call in clients[0].calls), "no sniff run for EBCDIC"
     assert code == 0
-    code, *_ = _run(objects, {"ebc": result(word_document())}, {"EVAL_REQUIRE": "1"})
+    code, *_ = _run(objects, {"ebc": result(ebcdic_document())}, {"EVAL_REQUIRE": "1"})
     assert code == 1
 
 

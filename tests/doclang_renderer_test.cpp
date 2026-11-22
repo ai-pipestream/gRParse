@@ -475,13 +475,13 @@ void verify_a_host_renders_its_inline_runs_inside_its_element() {
   const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
                                     docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
   const std::string runs = add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, runs, "①");
+  add_paragraph(&document, runs, "① ");
   add_paragraph(&document, runs, "Yanchi county gazetteer");
 
   const std::string titled = add_text(&document, "#/body", docv1::BaseTextItem::kText,
                                       docv1::DOC_ITEM_LABEL_FOOTNOTE, "See");
   const std::string tail = add_hosted_group(&document, titled, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, tail, "p.");
+  add_paragraph(&document, tail, "p. ");
   add_paragraph(&document, tail, "4");
   const std::string after = add_hosted_group(&document, titled, docv1::GROUP_LABEL_UNSPECIFIED);
   add_paragraph(&document, after, "a later child");
@@ -490,7 +490,7 @@ void verify_a_host_renders_its_inline_runs_inside_its_element() {
   const std::string item = add_text(&document, list, docv1::BaseTextItem::kListItem,
                                     docv1::DOC_ITEM_LABEL_LIST_ITEM, "");
   const std::string item_runs = add_hosted_group(&document, item, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, item_runs, "bold");
+  add_paragraph(&document, item_runs, "bold ");
   add_paragraph(&document, item_runs, "lead");
   const std::string sublist = add_hosted_group(&document, item, docv1::GROUP_LABEL_LIST);
   add_text(&document, sublist, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
@@ -516,14 +516,43 @@ void verify_a_host_renders_its_inline_runs_inside_its_element() {
 void verify_a_body_inline_group_folds_into_one_paragraph() {
   docv1::Document document = base_document("inline.pdf");
   const std::string runs = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, runs, "Water is");
-  const std::string bold = add_paragraph(&document, runs, "wet");
+  add_paragraph(&document, runs, "Water is ");
+  const std::string bold = add_paragraph(&document, runs, "wet ");
   text_base_at(&document, bold)->mutable_formatting()->set_bold(true);
   add_paragraph(&document, runs, "");
   add_text(&document, runs, docv1::BaseTextItem::kFormula, docv1::DOC_ITEM_LABEL_FORMULA,
            "H_2O");
   require_equal(body_of(document), "  <paragraph>Water is wet H_2O</paragraph>\n",
-                "the runs join with a space into one paragraph, formatting kept as text");
+                "inline runs concatenate as written, formatting kept as text");
+}
+
+void verify_inline_runs_keep_their_own_spaces() {
+  docv1::Document document = base_document("spaces.pdf");
+  const std::string runs = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "hello ");
+  add_paragraph(&document, runs, "world");
+  require_equal(body_of(document), "  <paragraph>hello world</paragraph>\n",
+                "a trailing space on a run is the only space between runs");
+
+  docv1::Document glued = base_document("glued.pdf");
+  const std::string word = add_group(&glued, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&glued, word, "un");
+  add_paragraph(&glued, word, "break");
+  require_equal(body_of(glued), "  <paragraph>unbreak</paragraph>\n",
+                "runs with no boundary space stay one word");
+}
+
+// A host's own text and its runs are two pieces of one flow, and docling
+// joins them with one space. The runs among themselves add none.
+void verify_a_host_text_is_spaced_from_its_runs() {
+  docv1::Document document = base_document("host-space.pdf");
+  const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
+                                    docv1::DOC_ITEM_LABEL_FOOTNOTE, "See");
+  const std::string runs = add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&document, runs, "p.");
+  add_paragraph(&document, runs, "4");
+  require_equal(body_of(document), "  <footnote>See p.4</footnote>\n",
+                "one space after the host text, none between runs");
 }
 
 // A table's footnotes render after it, each holding its
@@ -617,7 +646,7 @@ void verify_nested_content_is_xml_escaped() {
   const std::string note = add_text(&document, "#/body", docv1::BaseTextItem::kText,
                                     docv1::DOC_ITEM_LABEL_FOOTNOTE, "");
   const std::string runs = add_hosted_group(&document, note, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, runs, "a < b");
+  add_paragraph(&document, runs, "a < b ");
   add_paragraph(&document, runs, "& c");
   auto* table = add_table(&document, "#/body");
   table->mutable_data()->set_num_rows(1);
@@ -655,7 +684,7 @@ void verify_lists_keep_their_nested_blocks() {
   add_text(&document, list, docv1::BaseTextItem::kListItem, docv1::DOC_ITEM_LABEL_LIST_ITEM,
            "one");
   const std::string flow = add_group(&document, list, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, flow, "run a");
+  add_paragraph(&document, flow, "run a ");
   add_paragraph(&document, flow, "run b");
   auto* table = add_table(&document, list);
   table->mutable_data()->set_num_rows(1);
@@ -702,7 +731,7 @@ void verify_a_rich_cell_keeps_hosts_and_satellites() {
   const std::string item = add_text(&document, list, docv1::BaseTextItem::kListItem,
                                     docv1::DOC_ITEM_LABEL_LIST_ITEM, "");
   const std::string runs = add_hosted_group(&document, item, docv1::GROUP_LABEL_INLINE);
-  add_paragraph(&document, runs, "x");
+  add_paragraph(&document, runs, "x ");
   add_paragraph(&document, runs, "<y>");
   auto* inner = add_table(&document, blocks);
   inner->mutable_data()->set_num_rows(1);
@@ -966,6 +995,8 @@ int main() {
       verify_a_transparent_group_adds_no_element_and_no_indent,
       verify_a_host_renders_its_inline_runs_inside_its_element,
       verify_a_body_inline_group_folds_into_one_paragraph,
+      verify_inline_runs_keep_their_own_spaces,
+      verify_a_host_text_is_spaced_from_its_runs,
       verify_float_footnotes_render_after_their_float_with_nested_content,
       verify_float_captions_keep_their_nested_content,
       verify_nested_content_is_xml_escaped,

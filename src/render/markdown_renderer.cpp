@@ -68,7 +68,8 @@ class MarkdownRenderer : public MarkdownWalk {
       : MarkdownWalk(document),
         compact_tables_(options.compact_tables),
         image_export_mode_(options.image_export_mode),
-        caption_placement_(options.caption_placement) {
+        caption_placement_(options.caption_placement),
+        html_formatting_fallback_(options.html_formatting_fallback) {
     if (options.page_break_placeholder.has_value()) {
       set_page_break_placeholder(*options.page_break_placeholder);
     }
@@ -88,6 +89,7 @@ class MarkdownRenderer : public MarkdownWalk {
   const bool compact_tables_;
   const MarkdownOptions::ImageExportMode image_export_mode_;
   const MarkdownOptions::CaptionPlacement caption_placement_;
+  const bool html_formatting_fallback_;
 
   // How the table formatter resolves a cell that points at another item.
   CellTextResolver cell_resolver() {
@@ -237,8 +239,14 @@ class MarkdownRenderer : public MarkdownWalk {
     if (formatting != nullptr) {
       if (formatting->bold()) out = "**" + out + "**";
       if (formatting->italic()) out = "*" + out + "*";
-      // Underline, subscript, and superscript have no Markdown rendering.
       if (formatting->strikethrough()) out = "~~" + out + "~~";
+      const auto fallback = [this](const std::string& body, std::string_view tag) {
+        if (!html_formatting_fallback_) return body;
+        return "<" + std::string(tag) + ">" + body + "</" + std::string(tag) + ">";
+      };
+      if (formatting->underline()) out = fallback(out, "u");
+      if (formatting->script() == docv1::SCRIPT_SUB) out = fallback(out, "sub");
+      if (formatting->script() == docv1::SCRIPT_SUPER) out = fallback(out, "sup");
     }
     // An unsafe scheme keeps only the text; a kept destination is encoded so
     // it cannot end the link early (docling-core #920).
@@ -343,6 +351,54 @@ class MarkdownRenderer : public MarkdownWalk {
     return out;
   }
 
+  // Longest run of consecutive backticks. Zero when the text has none.
+  static int longest_backtick_run(std::string_view text) {
+    int best = 0;
+    int run = 0;
+    for (const char c : text) {
+      if (c == '`') {
+        ++run;
+        if (run > best) best = run;
+      } else {
+        run = 0;
+      }
+    }
+    return best;
+  }
+
+  // CommonMark code span: one more tick than any run inside, and a padding
+  // space when the text starts or ends with a tick or with a space on both
+  // ends (after newlines are read as spaces) and is not only spaces.
+  static std::string code_span(const std::string& text) {
+    const std::string ticks(static_cast<std::size_t>(longest_backtick_run(text) + 1), '`');
+    std::string normalized;
+    normalized.reserve(text.size());
+    for (std::size_t i = 0; i < text.size(); ++i) {
+      if (text[i] == '\r' && i + 1 < text.size() && text[i + 1] == '\n') {
+        normalized.push_back(' ');
+        ++i;
+      } else if (text[i] == '\n' || text[i] == '\r') {
+        normalized.push_back(' ');
+      } else {
+        normalized.push_back(text[i]);
+      }
+    }
+    const bool only_spaces = normalized.find_first_not_of(' ') == std::string::npos;
+    const bool edge_spaces = !normalized.empty() && normalized.front() == ' ' &&
+                             normalized.back() == ' ' && !only_spaces;
+    const bool pad =
+        (!text.empty() && (text.front() == '`' || text.back() == '`')) || edge_spaces;
+    const std::string gap = pad ? " " : "";
+    return ticks + gap + text + gap + ticks;
+  }
+
+  // A fence longer than any backtick run inside, and at least three.
+  static std::string code_fence(const std::string& text) {
+    const int length = std::max(3, longest_backtick_run(text) + 1);
+    const std::string fence(static_cast<std::size_t>(length), '`');
+    return fence + "\n" + text + "\n" + fence;
+  }
+
   // A code item reaches the renderer two ways: through its own variant, or
   // through the generic text arm carrying a code label, which the model
   // rebuilds into a code item with the base fields and no captions.
@@ -364,11 +420,11 @@ class MarkdownRenderer : public MarkdownWalk {
         !has_hyperlink ? nullptr
         : own_variant  ? &item.code().hyperlink()
                        : &base->hyperlink();
-    // Inline code, and any code carrying a hyperlink, uses single backticks;
-    // everything else uses a plain fence with no info string.
+    // Inline code, and any code carrying a hyperlink, uses a code span whose
+    // delimiter no backtick run inside can close. A block uses a fence.
     const bool backticks = inline_scope || hyperlink != nullptr;
     std::vector<std::string> res_parts;
-    res_parts.push_back(backticks ? "`" + text + "`" : "```\n" + text + "\n```");
+    res_parts.push_back(backticks ? code_span(text) : code_fence(text));
     *first_span = ref;
     if (own_variant) {
       const std::string footnotes = serialize_footnotes(item.code().footnotes());
@@ -563,7 +619,12 @@ class MarkdownRenderer : public MarkdownWalk {
     std::vector<std::string> parts;
     if (const auto* table = table_at(ref)) {
       for (const auto& cell : table->data().table_cells()) {
-        if (!cell.text().empty()) parts.push_back(cell.text());
+        if (cell.has_ref() && !cell.ref().ref().empty()) {
+          const std::string cell_text = collect_subtree_text(cell.ref().ref());
+          if (!cell_text.empty()) parts.push_back(cell_text);
+        } else if (!cell.text().empty()) {
+          parts.push_back(cell.text());
+        }
       }
       return join(parts, " ");
     }
@@ -579,7 +640,9 @@ class MarkdownRenderer : public MarkdownWalk {
       const std::string child_text = collect_subtree_text(child);
       if (!child_text.empty()) parts.push_back(child_text);
     }
-    return join(parts, " ");
+    // Inline runs carry their own boundary whitespace. Every other node
+    // joins its pieces with a single space.
+    return join(parts, is_inline_group(ref) ? "" : " ");
   }
 
   // -- pictures -------------------------------------------------------------

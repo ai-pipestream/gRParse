@@ -286,7 +286,15 @@ void verify_an_inline_group_joins_its_children_into_one_paragraph() {
   const std::string inline_group = add_group(&document, "#/body", docv1::GROUP_LABEL_INLINE);
   add_paragraph(&document, inline_group, "one");
   add_paragraph(&document, inline_group, "two");
-  require_body(document, "<p>one two</p>\n", "an inline group folds into a single paragraph");
+  require_body(document, "<p>onetwo</p>\n",
+               "an inline group concatenates runs and does not insert a space");
+
+  docv1::Document spaced = base_document("inline-spaced.docx");
+  const std::string spaced_group = add_group(&spaced, "#/body", docv1::GROUP_LABEL_INLINE);
+  add_paragraph(&spaced, spaced_group, "hello ");
+  add_paragraph(&spaced, spaced_group, "world");
+  require_body(spaced, "<p>hello world</p>\n",
+               "a run that already ends with a space keeps that one space");
 }
 
 void verify_unserved_arenas_leave_a_comment() {

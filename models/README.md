@@ -8,8 +8,9 @@ Only `README.md` and `MANIFEST` are tracked; the model files are fetched.
 
 `MANIFEST` lists every file the server can load: sha256, byte size, group,
 license and upstream URL. `scripts/fetch-models.sh` reads it, downloads
-what is selected, derives the figure classifier from its published export,
-and keeps a file only when its sha256 matches. Files already in place with
+what is selected, derives the figure classifier from its published export
+and the table model's split graphs from `slanet_plus.onnx`, and keeps a file
+only when its sha256 matches. Files already in place with
 the right hash are skipped, so re-running is cheap and a stopped download
 resumes.
 
@@ -161,6 +162,23 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   Requires layout (that is what finds table regions); runs only on table
   crops, never full pages. When absent, tables fall back to the geometry
   word-to-cell grid.
+
+- `slanet_plus_encoder.onnx`, `slanet_plus_step.onnx`, `slanet_plus.vocab`:
+  the same network as two static graphs and its token vocabulary, derived
+  from `slanet_plus.onnx` by `scripts/split_slanet.py` (manifest group
+  `table`, url `split:slanet_plus.onnx`; never downloaded). The released
+  model decodes in one ONNX `Loop` whose carried tensors grow each step,
+  which native TensorRT cannot import, so the CUDA image runs the encoder
+  once per crop (`x` f32 `[1,3,488,488]` to `features` `[1,256,96]`) and the
+  decoder one step per token (`features`, `hidden` `[1,256]`, `previous`
+  `[1,50]` one-hot to `next_hidden`, `structure` logits `[1,50]`, `location`
+  `[1,8]`), driven by the server with the released loop's own rules (start
+  at `sos`, feed back the argmax, stop at `eos` or 501 steps). The step is
+  PaddleOCR's SLAHead rebuilt over the released weights; the script checks
+  the split against the released model on ONNX Runtime CPU and fails the
+  fetch when they differ (same token at every step, values within 1e-4;
+  3.8e-6 measured). The CPU and OpenVINO images load
+  `slanet_plus.onnx` itself and ignore these files.
 
 ## Figure classifier (optional; enables picture class annotations)
 

@@ -235,7 +235,7 @@ std::vector<TextBlock> HailoOcr::detect(const cv::Mat& image, const OcrDetectOpt
   cv::Mat dilated;
   cv::dilate(binary, dilated, cv::getStructuringElement(cv::MORPH_RECT, cv::Size(2, 2)));
   const std::vector<TextBox> boxes =
-      findRsBoxes(scores, dilated, scale, options.box_score_thresh, options.un_clip_ratio);
+      findRsBoxes(scores, dilated, scale, detect_box_score(options), options.un_clip_ratio);
 
   std::vector<cv::Mat> crops;
   crops.reserve(boxes.size());

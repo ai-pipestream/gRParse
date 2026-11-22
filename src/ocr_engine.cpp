@@ -2,11 +2,13 @@
 
 #include "grparse/text_geometry.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <optional>
 #include <stdexcept>
 #include <string>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 #include "hailo/hailo_ocr.h"
 
@@ -49,6 +51,10 @@ OcrDetectOptions detect_options_from_env() {
   options.padding = env_int("GRPARSE_OCR_PADDING", defaults.padding, 0, 4096);
   options.max_side_len = env_int("GRPARSE_OCR_MAX_SIDE", defaults.max_side_len, 32, 16384);
   options.box_score_thresh = env_float("GRPARSE_OCR_BOX_SCORE", defaults.box_score_thresh, 0.0F, 1.0F);
+  options.rescue_box_score =
+      env_float("GRPARSE_OCR_RESCUE_BOX_SCORE", defaults.rescue_box_score, 0.0F, 1.0F);
+  options.rescue_confidence =
+      env_float("GRPARSE_OCR_RESCUE_CONFIDENCE", defaults.rescue_confidence, 0.0F, 1.0F);
   options.box_thresh = env_float("GRPARSE_OCR_BOX_THRESH", defaults.box_thresh, 0.0F, 1.0F);
   options.un_clip_ratio = env_float("GRPARSE_OCR_UNCLIP", defaults.un_clip_ratio, 0.1F, 10.0F);
   return options;
@@ -61,6 +67,15 @@ const OcrDetectOptions& ocr_detect_options() {
   // environment on the hot path.
   static const OcrDetectOptions options = detect_options_from_env();
   return options;
+}
+
+float detect_box_score(const OcrDetectOptions& options) {
+  return std::min(options.box_score_thresh, options.rescue_box_score);
+}
+
+bool keep_ocr_line(float box_score, float confidence, const OcrDetectOptions& options) {
+  if (box_score >= options.box_score_thresh) return true;
+  return box_score >= options.rescue_box_score && confidence >= options.rescue_confidence;
 }
 
 OcrEngine::~OcrEngine() = default;
@@ -86,7 +101,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     }
   }
   // Surface a malformed GRPARSE_OCR_* value at startup, not on the first page.
-  ocr_detect_options();
+  const OcrDetectOptions& options = ocr_detect_options();
+  // The detector's shape range follows the configured side and padding.
+  set_ocr_detector_side_limit(options.max_side_len, options.padding);
 
   engine_ = std::make_unique<OcrLite>();
   engine_->setGpuIndex(gpu_index);
@@ -97,6 +114,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     // false here means the model wiring itself failed.
     throw std::runtime_error("RapidOCR failed to initialize its models");
   }
+  // A backend that sets up per shape does it now: boot fails here, naming
+  // the net, rather than on a page.
+  engine_->prewarm();
 }
 
 OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
@@ -111,7 +131,7 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
   const std::vector<TextBlock> blocks =
       hailo_ ? hailo_->detect(image, options)
              : engine_
-                   ->detect(image, options.padding, options.max_side_len, options.box_score_thresh,
+                   ->detect(image, options.padding, options.max_side_len, detect_box_score(options),
                             options.box_thresh, options.un_clip_ratio, options.do_angle,
                             options.most_angle)
                    .textBlocks;
@@ -125,6 +145,7 @@ OcrEngine::Page OcrEngine::extract_page(const cv::Mat& image) {
       for (const float score : block.charScores) confidence += score;
       confidence /= static_cast<float>(block.charScores.size());
     }
+    if (!keep_ocr_line(block.boxScore, confidence, options)) continue;
     Line line{block.text, block.boxPoint, confidence, TextOrigin::kOcr};
     line.flipped = block.angleIndex == 1;
     // The detector's unclip ratio grows a box past the glyphs, so a line

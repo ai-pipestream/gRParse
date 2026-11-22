@@ -114,9 +114,11 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
                                   std::string_view mime_type = {},
                                   std::string_view content = {});
 
-// grparse_ort_sessions{model,requested,actual,device,pin}: how many ONNX
-// Runtime sessions each model has, by the provider it asked for and the one
-// it got (ort_placements).  Pure in its input.
+// grparse_ort_sessions{model,requested,actual,device,pin}: how many
+// sessions each model has, by the provider it asked for and the backend it
+// got (ort_placements).  The name predates native TensorRT: actual="TensorRT"
+// counts handles on a TensorRT engine, not ONNX Runtime sessions.  Pure in
+// its input.
 std::string render_ort_session_placements(const std::vector<OrtPlacement>& placements);
 
 // One Prometheus text-format exposition (version 0.0.4) of the pipeline

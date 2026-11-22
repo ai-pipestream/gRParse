@@ -119,6 +119,14 @@ and `github` in each, and `gh` logged in.
    `grparse_ort_sessions` series must have `actual="OpenVINO"` except the
    table model's declared pin. Confirm the host has real VRAM headroom: a co-tenant
    holding the card near-full turns kernel compiles into crashes (exit 139).
+   The CUDA image has the same kind of receipt on a host with an NVIDIA GPU
+   (krick's RTX 4080 is the fleet's): `scripts/test/gpu-placement-cuda-test.sh
+   <image> <models-dir>` must pass before a CUDA-image release is called
+   good. It proves every image model runs on native TensorRT
+   (`actual="TensorRT"` on every `grparse_ort_sessions` series), that no
+   ONNX Runtime CUDA session exists, that the engine cache works and is off
+   by default, and that a missing GPU or an engine that does not build stops
+   startup. Then run the structural scorecard against it twice.
 
 6. Verify what was published:
 

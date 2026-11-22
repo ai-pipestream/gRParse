@@ -36,6 +36,10 @@ void verify_common_mime_mappings() {
   require_format("text/markdown", "a.md", parsev1::INPUT_FORMAT_MD, "md");
   require_format("text/html", "a.html", parsev1::INPUT_FORMAT_HTML, "html");
   require_format("text/csv", "a.csv", parsev1::INPUT_FORMAT_CSV, "csv");
+  require_format("text/calendar", "a.ics", parsev1::INPUT_FORMAT_CALENDAR, "ics mime");
+  require_format("text/plain", "invite.ics", parsev1::INPUT_FORMAT_CALENDAR, "ics extension");
+  require_format("application/octet-stream", "invite.ifb", parsev1::INPUT_FORMAT_CALENDAR,
+                 "ifb extension");
   require_format("audio/mpeg", "a.mp3", parsev1::INPUT_FORMAT_AUDIO, "mp3");
   require_format("video/mp4", "a.mp4", parsev1::INPUT_FORMAT_VIDEO, "mp4");
   require_format("application/x-afp", "a.afp", parsev1::INPUT_FORMAT_AFP, "afp");
@@ -95,6 +99,18 @@ void verify_allowlist() {
           "pdf allowlist accepts pdf");
   require(!grparse::from_formats_allows(pdf_only, parsev1::INPUT_FORMAT_MD),
           "pdf allowlist rejects md");
+
+  google::protobuf::RepeatedField<int> calendar_only;
+  calendar_only.Add(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_CALENDAR),
+          "a calendar allowlist accepts calendar");
+  require(!grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_MD),
+          "naming CALENDAR alone does not allow a parsed format");
+  calendar_only.Add(parsev1::INPUT_FORMAT_MD);
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_MD),
+          "CALENDAR beside MD allows the parsed format");
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_CALENDAR),
+          "the same list still allows CALENDAR");
 }
 
 }  // namespace

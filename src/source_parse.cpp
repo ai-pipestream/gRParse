@@ -28,7 +28,6 @@
 #include <google/protobuf/unknown_field_set.h>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
-#include "google/rpc/status.pb.h"
 #include "storage/connectors.h"
 #include "grparse/ocr_preset_policy.h"
 
@@ -52,6 +51,7 @@
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "vlm_custom_options.h"
 #include "targets/sha256.h"
 
 namespace fs = std::filesystem;
@@ -162,6 +162,7 @@ bool implemented_option(std::string_view name) {
       "include_page_images",
       "md_page_break_placeholder",
       "md_compact_tables",
+      "formatting_fallback_mode",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
       "chunking_preset",
@@ -558,9 +559,7 @@ grpc::Status validate_response_format(const Message& message, const std::string&
     return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
                            parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
                            surface + ": " + path + " response format '" + name +
-                               "' is not one the VLM convert collector maps (it maps every "
-                               "docling format except mineru2, whose two-pass protocol "
-                               "it does not drive)");
+                               "' is not one the VLM convert collector maps");
   }
   return grpc::Status::OK;
 }
@@ -683,6 +682,11 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                           surface + ": " + std::string(name) +
                               ".model_spec requires name and default_repo_id");
     }
+    if (const auto dtype = validate_engine_overrides(spec, std::string(name) + ".model_spec",
+                                                    surface);
+        !dtype.ok()) {
+      return dtype;
+    }
     // Only the VLM pipeline's spec format reaches a collector that reads
     // it; the enrich legs' specs are checked for a known, agreeing value.
     return validate_response_format(spec, std::string(name) + ".model_spec", surface,
@@ -715,8 +719,15 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       }
       return grpc::Status::OK;
     };
+    if (cfg.has_nemotron_parse()) {
+      const std::string path = "vlm_pipeline_custom_config.nemotron_parse";
+      if (auto s = validate_nemotron_parse(cfg.nemotron_parse(), path, surface); !s.ok()) {
+        return s;
+      }
+    }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
-                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
+                                         {"engine_options", "model_spec", "scale",
+                                          "nemotron_parse"}); !s.ok()) {
       return s;
     }
     if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",
@@ -1027,24 +1038,6 @@ bool s3_source_verify_ssl(const pipestream::parse::v1::S3Source& source) {
   return !source.has_verify_ssl() || source.verify_ssl();
 }
 
-grpc::Status option_rejected(const std::string& option_path,
-                             pipestream::parse::v1::OptionRejectionReason reason,
-                             const std::string& rejected_value_raw, const std::string& message) {
-  pipestream::parse::v1::OptionRejection rejection;
-  rejection.set_option_path(option_path);
-  rejection.set_reason(reason);
-  rejection.set_rejected_value_raw(rejected_value_raw);
-  google::rpc::Status status;
-  status.set_code(static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT));
-  status.set_message(message);
-  if (!status.add_details()->PackFrom(rejection)) {
-    // Packing a generated message cannot fail; if it ever does the people
-    // message still stands, without the typed detail.
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message);
-  }
-  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message, status.SerializeAsString());
-}
-
 std::expected<std::vector<pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
 resolve_numbering_schemes(const pipestream::parse::v1::ConvertDocumentOptions& options,
                           const std::string& surface) {
@@ -1231,6 +1224,15 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!vlm_selection_status.ok()) return vlm_selection_status;
   const grpc::Status custom_config_status = validate_custom_configs(options, surface);
   if (!custom_config_status.ok()) return custom_config_status;
+  if (options.has_formatting_fallback_mode() &&
+      !pipestream::parse::v1::FormattingFallbackMode_IsValid(
+          options.formatting_fallback_mode())) {
+    return option_rejected(
+        "formatting_fallback_mode",
+        pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+        std::to_string(static_cast<int>(options.formatting_fallback_mode())),
+        surface + ": formatting_fallback_mode is not a known value");
+  }
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   if (auto preset = resolve_code_formula_preset(options, surface); !preset.has_value()) {
@@ -2468,9 +2470,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // collector merge alike), so no path can return a document without it.
     *base.mutable_parse() = parse_identity(request.options());
 
+    const auto detected = input_format_for(base.origin().mimetype(), requested_name);
+    if (detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
+      return option_rejected(
+          "sources[0]", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "INPUT_FORMAT_CALENDAR",
+          surface + ": INPUT_FORMAT_CALENDAR has no collector");
+    }
     if (!request.options().from_formats().empty()) {
-      const auto detected =
-          input_format_for(base.origin().mimetype(), requested_name);
       if (!detected.has_value()) {
         return grpc::Status(
             grpc::StatusCode::INVALID_ARGUMENT,
@@ -2680,6 +2687,8 @@ constexpr std::string_view kIdentitySettings[] = {
     "GRPARSE_OCR_BOX_THRESH",
     "GRPARSE_OCR_MAX_SIDE",
     "GRPARSE_OCR_PADDING",
+    "GRPARSE_OCR_RESCUE_BOX_SCORE",
+    "GRPARSE_OCR_RESCUE_CONFIDENCE",
     "GRPARSE_OCR_ROTATION",
     "GRPARSE_OCR_UNCLIP",
     "GRPARSE_OPENVINO_DEVICE",
@@ -2731,6 +2740,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_image_export_mode();
   decisive.clear_md_page_break_placeholder();
   decisive.clear_md_compact_tables();
+  decisive.clear_formatting_fallback_mode();
   decisive.clear_doclang_include_namespace();
   decisive.clear_document_timeout();
   decisive.clear_abort_on_error();
