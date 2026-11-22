@@ -585,6 +585,16 @@ CallExecutor::Options read_executor_options() {
   return executor_options;
 }
 
+TaskRegistryOptions read_task_registry_options() {
+  TaskRegistryOptions options;
+  options.max_tasks = configured_size("GRPARSE_MAX_TASKS", kDefaultMaxTasks, 65536);
+  options.result_ttl = std::chrono::seconds(configured_size(
+      "GRPARSE_TASK_RESULT_TTL_SECONDS", static_cast<size_t>(kDefaultTaskResultTtl.count()),
+      7 * 24 * 3600));
+  options.max_watchers = configured_size("GRPARSE_MAX_WATCHERS", kDefaultMaxTaskWatchers, 65536);
+  return options;
+}
+
 std::optional<RepairOptions> configure_repair() {
   const char* configured = std::getenv("GRPARSE_REPAIR");
   const std::string mode = configured == nullptr ? "on" : configured;

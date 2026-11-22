@@ -1969,8 +1969,8 @@ message ConvertDocumentResponse {
   repeated TextOffset text_offsets = 12;
 }
 
-// Embeddings are opt-in on the two implemented synchronous chunk RPCs.
-// Async/watch RPCs remain UNIMPLEMENTED, including for embedding requests.
+// Embeddings are opt-in on the chunk RPCs: the two synchronous ones,
+// StreamChunks, and their async and watch tasks.
 enum EmbeddingTextMode {
   EMBEDDING_TEXT_MODE_UNSPECIFIED = 0; // Same as TEXT.
   EMBEDDING_TEXT_MODE_TEXT = 1;        // Chunk.text verbatim.

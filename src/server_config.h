@@ -27,6 +27,7 @@
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/table_structure_engine.h"
+#include "task_registry.h"
 
 namespace grparse {
 
@@ -125,6 +126,11 @@ std::string openvino_device_setting();
 
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
+
+// The async task registry's bounds: GRPARSE_MAX_TASKS (default 256),
+// GRPARSE_TASK_RESULT_TTL_SECONDS (default 3600) and GRPARSE_MAX_WATCHERS
+// (default 256).
+TaskRegistryOptions read_task_registry_options();
 
 // GRPARSE_EMBEDDING_BACKEND=off (default), cpu, openvino, or tensorrt. This
 // selection is independent of OCR's GRPARSE_ORT_EP. Model artifacts are read

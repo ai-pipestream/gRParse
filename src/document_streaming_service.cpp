@@ -1674,8 +1674,8 @@ class SourceStreamReactor final
       SourceParse parsed;
       grpc::Status status;
       try {
-        status = parse_source(context_, single, *scheduler_, endpoints_, repair_, admission_,
-                              kSourceStreamSurface, &parsed);
+        status = parse_source(ParseCall(context_), single, *scheduler_, endpoints_, repair_,
+                              admission_, kSourceStreamSurface, &parsed);
       } catch (...) {
         status = status_from_exception(std::current_exception());
       }
