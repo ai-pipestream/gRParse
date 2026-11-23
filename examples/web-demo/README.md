@@ -214,7 +214,7 @@ resolves from the sibling `fastwarc-grpc` checkout (or the vendored
 `peer-protos/fastwarc-grpc/proto` copy the image carries) through the same
 `KNOWN_UIS` registry as the other native tabs. It is the same contract as
 the C++ collector's `collectors/warc*.proto`: both are copies of the
-fastwarc-grpc 1.1.0 crate's protos.
+pinned fastwarc-grpc crate's protos (2.0.1).
 
 ## Native ASR, Enrich, and VLM Convert tabs
 
