@@ -18,6 +18,7 @@ re-copy the file and rebuild.
 | `calamine_types.proto`, `calamine_service.proto` | grpc-calamine `proto/calamine/v1/` (`types.proto` is renamed here to stay unambiguous; it stages back to `calamine/v1/types.proto`. The package is `calamine.v1`, not `ai.pipestream.*`. Copied from that repo's GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event; `development` is behind it) |
 | `enrich_service.proto` | grpc-enrich `proto/ai/pipestream/enrich/v1/enrich_service.proto` (the chart derender leg, `GRPARSE_ENRICH_TARGET`; an enrichment peer rather than a collector, dialed after the merge) |
 | `vlm_convert.proto` | grpc-vlm-convert `proto/ai/pipestream/vlm/v1/vlm_convert.proto` (the `PROCESSING_PIPELINE_VLM` body producer, `GRPARSE_VLM_CONVERT_TARGET`; a peer dialed instead of the CV path) |
+| `lighton_ocr.proto` | grpc-lighton-ocr `proto/ai/pipestream/lightonocr/v1/lighton_ocr.proto` (the `PROCESSING_PIPELINE_VLM` body producer for the LightOnOCR model when `GRPARSE_LIGHTON_TARGET` is set, `src/collectors/lighton_collector.cpp`). Its `document.proto` copy is this repo's, pinned like every sibling's; no second copy lives here |
 | `opennlp_document.proto` | apache/opennlp-sandbox branch `OPENNLP-1833-grpc-expansion`, `opennlp-grpc/opennlp-grpc-api/src/main/proto/org/apache/opennlp/grpc/v1/opennlp_document.proto` (stages back to `org/apache/opennlp/grpc/v1/`; package `org.apache.opennlp.grpc.v1`). The reverse of the others: `document.proto` imports it, so `Document.analyses` can keep an OpenNLP analysis verbatim. Every place that stages `document.proto` stages this file beside it, and a collector that re-copies `document.proto` copies this file too |
 | `opennlp_annotations.proto` | The strongly typed companion of `opennlp_document.proto`, same directory and package (draft: OpenNLP branch `OPENNLP-1833-typed-annotations`). `Document.analyses` carries its `OpenNlpAnnotations` as the `opennlp_annotations` arm; it is staged wherever `opennlp_document.proto` is |
 
@@ -26,6 +27,19 @@ built from these same generated stubs, so a skewed field number agrees with
 itself all the way to production. `tests/warc_stub_wire_test.cpp` guards the
 fastwarc pair by decoding hand-written wire bytes; a pair that carries real
 traffic deserves the same.
+
+`PINS.tsv` makes the rule a CI check (#246): one row per copy (`file`, owning
+`repo`, `path` there, `commit`), the backend contract under `backends/` and
+every sibling's `document.proto` copy included, and
+`scripts/test/vendored-protos-test.sh` fetches each owner's file at its pinned
+commit and fails with the diff on any byte of difference. Re-vendoring is two
+moves in one commit: copy the file, move its pin. A `document.proto` change
+moves the sibling pins as the fleet sweep lands in each repo. The two OpenNLP
+files are pinned to the grpc-asr copy, the fleet's vendored copy of the
+opennlp-sandbox branch above. The same CI job runs `buf breaking` over the
+staged protos against the pull request's base, so a renumbered or removed
+field fails even where every copy agrees. A field leaves the contract only
+with both its number and its name reserved.
 
 Every one of these except the lol-html, fastwarc, and calamine pairs
 imports `ai/pipestream/document/v1/document.proto`, which

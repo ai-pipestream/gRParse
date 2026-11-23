@@ -15,6 +15,7 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 
 #include <grpcpp/grpcpp.h>
 
@@ -31,6 +32,24 @@ namespace grparse {
 // The document's identity hash, stamped on the origin: FNV-1a over the
 // bytes as they arrived.
 uint64_t content_hash(const std::string& document);
+
+// content_hash fed piecewise: update() with consecutive pieces of the
+// document, and value() is content_hash of the pieces concatenated. The
+// streaming surface feeds each chunk as it lands, so the hash is ready when
+// the upload ends instead of costing another pass over it.
+class ContentHash {
+ public:
+  void update(std::string_view piece) {
+    for (const unsigned char byte : piece) {
+      hash_ ^= byte;
+      hash_ *= 1099511628211ULL;
+    }
+  }
+  uint64_t value() const { return hash_; }
+
+ private:
+  uint64_t hash_ = 14695981039346656037ULL;
+};
 
 // True when the bytes or the name say PDF. The bytes are asked first
 // because a name is a claim and a signature is evidence: a %PDF- header in
@@ -114,6 +133,13 @@ grpc::Status resolve_rapidocr_detect_orientation(
 // The status a thrown failure reports as: each exception this pipeline
 // raises has one status class, and everything else is INTERNAL.
 grpc::Status status_from_exception(std::exception_ptr failure);
+
+// The client-facing account of a call or task that ended in `status`: its
+// FailureCategory (a refused request is POLICY, the rest classify as a
+// collector leg's status does), whether a retry can help (a deadline, a
+// full server or an unreachable peer), and `phase`.
+ai::pipestream::parse::v1::PublicFailureInfo public_failure(
+    const grpc::Status& status, ai::pipestream::parse::v1::FailurePhase phase);
 
 // A collector leg's failed outcome, from the exception that ended it,
 // carrying the status status_from_exception maps the throw to.

@@ -1,4 +1,7 @@
 #include "grparse/page_scheduler.h"
+
+#include "grparse/ocr_image_regions.h"
+#include "grparse/ocr_rect_render.h"
 #include "grparse/page_previews.h"
 
 #include <algorithm>
@@ -25,8 +28,15 @@
 #include "grparse/data_totals.h"
 #include "grparse/orientation_recovery.h"
 #include "grparse/region_geometry.h"
+#include "grparse/table_structure.h"
 
 namespace grparse {
+
+namespace {
+// A picture crop narrower or shorter than this holds no label worth a
+// recognizer pass (an icon, a rule).
+constexpr int kMinPictureReadSide = 32;
+}  // namespace
 namespace {
 
 // The class-triggered barcode gate: decode only when the classifier's top
@@ -184,6 +194,7 @@ struct PageScheduler::Ticket::State {
       open_source = source;
     }
     if (open_source) open_source->cancel();
+    if (ocr_renderer) ocr_renderer->cancel();
   }
 
   void fail(std::exception_ptr value) {
@@ -222,6 +233,9 @@ struct PageScheduler::Ticket::State {
   std::exception_ptr failure;
   std::mutex schedule_mutex;
   std::shared_ptr<PageSource> source;
+  // The document at the OCR DPI for image rectangles; set before any page
+  // is scheduled, null when the rectangles are read from the page raster.
+  std::shared_ptr<OcrRectRenderer> ocr_renderer;
   int total_pages = 0;
   int next_page_to_schedule = 1;
   size_t available_slots = 0;
@@ -307,9 +321,10 @@ class PageScheduler::Impl final {
       // Deferred: the source makes no backend call until coordinate() has
       // tied it to the request, so the opening Probe honors the request's
       // deadline and cancel.
-      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi) {
+      source_factory_ = [](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+                           const std::string& precomputed_sha256) {
         return open_in_memory_document(std::move(bytes), pdf, render_dpi,
-                                       SourceOpening::kOnFirstUse);
+                                       SourceOpening::kOnFirstUse, precomputed_sha256);
       };
     }
     // Any thread that fails to start must not leave the already-started ones
@@ -624,7 +639,8 @@ class PageScheduler::Impl final {
         const double render_dpi = document.request->tuning.render_dpi > 0.0
                                       ? document.request->tuning.render_dpi
                                       : kDefaultRenderDpi;
-        auto source = source_factory_(document.bytes, document.pdf, render_dpi);
+        auto source = source_factory_(document.bytes, document.pdf, render_dpi,
+                                      document.request->tuning.sha256_hex);
         if (!source) throw InvalidDocument("Document source could not be opened");
         source->set_deadline(document.request->tuning.deadline);
         source->set_passwords(document.request->tuning.passwords);
@@ -634,6 +650,10 @@ class PageScheduler::Impl final {
         {
           std::lock_guard<std::mutex> lock(document.request->schedule_mutex);
           document.request->source = source;
+          const auto& tuning = document.request->tuning;
+          document.request->ocr_renderer = make_ocr_rect_renderer(
+              source_factory_, document.bytes, document.pdf, render_dpi, options_.ocr_image_dpi,
+              tuning.sha256_hex, tuning.deadline, tuning.passwords);
         }
         if (document.request->cancelled.load()) source->cancel();
         const int pages = source->page_count();
@@ -779,6 +799,7 @@ class PageScheduler::Impl final {
           // fed in turned, and every device call after it (layout, table
           // crops, figure crops, the preview) must see the upright raster.
           OcrPage assembled;
+          const bool settled_by_text_layer = !job.run_ocr && job.digital_seed.has_value();
           if (job.run_ocr) {
             OcrPage ocr;
             {
@@ -844,6 +865,36 @@ class PageScheduler::Impl final {
             resolve_region_overlaps(regions, assembled.lines, job.image.cols, job.image.rows);
             pages_layout_labelled_.fetch_add(1);
           }
+          // A digital page settled by its text layer still has words that
+          // live only in its rasters (a chart's axes drawn into the image, a
+          // screenshot, a scanned checklist). The reference OCRs every layout
+          // cluster over a bitmap; here the picture regions and the PDF's own
+          // image placements are read (ocr_image_regions.h), and their lines
+          // join the page where the text layer has none (add_region_read).
+          // Selective mode only: kOff means no recognition, and a page that
+          // already ran OCR read its pictures with the rest.
+          if (settled_by_text_layer &&
+              job.page->request->tuning.mode == OcrTuning::Mode::kSelective) {
+            const auto rects = ocr_image_rects(regions, assembled.image_placements, job.image.cols,
+                                               job.image.rows, kMinPictureReadSide);
+            // Rectangles read sharper from a second render at the OCR DPI
+            // when one is configured; the page raster otherwise.
+            const auto& renderer = job.page->request->ocr_renderer;
+            const cv::Mat sharp = rects.empty() || !renderer ? cv::Mat()
+                                                             : renderer->render(job.page->page_number);
+            for (const cv::Rect& roi : rects) {
+              const StageTimer stage(timings.ocr_ms);
+              if (sharp.empty()) {
+                add_region_read(&assembled, recognizer_.extract_page(job.image(roi)), roi.x, roi.y);
+                continue;
+              }
+              const cv::Rect fine = scaled_rect(roi, renderer->scale(), sharp.size());
+              if (fine.empty()) continue;
+              OcrPage read = recognizer_.extract_page(sharp(fine));
+              scale_read(&read, renderer->scale());
+              add_region_read(&assembled, std::move(read), roi.x, roi.y);
+            }
+          }
           // Structure runs on table crops only, grouped with the other device
           // calls while the raster is alive; cells shift into page coordinates
           // so assembly and text binding share one space. Docling
@@ -872,6 +923,7 @@ class PageScheduler::Impl final {
                 cell.top += roi.y;
                 cell.bottom += roi.y;
               }
+              if (structure.truncated) extend_truncated_table(region, assembled.lines);
             }
           }
           // Classification also runs on picture crops only, same grouping.

@@ -7,6 +7,8 @@
 // Internal to src: the served surfaces stay in
 // include/grparse/document_parser_service.h.
 
+#include <atomic>
+#include <chrono>
 #include <expected>
 #include <filesystem>
 #include <memory>
@@ -22,13 +24,52 @@
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/document_passwords.h"
 #include "grparse/document_render.h"
 #include "grparse/document_repair.h"
 #include "grparse/inflight_bytes.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/remote_fetch_slots.h"
+#include "option_rejection.h"
 
 namespace grparse {
+
+// What a parse reads of the call it runs for: whether its caller still
+// wants the result, the caller's deadline, and the document passwords the
+// call's metadata carried. A served call reads all three from its server
+// context; an async task, which outlives the call that submitted it,
+// carries its own. Cheap to copy, and every collector leg holds a copy.
+class ParseCall {
+ public:
+  // A call nobody can cancel and with no deadline; what a ParseCall holds
+  // until one is assigned.
+  ParseCall() = default;
+  // The served call `context` belongs to; valid while the context is.
+  explicit ParseCall(grpc::CallbackServerContext* context) : context_(context) {}
+  // A call no client is attached to: cancelled once `stop` holds, with no
+  // deadline of its own (document_timeout and each leg's cap still apply),
+  // and with the passwords read off the call that submitted it.
+  ParseCall(std::shared_ptr<const std::atomic<bool>> stop, DocumentPasswords passwords)
+      : stop_(std::move(stop)), passwords_(std::move(passwords)) {}
+
+  bool cancelled() const {
+    if (context_ != nullptr) return context_->IsCancelled();
+    return stop_ != nullptr && stop_->load(std::memory_order_acquire);
+  }
+  // time_point::max() when the call set none.
+  std::chrono::system_clock::time_point deadline() const {
+    return context_ != nullptr ? context_->deadline()
+                               : std::chrono::system_clock::time_point::max();
+  }
+  // The candidate passwords (see document_passwords.h); a malformed
+  // metadata entry is the status read_document_passwords gives.
+  grpc::Status read_passwords(DocumentPasswords* passwords) const;
+
+ private:
+  grpc::CallbackServerContext* context_ = nullptr;
+  std::shared_ptr<const std::atomic<bool>> stop_;
+  DocumentPasswords passwords_;
+};
 
 // One parsed source: the merged document every conversion surface starts
 // from, plus the offset table of its text stream.
@@ -59,21 +100,15 @@ struct SourceAdmission {
 // The parse every unary surface shares: decode the single FileSource, plan
 // the collectors, run them, and merge. The response shaping (exports, chunks)
 // belongs to the caller. Blocking throughout, so it runs on a CallExecutor
-// worker and never on the thread that reacted to the call; `context` outlives
-// that worker because the reactor finishes the call from it.
+// worker and never on the thread that reacted to the call; `call` outlives
+// that worker (a served call's context because the reactor finishes the
+// call from it, an async task's because the task owns it).
 //
 // `surface` names the RPC in every rejection, so a caller learns which of
 // the conversion surfaces turned its request down.
 // Whether an S3Source's endpoint certificate is verified: true unless the
 // request set verify_ssl to false explicitly.
 bool s3_source_verify_ssl(const ai::pipestream::parse::v1::S3Source& source);
-
-// An INVALID_ARGUMENT that names the rejected option: the message for
-// people, and a typed OptionRejection packed in google.rpc.Status.details
-// (the status's error_details) for programs.
-grpc::Status option_rejected(const std::string& option_path,
-                             ai::pipestream::parse::v1::OptionRejectionReason reason,
-                             const std::string& rejected_value_raw, const std::string& message);
 
 // The heading pass's numbering-scheme precedence, typed: numbering_schemes
 // as given, or numbering_schemes_raw mapped by Docling name. Unspecified,
@@ -178,7 +213,7 @@ std::string read_settings_digest();
 // not), and its fetched copy is then charged to the in-flight budget before
 // anything parses it: RESOURCE_EXHAUSTED when the budget refuses, else the
 // charge rides `parsed->fetched_charge`.
-grpc::Status parse_source(grpc::CallbackServerContext* context,
+grpc::Status parse_source(const ParseCall& call,
                           const ai::pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,

@@ -114,10 +114,19 @@ and `github` in each, and `gh` logged in.
    `grparse_ort_ep_build_retries_total` may be non-zero on a contended host
    (OpenVINO builds retry under pressure, see README "Intermittent IGC
    failures and VRAM headroom"), and `grparse_ort_ep_fallbacks_total` must
-   reflect only the pre-decided table-structure retreat; the openvino flavor
-   never degrades OCR to CPU, so anything beyond the table pool is a failed
-   leg, not a fallback. Confirm the host has real VRAM headroom: a co-tenant
+   be 0 (placement is strict: a refusal fails startup, so a non-zero count on
+   a live server means a pooled session was rebuilt and refused), and every
+   `grparse_ort_sessions` series must have `actual="OpenVINO"` except the
+   table model's declared pin. Confirm the host has real VRAM headroom: a co-tenant
    holding the card near-full turns kernel compiles into crashes (exit 139).
+   The CUDA image has the same kind of receipt on a host with an NVIDIA GPU
+   (krick's RTX 4080 is the fleet's): `scripts/test/gpu-placement-cuda-test.sh
+   <image> <models-dir>` must pass before a CUDA-image release is called
+   good. It proves every image model runs on native TensorRT
+   (`actual="TensorRT"` on every `grparse_ort_sessions` series), that no
+   ONNX Runtime CUDA session exists, that the engine cache works and is off
+   by default, and that a missing GPU or an engine that does not build stops
+   startup. Then run the structural scorecard against it twice.
 
 6. Verify what was published:
 

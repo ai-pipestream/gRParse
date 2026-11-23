@@ -97,7 +97,7 @@ gRParse links no PDF engine. Every PDF is read through the PDF backend service `
 
 The rest of the accepted `ConvertDocumentOptions` mirror the reference converter's (docling-serve) semantics. `pipeline` accepts `STANDARD` (the default routing) and `NATIVE`, which takes the pdf collector's model-free text-layer extraction whatever the inspector classified (a warning names the pages the models would have run for), fails with `FAILED_PRECONDITION` when that extraction fails or when the input is raster, and never runs the CV models; `VLM` and `ASR` are rejected by name. `include_page_images` overrides the server's `GRPARSE_PAGE_IMAGES` default per request, attaching a level-6 PNG of each page raster to its `PageItem` (`false` suppresses the previews a server has on). `md_page_break_placeholder` and `md_compact_tables` steer the Markdown export exactly as the reference serializer's parameters do: a placeholder part between items whose first provenance moves to a later page (before a list or inline group whose first provenanced item opens a page), and tables without column padding with a bare `| - |` rule. `image_export_mode` also steers the two DocLang exports, with docling-core's per-format defaults: `DOCLANG` writes no picture source by default (`PLACEHOLDER`), the picture's existing image uri with `REFERENCED`, and that uri or else a PNG data URI cropped from the page image with `EMBEDDED`; the `DCLX` archive defaults to `REFERENCED`, storing each picture's image (its own data-URI bytes, or a crop of its page image) as `assets/image_<NNNNNN>_<sha256>.<ext>` and pointing the picture at it, stores none with `PLACEHOLDER`, and rejects `EMBEDDED` with `INVALID_ARGUMENT`; page images go under `pages/<page_no>.<ext>` in either mode. The archive is built in memory and packs deterministically (fixed timestamps, members in path order). `doclang_include_namespace` (default true, where docling-core defaults to off) declares the DocLang namespace on the root of both; false writes a bare `<doclang>` root for byte parity with docling. `do_pdf_heading_hierarchy` and `pdf_heading_hierarchy_options` tune the section-header level pass: `enabled` (off, every undecided header is level 1 and no title is elected), `use_numbering` (read `1.1`, `A.`, `IV`, `Appendix B`, and all-caps section words as depth), `use_style` (cluster measured sizes for what numbering did not decide, and elect a title by size), `max_level` (1..6), and `style_size_tolerance` (a heading founds the next depth below `1 - tolerance` of the current depth's founding size; 0.15 is the historical 85% rule). Contradictory switches (`do_pdf_heading_hierarchy` against `pdf_heading_hierarchy_options.enabled`) are rejected by name, as is any populated option the service does not implement.
 
-A CV conversion reports its read quality on `ConvertDocumentResponse.confidence` (and `DocumentComplete.confidence` on the live stream) as the reference's `ConfidenceReport`: per axis, `ocr_score` is the mean recognizer line score over recognized lines, `layout_score` the mean layout-region score, `table_score` the mean table-structure score, and `parse_score` the consensus vote's winner score, each absent when nothing measured it; `mean_score` averages the per-page means and `low_score` the per-page minima, and both are bucketed into `QualityGrade` (`POOR < 0.5 <= FAIR < 0.8 <= GOOD < 0.9 <= EXCELLENT`). Collector failures on `errors[]` and `collector_failures[]` carry a `FailureCategory` derived from the leg's gRPC status (`TIMEOUT` for a deadline, `CAPACITY` for `RESOURCE_EXHAUSTED`, `BACKEND_FAILURE` for a collector that was unavailable or refused the input, `INTERNAL` for the rest; target delivery reports `TARGET_UNAVAILABLE`) beside the message. Each `Chunk` carries `typed_metadata` (`map<string, ScalarValue>`) beside the string `metadata`: `min_confidence` as a double, `text_source`, and the source document's `binary_hash` (uint64) and `mimetype`.
+A CV conversion reports its read quality on `ConvertDocumentResponse.confidence` (and `DocumentComplete.confidence` on the live stream) as the reference's `ConfidenceReport`: per axis, `ocr_score` is the mean recognizer line score over recognized lines, `layout_score` the mean layout-region score, `table_score` the mean table-structure score, and `parse_score` the consensus vote's winner score, each absent when nothing measured it; `mean_score` averages the per-page means and `low_score` the per-page minima, and both are bucketed into `QualityGrade` (`POOR < 0.5 <= FAIR < 0.8 <= GOOD < 0.9 <= EXCELLENT`). Collector failures on `errors[]` and `collector_failures[]` carry a `FailureCategory` derived from the leg's gRPC status (`TIMEOUT` for a deadline, `CAPACITY` for `RESOURCE_EXHAUSTED`, `BACKEND_FAILURE` for a collector that was unavailable or refused the input, `INTERNAL` for the rest; target delivery reports `TARGET_UNAVAILABLE`) beside the message. Each `Chunk` carries its metadata typed, in `typed_metadata` (`map<string, ScalarValue>`): `min_confidence` as a double, `text_source`, and the source document's `binary_hash` (uint64) and `mimetype`; `Chunk.text_source` names the same source as the `ChunkTextSource` enum (`DIGITAL`, `OCR`, `MIXED`). The stringified `Chunk.metadata` map is deprecated and no longer written.
 
 Options Docling clients populate that no leg here reads pass only at their Docling defaults, and any other value is rejected by name with `INVALID_ARGUMENT` rather than silently ignored: `ocr_lang` may name only the languages the installed PP-OCRv3 models read (`en`, `english`, `ch`, `chinese`, `zh`); `table_cell_matching = false`; `abort_on_error = true` outside the VLM pipeline (the standard path always degrades to a partial result); `table_structure_preset`, `layout_preset`, and `picture_classification_preset` other than `default` (`ocr_preset` resolves through the OCR preset policy below); a `chunking_preset` other than `default` or `hierarchical` (there is no preset catalog, and every chunking preset falls back to the hierarchical defaults); a non-empty `table_structure_custom_config` or `layout_custom_config`; any `ocr_custom_config` key other than a `lang` naming one of those languages; `vlm_pipeline_model_api` `headers` or `params`, which the VLM convert dial does not forward; and a `picture_description_api.params` name the enrich service has no typed field for. The `picture_description_api` `prompt`, `params`, and `headers` travel to grpc-enrich typed: the prompt as `EnrichOptions.picture_description_prompt`; the params `model`, `max_tokens` (or its alias `max_completion_tokens`, not both), `temperature`, `top_p`, and `seed` as `VlmGenerationParams`, each checked for its type and range; and each header as a `VlmHeader`, sent only to the request's own endpoint. A header name HTTP does not allow, one the HTTP client sets itself (`Host`, `Content-Type`, `Content-Length`, `Expect`, the hop-by-hop names), two names differing only in case, or a value holding a control character is `INVALID_ARGUMENT` naming the header; header values are never logged or put in an error. grpc-enrich sends the headers to every per-request endpoint of the job, so headers beside a chart-extraction preset that names a different endpoint, with the chart leg on, are `INVALID_ARGUMENT` naming the preset rather than sent there. `table_mode` and `pdf_backend` are accepted at every value: one table model and the deployment's own PDF backend serve them all. `document_timeout` (seconds) caps every leg of the parse, the in-process CV pipeline included, which cancels its remaining pages and fails with `DEADLINE_EXCEEDED` once it passes. A `FileSource` without a filename is named `document`, with no extension, so its bytes rather than an assumed `.pdf` decide its type and route; likewise a PDF is recognized by a `%PDF-` header in its first kilobyte before its name is consulted.
 
@@ -149,13 +149,19 @@ preview, waiting for assembly, and being delivered to the stream, with the
 page's OCR line, region, table and figure counts. A page that is slow names
 its stage, and the counts say whether the page is simply denser.
 
-`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. It deliberately leaves asynchronous jobs and remote sources unimplemented: `ConvertSourceAsync`, the chunk `*Async` RPCs, `PollTaskStatus`, `GetConvertResult`, `GetChunkResult`, `ClearConverters`, `ClearResults`, `ConvertSourceStream`, and the `Watch*` RPCs all return `UNIMPLEMENTED`.
+`ConvertSource` returns the contract's `ConvertDocumentResponse`, populated with a native `Document`. Each OCR line becomes a `TextItem`, with its page and bounding box in `provenance`; pages, `TableItem`/`PictureItem` entries from layout, and the `#/body` reference graph are also populated. `ConvertSourceStream` runs the same conversion and answers with it as a stream of one message, written when the conversion is done; it is kept for existing clients, and `StreamDocument` (below) is the envelope feed.
+
+### Async tasks
+
+`ConvertSourceAsync`, `ChunkHierarchicalSourceAsync` and `ChunkHybridSourceAsync` check the request the way their synchronous RPC does before it parses, register a task, queue the same work on the unary executor, and answer at once with the task's `TaskStatusPollResponse` (`TASK_STATUS_PENDING`, its `task_id`, `task_kind`, and `task_position`, the number of pending tasks ahead of it). The work moves the task to `STARTED`, then to `SUCCESS` with the result stored or `FAILURE` with `error_message` and a classified `failure`. `PollTaskStatus` returns the current status; with `wait_time` it answers as soon as the task finishes or when that many seconds pass, without holding a thread. `GetConvertResult` and `GetChunkResult` return the stored result as many times as asked: `FAILED_PRECONDITION` while the task runs, the task's own failure status when it failed, `INVALID_ARGUMENT` for a task of the other kind, and the `GRPARSE_MAX_RESPONSE_BYTES` cap as on the unary RPCs. `WatchConvertSource`, `WatchChunkHierarchicalSource` and `WatchChunkHybridSource` submit the same task and stream every status it takes, from the pending one to the terminal one, each once and in order, then close OK; the result is read with the `task_id` every message carries. `ClearResults` drops the finished tasks older than `older_than` seconds (3600 when unset, every finished task at 0); `ClearConverters` is acknowledged, since this server keeps no per-task converters.
+
+Tasks live in memory only, in keeping with the diskless rule: ids are per process, and a poll after a restart answers `NOT_FOUND`, as does an unknown, expired or cleared id. The registry holds at most `GRPARSE_MAX_TASKS` tasks (default 256, 1 to 65536; finished ones included until they go) and a submission past it is refused with `RESOURCE_EXHAUSTED` naming the variable; a finished task is kept for `GRPARSE_TASK_RESULT_TTL_SECONDS` (default 3600, 1 to 604800), then expires; at most `GRPARSE_MAX_WATCHERS` (default 256, 1 to 65536) watch streams and waiting polls run at once. A stored result is charged to `GRPARSE_MAX_INFLIGHT_BYTES` for its serialized size until it expires or is cleared, and a result the budget has no room for fails its task with `RESOURCE_EXHAUSTED`. The request is charged while its task is queued or running, as on the unary RPCs. A task's document passwords come from the submitting call's metadata, read at submission. No RPC cancels a task; on shutdown, queued and running tasks are cancelled before the executor drains.
 
 Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). The export responses carry no warning channel, so a truncated export is reported only by one line on the server's stderr per document.
 
 ### Chunking
 
-`ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants stay unimplemented.
+`ChunkHierarchicalSource` and `ChunkHybridSource` parse the source exactly the way `ConvertSource` does and chunk the document that comes out of it. Their asynchronous and watch variants run the same work as tasks (see "Async tasks" above).
 
 `StreamChunks` takes either chunk request (`hierarchical` or `hybrid`) and returns the same chunks as a server stream: one `chunk` message per chunk in `chunk_index` order, then one `summary` with the chunk count, `documents`, `chunking_info` and `processing_time`. The parse and any embedding finish before the first message, so the stream saves the consumer from holding the whole chunk list in one response, not from waiting for the parse. Each chunk message is one chunk; with `include_converted_doc` the summary carries the whole `Document`, which can be as large as a unary response and can still exceed a client's default 4 MiB receive limit. Any failure, including a missing chunker, closes the stream with its status before a single message is sent.
 
@@ -175,14 +181,14 @@ A chunk reports `start_offset` and `end_offset` as UTF-8 code point positions in
 
 Every `Document` that `ConvertSource` and the chunk RPCs return names the parse that produced it in `parse`, the VLM pipeline included; the `StreamProcessDocument` stream does not stamp one. `producer` is the service version `GetServiceInfo` reports (`grparse-<version>-<flavor>`). `build` is a SHA-256 of the source tree taken when CMake configures, so an unbumped version still tells builds apart. `settings_digest` is a SHA-256 of the server environment that changes output: the configured collector targets, the CV model and OCR tuning variables, the image policy and `GRPARSE_REPAIR`, plus the SHA-256 of the models directory's `MANIFEST`, so swapping the models image changes it. It names those settings, not the builds of the remote collectors behind them. `options_digest` is a SHA-256 of the request's conversion options with the output-neutral fields removed first (output formats, export styling, timeouts, API headers, structure validation, chunking) along with unknown fields. An option set explicitly to the value the server would use anyway still digests apart from unset, which can only cause an unneeded re-embed, never a stale hit. Each chunk repeats the `producer` and carries a `chunk_key`: a SHA-256 over the length-prefixed source `binary_hash`, every `parse` field, the `rules_digest` and the `chunk_index`. Equal keys mean byte-identical chunk text. A vector or annotation stored under a key that a fresh chunking no longer produces is stale. Item `self_ref`s are positions (`#/texts/12`) and can shift between builds, so store derived data against `chunk_key`, not `self_ref` alone.
 
-A chunk's `metadata` and `typed_metadata` carry `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
+A chunk's `typed_metadata` carries `language` when every text item in it has the same one: the item's own `meta.language`, else the document's `source_meta.language`, as a BCP 47 tag in canonical case (`zh-Hant-TW`). The key is absent when the items disagree, when one has no language, or when a tag is malformed. A chunk with no text item, such as a lone table, takes the document's language. It reports what the document's fields hold, which is a source's declaration (an Office run, an HTML `lang`, a PDF's catalog `/Lang`) or a collector's detection (grpc-asr). gRParse runs no language detection itself.
 
 #### Optional local embeddings
 
 The two synchronous chunk RPCs accept `embedding_options.enabled=true` to attach
 `Chunk.embedding` after chunking. Without that opt-in, chunk output and model
-usage are unchanged. Async/watch chunk RPCs remain `UNIMPLEMENTED`, including
-requests with embedding options. Embeddings live in `parse_types.proto`; the
+usage are unchanged. `StreamChunks` and the async and watch chunk tasks accept
+the same options. Embeddings live in `parse_types.proto`; the
 fleet's `document.proto` is unchanged.
 
 The supported model is `sentence-transformers/all-MiniLM-L6-v2`, FP32 revision
@@ -231,7 +237,7 @@ excludes special tokens. It is guidance rather than an acceptance guarantee:
 unsplittable content or an oversized heading trail can still exceed the model
 limit, which the embedding tokenizer checks independently.
 
-The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The optional layout, table, and figure models are the one exception: a provider that will not build one of those graphs costs that model its acceleration, not the whole server, and the session is rebuilt on CPU with the provider's own error logged. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
+The `Health` RPC reports readiness. The server intentionally fails at startup if a required model is absent or the OCR sessions cannot initialize on the configured provider, instead of silently running CPU OCR. The same holds for the layout, table, and figure models: placement is strict, so a provider that will not build one of those graphs, or fails its first inference, stops startup with the provider's own error and a count in `grparse_ort_ep_fallbacks_total`; no model is ever rebuilt on CPU. On OpenVINO every session also sets ONNX Runtime's `session.disable_cpu_ep_fallback`, so a node the GPU plugin does not claim fails the build instead of running on CPU. The startup log prints one `gRParse model placement:` line per model, and `grparse_ort_sessions{model,requested,actual,device,pin}` exports the same. The `GetServiceInfo` RPC reports the service name, build version, and the shared-shell UI advertisement (`UiInfo`: tab title, mount path, tooltip).
 
 To stream a PDF with the supplied client, start the service and run:
 
@@ -282,7 +288,7 @@ layer where it is good.
 
 ### OCR presets
 
-`ocr_preset` resolves through a server-side registry with docling-serve's semantics (docling-jobkit's OCR registry, and docling-serve #723 for custom presets). `default` (also an unset or empty `ocr_preset`) is always present and resolves to `GRPARSE_DEFAULT_OCR_PRESET`, a built-in kind (`auto` unless set). The built-in kinds are the ones this server runs, `auto` and `rapidocr` (both RapidOCR with the installed PP-OCRv3 models); `GRPARSE_ALLOWED_OCR_PRESETS` (a JSON array or comma-separated list) narrows them, and names outside them drop out as upstream. `GRPARSE_CUSTOM_OCR_PRESETS` is an `OcrPresetRegistry` in protobuf text format, for example `presets { key: "chinese_doc" value { kind: OCR_ENGINE_KIND_RAPIDOCR lang: "ch" lang: "en" } }`; custom presets stay selectable whatever the allow list says. Each `OcrPresetSpec` must name an `OcrEngineKind`, and every `lang` must be one the installed models read (`en`, `english`, `ch`, `chinese`, `zh`); an unknown field (an engine option this server does not honour), a wrong type, a padded id or an unreadable language stops startup. A preset is a name and policy gate: it decides which ids a request may name and which kinds they map to, and selects no model. Both kinds run the one installed PP-OCRv3 set, which reads Chinese and English whatever a preset's `lang` or a request's `ocr_lang` names, so a preset's `lang` is checked at startup and has no further effect. `GRPARSE_ALLOWED_OCR_KINDS` limits the kinds a resolved preset may use, with `GRPARSE_DEFAULT_OCR_KIND` (default `auto`, and like `GRPARSE_DEFAULT_OCR_PRESET` it must be a kind this server runs, checked at startup) always allowed. A name outside the registry, or a kind the allow list excludes, is `INVALID_ARGUMENT` with an `OptionRejection` on `ocr_preset` and `OPTION_REJECTION_REASON_NOT_ALLOWED` (message `ocr_preset '<name>' is not allowed. Allowed values: [...]`, as docling-serve words it); a custom preset of a kind this server cannot run (`easyocr`, `tesserocr`, `tesseract`, `ocrmac`) is `OPTION_REJECTION_REASON_NOT_IMPLEMENTED`. `scripts/test/ocr-presets-e2e-test.sh <image> <models-dir>` proves it against the server image.
+`ocr_preset` resolves through a server-side registry with docling-serve's semantics (docling-jobkit's OCR registry, and docling-serve #723 for custom presets). `default` (also an unset or empty `ocr_preset`) is always present and resolves to `GRPARSE_DEFAULT_OCR_PRESET`, a built-in kind (`auto` unless set). The built-in kinds are the ones this server runs, `auto` and `rapidocr` (both RapidOCR with the installed PP-OCRv3 models); `GRPARSE_ALLOWED_OCR_PRESETS` narrows them, and names outside them drop out as upstream. `GRPARSE_CUSTOM_OCR_PRESETS` is an `OcrPresetRegistry` in protobuf text format, for example `presets { key: "chinese_doc" value { kind: OCR_ENGINE_KIND_RAPIDOCR lang: "ch" lang: "en" } }`; custom presets stay selectable whatever the allow list says. Each `OcrPresetSpec` must name an `OcrEngineKind`, and every `lang` must be one the installed models read (`en`, `english`, `ch`, `chinese`, `zh`); an unknown field (an engine option this server does not honour), a wrong type, a padded id or an unreadable language stops startup. A preset is a name and policy gate: it decides which ids a request may name and which kinds they map to, and selects no model. Both kinds run the one installed PP-OCRv3 set, which reads Chinese and English whatever a preset's `lang` or a request's `ocr_lang` names, so a preset's `lang` is checked at startup and has no further effect. `GRPARSE_ALLOWED_OCR_KINDS` limits the kinds a resolved preset may use, with `GRPARSE_DEFAULT_OCR_KIND` (default `auto`, and like `GRPARSE_DEFAULT_OCR_PRESET` it must be a kind this server runs, checked at startup) always allowed. Both list settings, `GRPARSE_ALLOWED_OCR_PRESETS` and `GRPARSE_ALLOWED_OCR_KINDS`, take a comma-separated list such as `rapidocr,auto`, or a `ServerSettingNameList` (parse_types.proto) in protobuf text format such as `names: "rapidocr" names: "auto"`; a value that starts with `[` (a JSON array) stops startup with a message showing the comma form. A name outside the registry, or a kind the allow list excludes, is `INVALID_ARGUMENT` with an `OptionRejection` on `ocr_preset` and `OPTION_REJECTION_REASON_NOT_ALLOWED` (message `ocr_preset '<name>' is not allowed. Allowed values: [...]`, as docling-serve words it); a custom preset of a kind this server cannot run (`easyocr`, `tesserocr`, `tesseract`, `ocrmac`) is `OPTION_REJECTION_REASON_NOT_IMPLEMENTED`. `scripts/test/ocr-presets-e2e-test.sh <image> <models-dir>` proves it against the server image.
 
 ### Result targets
 
@@ -395,15 +401,31 @@ privilege escalation disabled.
 `ai.pipestream.parse.v1.ParseStreamingService/StreamProcessDocument` accepts a
 stream of `DocumentChunk` messages. Send the same `document_id`, filename, and
 content type with the chunks, then set `complete = true` on the last one. The
-server accepts any format the collector routing does (below), up to 500 MiB;
-the same service's `StreamDocument` RPC is not implemented and returns
-`UNIMPLEMENTED`, whatever `parse_stream.proto` says of it. `collectors`
+server accepts any format the collector routing does (below), up to 500 MiB.
+`collectors`
 values validate like the unary options: an unknown value fails the stream
 with `INVALID_ARGUMENT` naming it. The chunk fields
 `do_ocr`, `force_ocr`, and `render_scale` carry the same recognition mode and
 rasterization scale as the unary options, each resolved from the first chunk
 that sets it (the same doctrine as `collectors`); an invalid value fails the
 stream with `INVALID_ARGUMENT` naming the offender.
+
+A client that knows the upload's size sets `total_bytes` on the first chunk
+(at the latest on a chunk before any data; later chunks may repeat it
+unchanged). The server then reserves the buffer once, checks the size
+against the 500 MiB limit and the `GRPARSE_MAX_INFLIGHT_BYTES` budget before
+it accepts any data (both refusals are `RESOURCE_EXHAUSTED`, the same
+statuses the per-chunk checks return), and charges the budget once instead
+of chunk by chunk. The chunks' data must then add up to exactly
+`total_bytes`: more, or a complete chunk short of it, fails the stream with
+`INVALID_ARGUMENT` naming `total_bytes`, and so does zero. Without it the
+checks run per chunk as before. `grparse-stream-client` sets it from the
+file's size. Either way the server hashes each chunk as it arrives (the
+origin's `binary_hash`, and for a PDF the SHA-256 its backend handshake
+addresses the document by), so neither costs another pass over the upload
+once it ends. A PDF routed through the pdf inspector whose info event
+recommends OCR for the whole document starts the CV run at that event,
+while the inspector's stream still drains, instead of after its trailer.
 
 The CV pipeline emits one `DocumentStreamEvent.page` per page in page-number
 order. Each other collector's finished document arrives as page events
@@ -430,6 +452,17 @@ pages, what the unary path returns); `DocumentRepairDelta` in
 pages can set `slim_collector_documents` on the first chunk, and each
 collector document whose pages streamed then omits the arenas, page map
 and children the pages already carried.
+
+To compute the repair event the server folds every page it streams, a
+second copy of the document's items held until the stream ends. A client
+that does not fold pages (one that indexes them as they arrive and reads
+the collector document for the tree) sets `repair_delta = false` on the
+first chunk: the server then keeps no fold, sends no repair event, and
+sets `repair_delta_omitted` on the complete event. The page events,
+collector documents and `section_header_levels` are unchanged, so pages
+that streamed before the whole-document passes stay unrepaired; combined
+with `slim_collector_documents`, nothing on the stream carries the
+repaired items. Unset or `true` keeps the repair event.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
@@ -460,11 +493,14 @@ every core per session and a pool of those is oversubscribed by exactly the
 worker count - on a small machine that costs more than the extra worker earns.
 The shared layout session is exempt and takes all cores, since there is only
 one of it. Select the NVIDIA device with
-`GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks the ONNX Runtime execution
-provider: `cuda` (default, fails startup if CUDA cannot initialize),
-`openvino` (Intel GPU/CPU/NPU through the OpenVINO build — see below), `cpu`
-(explicit CPU inference), or `auto` (prefers CUDA, then OpenVINO, then CPU,
-logging each fallback). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+`GRPARSE_CUDA_DEVICE`. `GRPARSE_ORT_EP` picks where the image models run:
+`cuda` (default, fails startup if CUDA cannot initialize; in the CUDA image
+this is native TensorRT, not an ONNX Runtime provider, see "NVIDIA GPUs
+(TensorRT)" below), `openvino` (Intel GPU/CPU/NPU through the OpenVINO
+build, see below), `cpu` (explicit CPU inference on ONNX Runtime), or `auto`
+(a CUDA device when one is present, then OpenVINO, then CPU, logging each
+step; with a CUDA device present the models build on it or startup fails,
+exactly as under `cuda`). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
 GPU plugin compiles kernels for every new input shape).
@@ -474,7 +510,12 @@ offer fails with the list that is actually available. An OCR session that
 throws during inference is destroyed and rebuilt on next use instead of
 staying in the pool poisoned. Optional RapidOCR detect knobs:
 `GRPARSE_OCR_PADDING`, `GRPARSE_OCR_MAX_SIDE`, `GRPARSE_OCR_BOX_SCORE`,
-`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`. These are read and range-checked
+`GRPARSE_OCR_BOX_THRESH`, `GRPARSE_OCR_UNCLIP`, and the low-score rescue
+`GRPARSE_OCR_RESCUE_BOX_SCORE` (default 0.5) with `GRPARSE_OCR_RESCUE_CONFIDENCE`
+(default 0.9): a box scoring under `GRPARSE_OCR_BOX_SCORE` (0.6) but at least the
+rescue score is kept when its mean character score reaches the rescue confidence,
+which brings back underlined lines without the noise a lower box score lets in.
+These are read and range-checked
 once at startup: a malformed or out-of-range value fails the server immediately
 rather than being silently ignored per page. gRPC memory, thread,
 and stream limits use `GRPARSE_GRPC_MEMORY_MIB`, `GRPARSE_GRPC_MAX_THREADS`,
@@ -483,7 +524,8 @@ not the documents behind them, so `GRPARSE_MAX_INFLIGHT_BYTES` (default 4 GiB,
 printed at startup) caps the document bytes every parse holds at once across
 the process: a unary call is charged on admission for its request message
 plus the copy its base64 source decodes to (the chunk RPCs also for the
-sources they copy into the parse), a stream each chunk as it arrives, and a
+sources they copy into the parse), a stream each chunk as it arrives (or
+its declared `total_bytes` once, up front), and a
 call that would pass the cap is refused with `RESOURCE_EXHAUSTED`. A remote
 source (S3, HTTP, Azure Blob, Cloud Storage, Drive, a plugin) is a small
 request whose document is only known once fetched, so the parse charges the
@@ -525,6 +567,21 @@ waiting for a free worker; past it a conversion is refused with
 `RESOURCE_EXHAUSTED` rather than queued behind its own deadline. A worker
 spends nearly all its life waiting on the page scheduler or on a collector, so
 both numbers bound concurrent conversions rather than CPU use.
+
+`StreamProcessDocument` has bounds of its own. `GRPARSE_MAX_ACTIVE_STREAMS`
+(default 64, 1 to 4096) caps the streams open at once across the whole
+server, where `GRPARSE_MAX_CONCURRENT_STREAMS` is a per-connection HTTP/2
+setting; one more stream finishes `RESOURCE_EXHAUSTED` naming the variable
+before it reads a chunk. Each admitted stream's plan and every collector leg
+it starts run on a pool sized by `GRPARSE_STREAM_WORKERS` (default 64) with
+`GRPARSE_STREAM_QUEUE` (default 256) waiting tasks, instead of a thread of
+their own; a leg the full queue refuses fails that collector with a capacity
+failure on the complete event while the other collectors' output still
+arrives. Size the pool at or above the stream cap times the usual leg count
+(two for a workbook with its calamine leg), or streams queue behind each
+other's legs. A stream that ends early (a client cancel, a client that
+stopped reading, a failed finish) cancels every outbound call its legs have
+open at that moment, rather than each leg noticing on its own poll.
 
 When the layout model is present (see
 [models/README.md](models/README.md)), every page also runs layout detection
@@ -591,11 +648,13 @@ Barcode and QR payloads decode without any model: ZXing is compiled in.
 By default (`GRPARSE_BARCODES=auto`) a picture crop is decoded when the
 classifier's top class is `bar_code` or `qr_code`; `on` decodes every picture
 crop (needs only layout, no classifier); `off` disables it. Each decoded
-payload rides on the `PictureItem` as a `misc` annotation with
-`kind: "barcode"` and a struct holding `format` (the ZXing symbology name,
-for example `QRCode` or `Code128`), `value`, and `provenance`. Decoding is
-pure CPU inside the inference stage, after the device calls and before the
-raster is released.
+payload rides on the `PictureItem` as one typed `barcode` annotation
+(`BarcodeAnnotation`) holding `format` (the ZXing symbology name, for
+example `QRCode` or `Code128`), `value`, and `provenance`; the legacy
+`misc` annotation with a `kind: "barcode"` struct is no longer written. The
+canonical JSON export projects the typed arm into `pipestream__barcodes`.
+Decoding is pure CPU inside the inference stage, after the device calls and
+before the raster is released.
 
 With `GRPARSE_PICTURE_IMAGES=on` (default off) each picture region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and
@@ -615,6 +674,31 @@ preview's pixel size rides its `ImageRef`; the page size stays in the
 page's own coordinate space (PDF points for digital pages), same aspect
 ratio.
 
+### Source streams (`StreamDocument`)
+
+`ParseStreamingService/StreamDocument` is the source-based entry to the same
+service: it takes a `ConvertDocumentRequest` (inline, HTTP or storage
+sources, the unary options) and answers with a server stream of
+`StreamDocumentResponse` envelopes. Each source is fetched and parsed
+exactly as `ConvertSource` parses it (the same remote fetch slots,
+in-flight budget, collectors, merge and repair), one source after another
+on a pool sized like the unary one (`GRPARSE_UNARY_WORKERS`,
+`GRPARSE_UNARY_QUEUE`). The stream is `status` `PHASE_QUEUED`, then
+`PHASE_STARTED`; per source in request order a `PHASE_PROCESSING` status,
+then either the merged `final_document` and a successful `source_result`,
+or an `error` (typed `code` and `failure`) and a failed `source_result`,
+after which the next source runs; and last `PHASE_COMPLETED` when any
+source converted, else `PHASE_FAILED`. The call then finishes OK. Every
+envelope echoes `request_id` and carries `sequence_number`, counting from 1
+with no gaps, and `timestamp_ms`; source-scoped envelopes set
+`source_index`. The `part` arm is not sent: what streams is each source's
+result, not its pages (`StreamProcessDocument` streams pages). A request
+with no source, a `target` to deliver to, invalid options, or no room in
+the budget or the pool is refused with its status and no envelope; a
+client that cancels or stops reading ends the call `CANCELLED`. The server
+writes one source's envelopes before it parses the next, so a slow reader
+holds at most one finished `Document`.
+
 ## Collector scatter-gather
 
 gRParse is the coordinator of a set of parser collectors. Two of them parse
@@ -627,14 +711,14 @@ unconfigured otherwise:
 | Collector | Target env | Routed by default for |
 |---|---|---|
 | `COLLECTOR_LIBREOFFICE` | `GRPARSE_LIBREOFFICE_TARGET` | office formats (doc/x, xls/x, ppt/x, odf, rtf, csv, ...). The only collector for word processing and presentation formats: when its leg fails, the request fails with that leg's status (unary) or ends the stream with it (streaming), the message naming `libreoffice` and the cause. On workbooks libreoffice gives the document its shape (sheet groups, charts, pictures, metadata) and the calamine leg below gives the sheet tables their cells; with libreoffice down, calamine's reading is the whole body |
-| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | the cell reader for workbooks: a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) runs a calamine leg beside libreoffice when configured, and calamine's cells replace libreoffice's in every sheet table (`src/workbook_cells.cpp`). The wire is handle-based (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`); each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, with the merged areas the range header lists (XLS, XLSX) spanned and the header band marked, and the handle closes on every path |
+| `COLLECTOR_CALAMINE` | `GRPARSE_CALAMINE_TARGET` | the cell reader for workbooks: a routed workbook plan (xls/xlsx/xlsm/xlsb/ods, never CSV) runs a calamine leg beside libreoffice when configured, and calamine's cells replace libreoffice's in every sheet table (`src/workbook_cells.cpp`). One bidirectional `ParseWorkbook` stream uploads the bytes and streams every sheet back with no handle left on the server; each sheet folds client-side into a sheet group holding one `TableItem` in absolute cell offsets, with the merged areas the range header lists (XLS, XLSX) spanned and the header band marked. A server that answers `UNIMPLEMENTED` gets the older handle path (`OpenWorkbook`/`StreamWorksheetRange`/`CloseWorkbook`, the handle closed on every path), recorded as `CollectorProtocol::kLegacyFallback` on the outcome and as a warning |
 | `COLLECTOR_ASR` | `GRPARSE_ASR_TARGET` (+ optional `GRPARSE_ASR_MODEL` fallback) | audio and video; a request-level ASR model or preset takes precedence over the deployment fallback. Unsupported selectors return an explicit error from grpc-asr |
 | `COLLECTOR_EMAIL` | `GRPARSE_EMAIL_TARGET` (+ `GRPARSE_MARKUP_TARGET` for HTML bodies) | `.eml`, `.msg`, `message/rfc822`. The email fold maps `text/plain` bodies only; for a message with no plain body gRParse dials the markup collector with each HTML body part and folds its items into the message body ahead of the attachment list. Without a markup target such a message has no body text and a warning names the variable. Attachments are listed by name; their content is not parsed |
 | `COLLECTOR_XML` | `GRPARSE_XML_TARGET` | `.xml`, `.nxml`, `.xbrl`, `application/xml`, `text/xml` (never the `+xml` suffix family), plus the archive forms `.dclx` and `.tar.gz` (METS/GBS) |
-| `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout` (the collector's typed `ai.pipestream.ebcdic.v1.EbcdicLayout`) only. The deprecated `ebcdic_layout_json` still works alone; setting both is `INVALID_ARGUMENT` |
+| `COLLECTOR_EBCDIC` | `GRPARSE_EBCDIC_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.ebcdic_layout` (the collector's typed `ai.pipestream.ebcdic.v1.EbcdicLayout`) only. The retired JSON spelling (tag 45, once `ebcdic_layout_json`) is reserved; a request that still sends it is `INVALID_ARGUMENT` naming `ebcdic_layout` |
 | `COLLECTOR_EPUB` | `GRPARSE_EPUB_TARGET` (+ `GRPARSE_MARKUP_TARGET` for the chapters) | `.epub`. The epub collector returns the book's skeleton by contract (metadata, outline, one empty chapter group per spine item, pictures by `epub:<href>` reference); gRParse keeps the chapter XHTML and image bytes its stream carries, dials the markup collector once per XHTML chapter, plugs each chapter's items under its group in spine order, and inlines the images as `data:` URIs (manifest media type wins; above 16 MiB an image keeps its reference). Without a markup target the skeleton is the result and a warning names the variable |
 | `COLLECTOR_MARKUP` | `GRPARSE_MARKUP_TARGET` | text markup: `.md`, `.html`/`.htm`/`.xhtml`, `.adoc`, `.tex`, `.vtt`, `.boxnote`, and `.json` (Docling JSON re-ingest); the dial carries a format hint from the filename, and the collector sniffs when none resolves |
-| `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options` (the collector's typed `lolhtml.v1.ExtractOptions`) only. The deprecated `lol_html_options_json` (the protobuf JSON of that message) still works alone; setting both, or JSON that does not parse, is `INVALID_ARGUMENT`. Targeted CSS-selector extraction from HTML: identified matches fold into a group per element instance under each rule, with nested groups, visible text, typed source attributes and links over that text. Start/end tag transcripts stay as code in furniture. Raw text chunks coalesce per instance before entity decoding (16 MiB text budget; truncation is warned). Older servers without match ordinals retain the legacy transcript shape. HTML with no selection routes to `COLLECTOR_MARKUP` |
+| `COLLECTOR_LOL_HTML` | `GRPARSE_LOL_HTML_TARGET` | never routed; explicit selection with `ConvertDocumentOptions.lol_html_options` (the collector's typed `lolhtml.v1.ExtractOptions`) only. The retired JSON spelling (tag 46, once `lol_html_options_json`) is reserved; a request that still sends it is `INVALID_ARGUMENT` naming `lol_html_options`. Targeted CSS-selector extraction from HTML: identified matches fold into a group per element instance under each rule, with nested groups, visible text, typed source attributes and links over that text. Start/end tag transcripts stay as code in furniture. Raw text chunks coalesce per instance before entity decoding (16 MiB text budget; truncation is warned). Older servers without match ordinals retain the legacy transcript shape. HTML with no selection routes to `COLLECTOR_MARKUP` |
 | `COLLECTOR_FASTWARC` | `GRPARSE_FASTWARC_TARGET` | `.warc`, `.warc.gz`, `.warc.zst`, `.warc.lz4`, `application/warc`. WARC archive parsing via fastwarc-grpc: records fold client-side into a group per record (metadata plus the payload when it reads as text, capped at 64 KiB); recoverable record errors become warnings and a framing error keeps the records already parsed |
 | `COLLECTOR_PDF` | `GRPARSE_PDF_TARGET` | PDF, when configured (the CV path stays the default otherwise). The routing oracle for PDF: its classification decides the parse, see below |
 | `COLLECTOR_CONFLUENCE` | none: in process | `application/vnd.atlassian.confluence.storage+xhtml`, `.confluence`, `.storage.xhtml`. The wiki storage dialect (XHTML plus the `ac:`/`ri:` macro layer), parsed here rather than dialed: headings, inline formatting and links, lists, tables with their spans, code and task macros, panels, and attachment pointers. A bare `.xhtml` stays with `COLLECTOR_MARKUP` |
@@ -658,6 +742,75 @@ option), so gRParse asks for the Document event, drains the typed events,
 and merges what the collector itself attributed. The vendored wire
 contracts live in `collectors/` (see its README); each collector repo owns
 its contract.
+
+Each remote collector is dialed over a pool of `GRPARSE_COLLECTOR_CHANNELS`
+channels (default `2`, 1 to 64; anything else stops startup naming the
+variable), each its own HTTP/2 connection, handed out round-robin per leg.
+One connection carries at most the peer's `SETTINGS_MAX_CONCURRENT_STREAMS`
+calls at once (grpc-java's Netty default is 100, so grpc-email and
+grpc-enrich cap there) and queues the rest inside the client, where no
+admission gauge sees them; two connections let 150 concurrent legs to such a
+peer all start. The pool's channels differ in one channel argument
+(`grparse.channel_index`) so grpc-core gives each its own subchannel instead
+of sharing one connection. The startup log prints the pool size and the
+keepalive in one line (`gRParse collector channels: ...`). The enrich and
+vlm-convert and lighton legs keep one channel each; they are peers, not
+collectors.
+
+Every collector, enrich, vlm-convert and PDF backend channel carries
+keepalive: while a call is open, a connection that has read nothing for
+`GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS` (default `330000`, 10000 to 7200000)
+sends a ping, and a ping unanswered for
+`GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS` (default `20000`, 1000 to 600000)
+closes the connection and fails its calls `UNAVAILABLE`. A value outside
+its range, or not a plain integer of milliseconds, stops startup naming the
+variable; the startup line `gRParse collector channels: ...` shows both. A
+collector container that compose restarted, or an idle NAT or Tailscale
+path that dropped the connection without a reset, therefore ends the leg
+within the time plus the timeout instead of at its deadline. Idle
+connections are not pinged, pings between data frames are not capped, and
+grpc-core's own retries are off (a leg's retry is the coordinator's
+policy).
+
+The default is 330 s because every server in the fleet runs a default ping
+policy that punishes anything faster. A grpc-core server (the C++
+collectors, such as pdfium and poppler) accepts a ping on a call it writes
+nothing on at most every 5 minutes
+(`GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS`) and allows two
+strikes, which reset only when the server writes data; grpc-java (email,
+enrich) does the same with `permitKeepAliveTime` of 5 minutes. Pinging every
+30 s would draw GOAWAY `ENHANCE_YOUR_CALM` (`too_many_pings`) about 90 s
+into a quiet call and kill a long libreoffice, asr or VLM leg. 330 s stays
+above the 5 minutes with margin. A 30 s keepalive becomes safe once every
+collector permits pings every 20 s (grpc-core
+`GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS=20000`, grpc-java
+`permitKeepAliveTime(20, SECONDS)`), as gRParse's own port already does.
+
+grpc-core's internal ping timeout (`grpc.http2.ping_timeout_ms`) is set to
+the keepalive timeout on every channel and on the server. In grpc 1.84 the
+keepalive watchdog arms only when one is already armed
+(`grpc_chttp2_end_write` in `writing.cc`), so a connection's first
+unanswered keepalive ping is caught by the ping timeout alone, whose
+default is one minute; without the setting a dead peer would be detected a
+minute after the ping instead of after the keepalive timeout.
+
+The server's own port pings an idle client after 30 s (10 s timeout) and
+accepts client pings as often as every 20 s, with or without calls open.
+
+The `PROCESSING_PIPELINE_VLM` body comes from one of two peers. A request
+whose selection resolves to the LightOnOCR model (`VLM_MODEL_TYPE_LIGHTONOCR`)
+goes to grpc-lighton-ocr when `GRPARSE_LIGHTON_TARGET` names it
+(`GRPARSE_LIGHTON_TIMEOUT_MS`, default `300000`, caps the leg;
+`GRPARSE_LIGHTON_MODEL`, `0.8b` or `4b`, names the checkpoint the service
+serves). Pages render here and go up one at a time on the bidirectional
+`ParseDocument` stream while the page documents come back; they merge in
+page order under the claimant `lighton-ocr`, a page failure is a document
+warning (and fails the leg under `abort_on_error`), and the leg's warnings
+name `lighton-ocr` as their source. Once chosen there is no fallback: a peer
+error, a stream with no `ParseComplete` trailer, or no converted page fails
+the request with that status. With the variable unset the model stays on
+grpc-vlm-convert's LightOnOCR preset (`GRPARSE_VLM_CONVERT_TARGET`), like
+every other model.
 
 Two family members are *not* collectors, whatever `compose.stack.yaml` runs
 next to them: grpc-enrich and grpc-vlm-convert are dialed by the demo shell
@@ -852,7 +1005,11 @@ gRParse has no VLM client of its own. The opt-in chart derender leg hands
 that to grpc-enrich, the fleet's VLM face: set `GRPARSE_ENRICH_TARGET`
 (unset means the leg does not exist; `GRPARSE_ENRICH_TIMEOUT_MS`, default
 5000, bounds the whole leg per parse; `GRPARSE_ENRICH_VLM_ENDPOINT`
-optionally overrides the enrich service's VLM per request) and, after the
+optionally overrides the enrich service's VLM per request;
+`GRPARSE_ENRICH_FORMULA_PROMPT` = `auto` (default: grpc-enrich picks the
+`<formula>` token for a CodeFormula model and a LaTeX prompt with the text
+layer as a hint for a general VLM), `codeformula` (Docling's token, for
+like-for-like comparisons), `latex` or `latex_hint`) and, after the
 merge and the repair pass, every picture with a chart verdict, inline pixels
 (`GRPARSE_PICTURE_IMAGES=on` for CV crops) and no typed table yet is sent
 through `EnrichService.EnrichDocument` with `do_chart_extraction`. Each
@@ -889,9 +1046,9 @@ docling-serve 1.35 has:
 | Variable | Default | Meaning |
 |---|---|---|
 | `GRPARSE_DEFAULT_CHART_EXTRACTION_PRESET` | `granite_vision_v4` | The preset an unnamed or `"default"` request gets. A custom preset of the same id wins over the built-in one. |
-| `GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS` | unset (all built-ins) | Built-in presets a request may name, as a JSON array or comma-separated. Custom presets and `default` stay reachable. |
+| `GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS` | unset (all built-ins) | Built-in presets a request may name, comma-separated (`granite_vision_v4`) or as a `ServerSettingNameList` in protobuf text format (`names: "granite_vision_v4"`). A value starting with `[` (a JSON array) stops startup with a message showing the comma form. Custom presets and `default` stay reachable. |
 | `GRPARSE_CUSTOM_CHART_EXTRACTION_PRESETS` | unset | Admin presets as a `ChartExtractionPresetRegistry` (parse_types.proto) in protobuf text format, for example `presets { key: "charts" value { model: "granite-vision-4.1-4b" chart2summary: true chart2code: true } }`. Each value is a typed `ChartExtractionPresetSpec` (`model`, `url`, `engine_type`, `chart2csv`, `chart2summary`, `chart2code`, `use_natural_language_prompts`), every field optional (`chart2csv` defaults to true, `engine_type` is a `VlmEngineType` name such as `VLM_ENGINE_TYPE_API_OLLAMA` and defaults to `VLM_ENGINE_TYPE_API_OPENAI`, an empty `model` leaves the endpoint on its default model, an empty `url` uses `GRPARSE_ENRICH_VLM_ENDPOINT`). Parsed at startup by the protobuf text parser; an unknown field, a wrong type, an unknown or unspecified engine, or a preset with no output stops the process. |
-| `GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES` | unset (all) | Docling engine names (`api_openai`, `api_ollama`, `transformers`, ...) a preset or custom config may use. |
+| `GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES` | unset (all) | Docling engine names (`api_openai`, `api_ollama`, `transformers`, ...) a preset or custom config may use, comma-separated (`api_openai,api_ollama`) or as a `ServerSettingNameList` in protobuf text format (`names: "api_openai" names: "api_ollama"`). A value starting with `[` (a JSON array) stops startup with a message showing the comma form. |
 | `GRPARSE_ALLOW_CUSTOM_CHART_EXTRACTION_CONFIG` | `false` | Whether a request may send `chart_extraction_custom_config`. |
 
 The built-in `granite_vision_v4` preset is Docling's: `chart2csv` only,
@@ -991,6 +1148,97 @@ base (`ubuntu:26.04` by default, `GRPARSE_RUNTIME_IMAGE` to swap it) only
 has to provide glibc 2.43 or newer. See "Runtime image" above for the
 pattern and for why the default is not a hardened image yet.
 
+## NVIDIA GPUs (TensorRT)
+
+The CUDA image (`Dockerfile`, `pipestreamai/grparse:latest`) runs every image
+model on native TensorRT: OCR detection, direction and recognition, the
+layout detector, table structure and the figure classifier
+(`src/tensorrt/`, behind the one model interface in
+`compat/grparse_inference_model.h`). Under `GRPARSE_ORT_EP=cuda` no ONNX
+Runtime session is created for any of them and ONNX Runtime's CUDA provider
+is never loaded. There is no second runtime behind TensorRT: a model that
+does not build as an engine fails startup with the builder's own error
+(`TensorRT (CUDA device 0) refused <model> (...)`), and
+`GRPARSE_ORT_EP=cpu` remains what it was, an explicit choice of ONNX Runtime
+on CPU.
+
+```bash
+docker run --rm --gpus all -v /path/to/models:/models:ro -p 50051:50051 \
+  -v grparse-engines:/var/cache/tensorrt -e GRPARSE_TENSORRT_CACHE_DIR=/var/cache/tensorrt \
+  pipestreamai/grparse:latest
+```
+
+**Engines and startup.** One engine per model file, shared by every worker,
+built at startup from the ONNX file with explicit optimization profiles.
+On an RTX 4080 SUPER the seven engines take about five minutes to build (30
+to 60 s each, 2 s for the table decoder step; the builder times its kernels
+on the card), and the server listens only when they are done. With a cache
+the same start takes about two seconds.
+`GRPARSE_TENSORRT_CACHE_DIR` names a directory to keep built engines in; a
+later start loads them instead (the builder's timing cache is kept there
+too). It is unset by default, so the image runs in a read-only container as
+it is and builds on every start. An engine file is used only for what it was
+built from: its name carries a digest of the model file's SHA-256, the
+TensorRT version, the GPU's name and compute capability, and the build
+recipe (TF32, profiles), so a new model, image or card builds its own and
+ignores the rest. A directory that is named and cannot be written fails
+startup. The image ships `/var/cache/tensorrt` owned by uid 65532, so a
+named volume mounted there is writable on first use (a bind mount needs
+`chown 65532`); `compose.yaml` and `compose.stack.yaml` mount one. Treat the
+directory like the models directory: an engine file is code the server
+loads.
+
+**Precision.** TensorRT 11 networks are strongly typed: an engine computes
+in the types its ONNX file declares, and the builder has no flag that lowers
+them. Every model file is FP32, so every engine is FP32, with TF32 off
+(`GRPARSE_CUDA_TF32=on` allows it). For the layout detector that is the
+requirement: its detections near the threshold move at lower precision.
+For the others half precision would need a converted model file per model,
+and a plain FP16 conversion did not hold up (the OCR detector's map differed
+by up to 1.0, the recognizer and the layout detector did not import, the
+figure classifier's logits moved by 0.04) for a gain of at most 2.4 ms on
+calls that take 1 to 11 ms. Against ONNX Runtime's CPU provider on a real
+page the FP32 engines agree to 2e-4 on the detector map, 6e-6 on the
+recognizer's probabilities, and on every box the layout detector keeps to
+under a hundredth of a pixel (`grparse-tensorrt-check` in the image repeats
+the comparison on any GPU and allows half a pixel).
+
+**Shapes.** The OCR nets take their inputs at their exact sizes, as before.
+The detector has one profile from 32 x 32 to the configured side limit
+squared (2144 at the default `GRPARSE_OCR_MAX_SIDE` and
+`GRPARSE_OCR_PADDING`), tuned for a letter page; the recognizer one for
+batches of up to `GRPARSE_OCR_BATCH` lines up to 2560 wide and one for
+single lines up to 8192 (a wider crop is resized down to that, a crop under
+16 is padded); the direction net, the layout detector, the figure classifier
+and the two table graphs run one fixed shape each. A profile per surveyed
+input size was measured and not kept: it ran no faster and multiplied the
+build time (`src/tensorrt/ocr_profiles.h`).
+
+**Table structure.** TensorRT cannot import `slanet_plus.onnx`: its decoder
+is one ONNX `Loop` whose carried tensors grow each step. The same network
+runs as two static graphs that `scripts/fetch-models.sh` derives from it
+(`scripts/split_slanet.py`: `slanet_plus_encoder.onnx`,
+`slanet_plus_step.onnx`, `slanet_plus.vocab`), the encoder once per table
+crop and the decoder one step per token, driven by the server. With
+`slanet_plus.onnx` present and a derived file missing, startup fails naming
+the file.
+
+**Placement.** `grparse_ort_sessions` (the name predates TensorRT) reports
+each model as `requested="CUDA",actual="TensorRT",device="<index>"`, and
+`grparse_ort_ep_fallbacks_total` counts refusals, each of which failed
+startup or a rebuild. `scripts/test/gpu-placement-cuda-test.sh <image>
+<models-dir>` is the receipt on a host with an NVIDIA GPU (stack suite
+`gpu-placement-cuda`): startup must fail without a GPU, with a device index
+that does not exist, with a model TensorRT cannot import and with an
+unwritable cache directory; with the GPU, a read-only boot without a cache
+and two boots with one must each match
+`tests/data/gpu_placement/cuda.prom`, hold GPU memory, keep ONNX Runtime's
+CUDA provider library out of the process and convert a page, the second
+cached boot building no engine; and `grparse-tensorrt-check` must pass.
+
+A lost device fails the call with `UNAVAILABLE` and the engines do not
+rebuild in place; restart the container.
+
 ## Intel GPUs (OpenVINO)
 
 `Dockerfile.openvino` builds an Intel variant with no CUDA anywhere: ONNX
@@ -1022,15 +1270,17 @@ from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
 layout, and figure classification all compile and run on the GPU plugin.
 One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
-the OpenVINO plugin rejects on every device. That no longer stops the
-server - the table session is rebuilt on CPU with the plugin's own error
-logged, and everything else stays on OpenVINO - so no setting is needed;
-`GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would rather
-not pay for it on CPU at all.
+the OpenVINO plugin rejects on every device. Under OpenVINO the table
+session is therefore pinned to CPU in code (`make_pinned_cpu_session`, with
+its reason), not retried and not counted as a refusal; the pin is visible as
+`pin="..."` on its `grparse_ort_sessions` series and in its startup placement
+line. `GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would
+rather not pay for it on CPU at all.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
-`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `CPU`, `NPU`, or
-an `AUTO:`/`HETERO:` list. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
+`GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `NPU`, `NPU.<n>`
+or `CPU`. Device lists (`AUTO:`, `HETERO:`, `MULTI:`, `BATCH:`) are refused at
+startup, because they let OpenVINO move work to its CPU plugin on its own. `GRPARSE_OPENVINO_CACHE_DIR` points the plugin at a
 writable directory to keep compiled blobs in, which skips the recompile on
 every session create (unset by default: the container runs read-only). Give
 it room: the GPU plugin compiles a kernel set per input size, so OCR crops
@@ -1063,11 +1313,11 @@ OpenVINO provider retry up to three attempts with short jittered backoff,
 one attempt at a time under the process-wide compile gate, and the retries
 stay on the GPU. If the build still fails, the openvino flavor fails loudly:
 the OCR session build throws and takes startup down with a clear error, and
-no OCR model ever silently degrades to CPU. The one sanctioned CPU retreat
-is the pre-decided table-structure case (`slanet_plus.onnx`, rejected by the
-plugin on every device), which is logged in full and counted in
-`grparse_ort_ep_fallbacks_total`; `grparse_ort_ep_build_retries_total`
-counts the retried builds. A rising retry line is the earliest signal that
+no model ever silently degrades to CPU. Each refused build is logged in full
+and counted in `grparse_ort_ep_fallbacks_total` (the name predates strict
+placement; every count is a failed build, not a CPU session), and the only
+CPU session under OpenVINO is the table model's declared pin;
+`grparse_ort_ep_build_retries_total` counts the retried builds. A rising retry line is the earliest signal that
 the host is contended.
 
 The fatal class remains fatal: heap corruption or a `longjmp` across the
@@ -1118,7 +1368,7 @@ tests are in [`e2e/README.md`](e2e/README.md).
 ## Development
 
 The container is the supported build environment. It runs Ubuntu 26.04
-with CUDA 13.4.3, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, OpenCV 5.0.0,
+with CUDA 13.5.0, cuDNN 9, ONNX Runtime GPU 1.30.0 for CUDA 13, OpenCV 5.0.0,
 RapidOcrOnnx 1.2.3 C++ sources, and gRPC 1.84.1. These are the newest applicable
 upstream versions as of 2026-09-16. RapidOCR 3.9.2 is the current Python package
 release; its C++ entry point still directs users to RapidOcrOnnx, whose newest
@@ -1138,7 +1388,19 @@ nothing outside a git checkout; `scripts/build-image.sh` and
 `scripts/stack-e2e.sh` pass it by themselves, and a plain `docker compose
 build` without it leaves the label empty.
 
-CI builds both images (CUDA and OpenVINO) and then boot-proofs each runtime
+On a pull request `cpu-image` is the required gate: it always runs, with the
+models, and its ctest is the same suite the other images run. The `cuda-image`
+and `openvino-image` legs run only when the PR changes what they add, the
+execution-provider code and their image plumbing (`scripts/ci-changes.sh`
+lists the paths; `scripts/test/ci-changes-test.sh` pins them), or when the PR
+carries the `ci:full` label (it takes effect on the next run, so add it before
+the push you want fully built). Manual `workflow_dispatch` runs build all
+three. A push to main builds each image once: on GitHub `publish.yml` is the
+main gate (it builds, tests and smoke-tests every leg before any tag) and
+`ci.yml` runs only its non-image jobs there, while Forgejo, which skips
+`publish.yml`, builds all three in `ci.yml`.
+
+CI builds the images (CUDA, CPU and OpenVINO) and then boot-proofs each runtime
 stage with `scripts/smoke-test.sh`: library closure of the shipped binaries
 (asked of the dynamic loader itself, so no shell is needed in the image), a
 boot-to-main check that needs no GPU and no models, and the image's user
@@ -1151,10 +1413,11 @@ in [docs/RELEASING.md](docs/RELEASING.md). With models present locally (or
 `scripts/smoke-test.sh <image> --full` additionally boots the server on the
 CPU provider and streams a fixture through the bundled client.
 
-Every push and PR also runs a short libFuzzer window over the in-process
-ingest door (OpenCV raster decode; PDFs parse in the backend service) — see
-[fuzz/README.md](fuzz/README.md) for the standalone fuzz project and longer
-campaigns. A weekly `sanitize.yml` workflow (also manually dispatchable)
+Every push and PR also runs a short libFuzzer window over each in-process
+door that reads request bytes (OpenCV raster decode, the compound-file
+walker, the content sniff, the wiki storage parser, the base64 codec; PDFs
+parse in the backend service), and the nightly tier runs them for longer.
+See [fuzz/README.md](fuzz/README.md) for the standalone fuzz project. A weekly `sanitize.yml` workflow (also manually dispatchable)
 builds the whole test battery with `-DGRPARSE_SANITIZE=address,undefined` in
 the image toolchain (the `deps` stage of `Dockerfile.cpu`) under
 `docker run --cap-add SYS_PTRACE`, not inside `docker build`, whose seccomp
@@ -1244,8 +1507,42 @@ and no typed fact degraded into a colon-keyed custom field). Third-party depende
 suites, so the label filter is what keeps `ctest` scoped to this project:
 
 ```bash
-ctest --test-dir /build --output-on-failure -L grparse
+ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j 4
 ```
+
+Every test in the `grparse` suite also carries exactly one tier label
+(`cmake/TestTiers.cmake`; the `ctest-tiers` test fails on a test with none or
+two), and `CMakePresets.json` names the filters (`ctest --preset pr` and so on
+against the `default` configure preset's `build/`):
+
+| Tier | What it needs | Where it runs | Skips to read |
+|---|---|---|---|
+| `unit` | nothing: pure functions on fixtures | every image build, every PR (`pr` preset) | none |
+| `loopback` | an in-process gRPC server, fake backend or loopback HTTP | every image build, every PR | none |
+| `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these four |
+| `embeddings` | the embedding model bundle (`GRPARSE_EMBEDDING_TEST_MODELS`) | skip inside every image build; the openvino CI job runs both through the shipped binaries afterwards | all three, in-build |
+| `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
+| `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
+| `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
+| `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
+
+`ctest -N -L stack` lists the seven compose-stack suites (`stack-e2e`,
+`s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
+`observability-compose`, `gpu-placement`); `gpu-placement` needs an Intel GPU
+host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and `GRPARSE_STACK_MODELS_DIR`,
+and fails rather than skips without a render node; each runs exactly as its script runs by hand, the
+wrapper only decides whether it runs. The `release` preset sets
+`EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
+and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build
+also passes its ctest JUnit file to `scripts/check-skips.sh` with the tiers it
+may skip (`GRPARSE_EXPECTED_SKIPS`; cuda and openvino `models,embeddings,emulators`,
+cpu `embeddings,emulators` when CI provides the models), so a test that
+skips outside those tiers, by a missing fixture or a mis-set variable, fails
+the build with its name.
+`.github/workflows/nightly.yml` runs the stack tier every night on a
+self-hosted runner that has docker compose (Forgejo's `heavy` runner; on
+GitHub only once `vars.NIGHTLY_RUNS_ON` names a registered self-hosted runner
+label, so no hosted minutes are spent).
 
 Two CMake options exist for local work: `-DGRPARSE_WERROR=OFF` relaxes the
 warning gate, and `-DGRPARSE_SANITIZE=address` (or `thread`, `undefined`, or a
@@ -1274,3 +1571,44 @@ the contract protos also stages `collectors/ebcdic.proto` as
 `ai/pipestream/ebcdic/v1/ebcdic.proto` and `collectors/lolhtml_types.proto`
 and `collectors/lolhtml_service.proto` under `lolhtml/v1/` (as
 `types.proto` and `lolhtml_service.proto`), the way `examples/clients/*/generate.sh` do.
+
+### Benchmarks
+
+`grparse-bench` (`tests/bench/`, #251) is the `bench` tier: six cases over
+fixed in-memory fixtures, with no models and no network. They are
+`ttfp_inspector_fast_path` (a 200-page text PDF through
+`StreamProcessDocument` against a fake PDF backend and a fake inspector;
+ns/op is the time to the first `PageData`, items/s is pages per second over
+the whole stream), `assembly_200_pages`, `fold_and_delta`, `render_exports`,
+`sniff_corpus` (every file in `tests/golden/corpus`) and `base64_10mib`. Each
+case prints one line, `name ns/op items/s` and its ratio to
+`tests/bench/baseline.textproto`. That file is a typed `BenchBaseline`
+(`tests/bench/bench_baseline.proto`) in protobuf text format.
+
+```bash
+ctest --test-dir build -L bench -V                           # print the numbers; skips (77)
+GRPARSE_BENCH_ENFORCE=1 ctest --test-dir build -L bench -V   # fail a case slower than baseline x 1.5
+```
+
+Without `GRPARSE_BENCH_ENFORCE=1` the run prints its numbers and reports a
+skip, so an unenforced run never claims that it passed. The nightly
+workflow's `bench` job runs it enforced on the self-hosted runner and
+uploads the printed numbers (`ctest-bench.log`) and the measured run in the
+baseline's format (`measured.textproto`, from
+`GRPARSE_BENCH_REPORT=<path>`). Pull requests only compile it, as part of
+`grparse-tests`. `bench-baseline-test`, a unit test, fails the image build
+when the baseline does not parse or misses a case.
+
+To re-baseline, run the bench on the machine whose numbers the gate should
+hold, and say why in the commit-style reason, as the scorecard's baseline
+rule asks:
+
+```bash
+build/grparse-bench --record --reason "<commit>: why the numbers moved"
+```
+
+This rewrites `tests/bench/baseline.textproto` in place (`--baseline PATH`
+writes another file). Commit it with the change that moved the numbers. The
+first baseline came from a cloud container, which is not stable hardware.
+Re-record it on the self-hosted runner (#258) before the gate's 1.5x margin
+means much.

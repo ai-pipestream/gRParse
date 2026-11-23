@@ -13,7 +13,8 @@ async function listedUis(page: Page): Promise<Set<string>> {
 test.describe("service UIs under /ui/<name>/", () => {
   for (const ui of SERVICE_UIS) {
     const verb = ui.flow === "load-only" ? "renders" : "parses a fixture";
-    test(`${ui.name}: loads under ${uiPath(ui)} and ${verb}`, async ({ page }) => {
+    const name = ui.variant ? `${ui.name} (${ui.variant})` : ui.name;
+    test(`${name}: loads under ${uiPath(ui)} and ${verb}`, async ({ page }) => {
       if (ui.optional) {
         const listed = await listedUis(page);
         test.skip(!listed.has(ui.name), `${ui.name} is not in /api/uis (opt-in compose profile not running)`);

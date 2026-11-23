@@ -1,6 +1,6 @@
 // Proves the chart-extraction policy settings as the server reads them at
-// startup: the five GRPARSE_*CHART_EXTRACTION* variables (lists as JSON or
-// comma-separated, custom presets as a typed ChartExtractionPresetRegistry in protobuf text format), the registry docling-jobkit
+// startup: the five GRPARSE_*CHART_EXTRACTION* variables (lists comma-separated
+// or as ServerSettingNameList text format, custom presets as a typed ChartExtractionPresetRegistry in protobuf text format), the registry docling-jobkit
 // builds from them (default, allowed built-ins, custom presets), and every
 // startup rejection naming its variable.
 
@@ -50,26 +50,41 @@ void verify_defaults_match_docling_serve() {
           "an empty variable counts as unset");
 }
 
-void verify_lists_parse_as_json_or_comma_separated() {
-  const auto json = policy_with(
-      {{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", R"(["api_openai", "api_ollama"])"}});
-  require(json.settings().allowed_engines ==
+void verify_lists_parse_as_comma_list_or_text_format() {
+  const auto csv =
+      policy_with({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai, api_ollama"}});
+  require(csv.settings().allowed_engines ==
               std::vector<ai::pipestream::parse::v1::VlmEngineType>{
                   ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OPENAI,
                   ai::pipestream::parse::v1::VLM_ENGINE_TYPE_API_OLLAMA},
-          "a JSON array parses");
-  const auto csv =
-      policy_with({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai, api_ollama"}});
-  require(csv.settings().allowed_engines == json.settings().allowed_engines,
-          "the comma form gives the same list, trimmed");
+          "the comma form parses, trimmed");
+  const auto text = policy_with({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES",
+                                  R"pb(names: "api_openai" names: "api_ollama")pb"}});
+  require(text.settings().allowed_engines == csv.settings().allowed_engines,
+          "a ServerSettingNameList in protobuf text format gives the same list");
+  const auto presets = policy_with({{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS",
+                                     "# allowed built-ins\nnames: [\"granite_vision_v4\"]\n"}});
+  require(presets.settings().allowed_presets == std::vector<std::string>{"granite_vision_v4"},
+          "text format takes comments and the bracketed repeated-field syntax");
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "api_openai,,api"}},
                           "GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES has an empty entry");
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", "openai"}},
                           "names 'openai', which is not a known engine");
+  require_startup_failure(
+      {{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", R"pb(names: "api_openai" names: "")pb"}},
+      "GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES has an empty entry");
+  require_startup_failure(
+      {{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS", R"pb(names: granite_vision_v4)pb"}},
+      "GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS is not a ServerSettingNameList in protobuf "
+      "text format: line 1 column");
+  // A bracketed array is refused, and the message shows the comma form.
+  require_startup_failure(
+      {{"GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES", R"(["api_openai", "api_ollama"])"}},
+      "GRPARSE_ALLOWED_CHART_EXTRACTION_ENGINES starts with '[', but list settings are not "
+      "bracketed arrays: write it comma-separated, such as a,b,c, or as a "
+      "ServerSettingNameList in protobuf text format");
   require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS", "[1, 2]"}},
-                          "is not a JSON array of non-empty strings");
-  require_startup_failure({{"GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS", "[\"a\""}},
-                          "is not a JSON array of non-empty strings");
+                          "GRPARSE_ALLOWED_CHART_EXTRACTION_PRESETS starts with '['");
 }
 
 void verify_custom_presets_are_typed() {
@@ -189,7 +204,7 @@ void verify_engine_names_match_docling() {
 int main() {
   return grparse_test::run_test_main("chart-extraction-policy-test", "all checks passed", {
       verify_defaults_match_docling_serve,
-      verify_lists_parse_as_json_or_comma_separated,
+      verify_lists_parse_as_comma_list_or_text_format,
       verify_custom_presets_are_typed,
       verify_registry_follows_jobkit,
       verify_startup_rejections_name_the_setting,

@@ -16,6 +16,7 @@ verdict.
 | `lib/shell.ts` | the tab model: registry tabs, optional tabs, native tabs, tab-strip locators |
 | `lib/document-tab.ts` | the Document tab fixture table and its upload/completion helper |
 | `lib/service-uis.ts`, `lib/service-ui-flows.ts` | the `/ui/<name>/` table and the two upload flows the frontends share |
+| `lib/bridges.ts` | the shell's NDJSON bridges: POST an upload, read the event lines, the native tabs' status payloads |
 | `lib/global-setup.ts` | readiness loop: waits for `/api/uis` and `/api/document/status` (`E2E_READY_TIMEOUT_MS`) |
 | `specs/*.spec.ts` | one file per surface, see below |
 
@@ -26,10 +27,10 @@ messages name the service and the fixture.
 
 | Spec | Covers |
 |---|---|
-| `shell.spec.ts` | the shell loads, `GET /api/uis` lists exactly the expected registry tabs, each registry tab's iframe (`/ui/<name>/`) renders its UI title, each native tab's iframe renders its page |
-| `document.spec.ts` | one corpus fixture per parser through the Document tab (`POST /api/document/parse`): viewer renders, text items present, collector legend names the producer, expected structure (headings / table / picture); plus the tab's status dot |
+| `shell.spec.ts` | the shell loads, `GET /api/uis` lists exactly the expected registry tabs, each registry tab's iframe (`/ui/<name>/`) renders its UI title, each native tab's iframe renders its page; one corpus fixture through each headless service's bidirectional RPC behind its native bridge (`formats/tone.wav` through grpc-asr `Transcribe`, `bar_chart.png` through grpc-enrich `EnrichDocument` with chart extraction, `report_page.png` through grpc-vlm-convert `ConvertPages`) |
+| `document.spec.ts` | one corpus fixture per parser through the Document tab (`POST /api/document/parse`): viewer renders, text items present, collector legend names the producer, expected structure (headings / table / picture), the WARC archive through gRParse's fastwarc leg included; the chart derender leg (`bar_chart.png` through the CV path, its chart sent on to grpc-enrich: a tabular chart or a derender warning comes back); plus the tab's status dot |
 | `grparse.spec.ts` | the gRParse page-stream tab: the bundled two-page sample and the corpus `hello-text.pdf` stream two page cards with painted box overlays and a completion banner |
-| `service-uis.spec.ts` | every `*-ui` frontend under its `/ui/<name>/` prefix loads and parses one fixture through its own upload control (ebcdic streams its bundled sample; calamine is load-only and skipped unless its profile is up) |
+| `service-uis.spec.ts` | every `*-ui` frontend under its `/ui/<name>/` prefix loads and parses one fixture through its own upload control (ebcdic streams its bundled sample, and the corpus `formats/record.ebcdic` with its copybook and the Document fold on; calamine is load-only and skipped unless its profile is up) |
 | `health.spec.ts` | `/api/health`, every native tab's `/api/<name>/status` reports reachable, every registry entry reachable, tab dots green (amber allowed for a VLM tab without an endpoint) |
 | `proxy.spec.ts` | the request after a proxied parse stream is served (a fault that was live until the nginx 1.31 bump; five stream/request pairs) |
 
@@ -77,6 +78,32 @@ docker compose -p e2e-check -f compose.stack.yaml -f compose.stack.e2e.yaml \
   run --rm --no-deps -e E2E_BASE_URL=http://host.docker.internal:18081 playwright
 docker compose -p e2e-check -f compose.stack.yaml -f compose.stack.e2e.yaml down --remove-orphans
 ```
+
+## Skipped cases
+
+A case whose service the running stack cannot serve is skipped with a
+reason, and Playwright counts it in the summary and the JUnit report; none
+passes in its place. Today:
+
+- calamine's UI, when the `calamine` profile is not up.
+- the asr bridge, when grpc-asr lists no loaded whisper model (no ggml
+  weights mounted).
+- the vlm-convert bridge, when grpc-vlm-convert has no VLM endpoint
+  (`VLM_ENDPOINT` unset): every conversion is `FAILED_PRECONDITION` by
+  contract.
+- the chart derender case, when no picture of `bar_chart.png` is
+  classified as a chart (figure classifier off) or the chart carries no
+  inline image.
+
+The enrich bridge runs either way: without a VLM endpoint its chart job is
+answered with a skip event, which is still one whole round trip.
+
+Two gRParse legs are not reachable from the shell, which sends no
+conversion options: ebcdic (explicit selection plus `ebcdic_layout`) and
+the VLM pipeline (`PROCESSING_PIPELINE_VLM`). Their services are covered
+through the ebcdic UI and the vlm-convert bridge above; the gRParse side
+of those legs stays with the in-process fakes. asr through gRParse needs
+`GRPARSE_ASR_MODEL`, which the stack does not set.
 
 ## Known red tests
 

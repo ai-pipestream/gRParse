@@ -24,17 +24,23 @@ option java_package = "ai.pipestream.parse.v1";
 // envelope only wraps core messages, it does not duplicate them.
 //
 // Emission honesty:
-//   Phase 1 (planned; StreamDocument answers UNIMPLEMENTED today): status +
-//     source_result + final_document
+//   Phase 1 (served): status + source_result + final_document, plus error
+//     for a source that failed
 //   Phase 2 (orchestrator hooks): per-source fan-out as documents complete
 //   Phase 3 (pipeline hooks): DocumentNode parts as items hydrate
 // Do not emit DocumentNode until the converter can produce partial items.
 // Faking page yields from a completed Document is not streaming.
 
-// StreamDocument is to convert sources and stream StreamDocumentResponse
-// events (the DocumentStreamEnvelope) until finals are emitted and the
-// stream closes. It is not implemented yet and answers UNIMPLEMENTED;
-// StreamProcessDocument is the streaming surface this server serves.
+// StreamDocument converts the request's sources one after another, each
+// exactly as the unary ConvertSource would, and streams
+// StreamDocumentResponse events (the DocumentStreamEnvelope): status
+// QUEUED and STARTED, then per source a PROCESSING status followed by its
+// final_document and source_result (or an error and a failed
+// source_result), then COMPLETED, or FAILED when no source converted.
+// sequence_number counts from 1 with no gaps. A request refused as a whole
+// (no source, a delivery target, invalid options, no capacity) ends with
+// that status and no envelope. StreamProcessDocument is the page-streamed
+// surface.
 service ParseStreamingService {
   rpc StreamDocument(StreamDocumentRequest) returns (stream StreamDocumentResponse);
 
@@ -87,6 +93,32 @@ message DocumentChunk {
   // Document for clients that read it intact. Resolved from the first chunk
   // that sets it.
   optional bool slim_collector_documents = 13;
+  // Total payload bytes of this document, set on the first chunk when the
+  // client knows it (at the latest on a chunk before any data; later chunks
+  // may repeat it unchanged). The server reserves the buffer once, rejects
+  // an upload over its 500 MiB limit or over the in-flight byte budget
+  // (GRPARSE_MAX_INFLIGHT_BYTES) with RESOURCE_EXHAUSTED before accepting
+  // any data, and charges the budget once instead of per chunk. The data
+  // the chunks carry must then add up to exactly this many bytes: more, or
+  // a complete chunk short of it, fails the stream with INVALID_ARGUMENT
+  // naming total_bytes. Zero is invalid when set; unset keeps the per-chunk
+  // checks.
+  optional uint64 total_bytes = 15;
+  // Whether the stream follows the page events of each collector (and of
+  // the CV pages) with a repair event (DocumentRepairDelta) once the
+  // whole-document passes ran. Unset or true keeps it. False tells the
+  // server the client will not fold page events into a Document: it then
+  // keeps no fold of the pages it streams, computes and sends no repair
+  // event, and marks the complete event repair_delta_omitted. The page
+  // events are exactly what they are with the repair event on, so pages
+  // that streamed before the passes ran stay unrepaired (no rejoined
+  // paragraphs, demoted running headers or grouped lists); the
+  // collector_document event still carries each collector's repaired
+  // Document, and the complete event's section_header_levels still ship.
+  // With slim_collector_documents as well, nothing on the stream rebuilds
+  // a collector's repaired items. Resolved from the first chunk that sets
+  // it.
+  optional bool repair_delta = 16;
 }
 
 // DocumentStreamEvent is the page-batched incremental conversion result.
@@ -288,6 +320,10 @@ message DocumentComplete {
   // same way as ConvertDocumentResponse.confidence. Absent when no CV page
   // was read.
   optional ConfidenceScores confidence = 5;
+  // True when the stream's DocumentChunk.repair_delta resolved to false,
+  // so a reader of a recorded stream knows the missing repair events were
+  // asked for, not lost.
+  bool repair_delta_omitted = 6;
 }
 
 message StreamDocumentRequest {

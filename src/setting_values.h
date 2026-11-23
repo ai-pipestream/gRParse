@@ -1,7 +1,7 @@
 // Reading server settings from the environment, shared by the preset
-// policies: trimmed values, list settings (a JSON array of strings read as
-// the typed ServerSettingNameList, or comma-separated words, as
-// docling-serve accepts), and "unset or empty" lookups.
+// policies: trimmed values, list settings (comma-separated words, or the
+// typed ServerSettingNameList in protobuf text format), and "unset or empty"
+// lookups.
 #ifndef GRPARSE_SETTING_VALUES_H
 #define GRPARSE_SETTING_VALUES_H
 
@@ -12,7 +12,9 @@
 #include <string_view>
 #include <vector>
 
-#include <google/protobuf/util/json_util.h>
+#include <absl/strings/string_view.h>
+#include <google/protobuf/io/tokenizer.h>
+#include <google/protobuf/text_format.h>
 
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 
@@ -27,23 +29,51 @@ inline std::string trimmed(std::string_view text) {
   return std::string(text.substr(first, last - first + 1));
 }
 
-// A list setting: a JSON array of strings (read as the typed
-// ServerSettingNameList), or comma-separated words.
+// Keeps the first protobuf text format error, with its 1-based position.
+class FirstTextFormatError final : public google::protobuf::io::ErrorCollector {
+ public:
+  void RecordError(int line, google::protobuf::io::ColumnNumber column,
+                   absl::string_view message) override {
+    if (!text_.empty()) return;
+    text_ = "line " + std::to_string(line + 1) + " column " + std::to_string(column + 1) +
+            ": " + std::string(message);
+  }
+  const std::string& text() const { return text_; }
+
+ private:
+  std::string text_;
+};
+
+// A list setting: comma-separated words (a,b,c), or a ServerSettingNameList
+// in protobuf text format (names: "a" names: "b"), which a colon marks. A
+// leading '[' is refused with the comma form shown: list settings are not
+// bracketed arrays.
 inline std::vector<std::string> parse_list(const char* variable, std::string_view value) {
   std::vector<std::string> items;
   const std::string text = trimmed(value);
   if (text.starts_with('[')) {
+    throw std::invalid_argument(std::string(variable) +
+                                " starts with '[', but list settings are not bracketed arrays: "
+                                "write it comma-separated, such as a,b,c, or as a "
+                                "ServerSettingNameList in protobuf text format, such as "
+                                "names: \"a\" names: \"b\"");
+  }
+  if (text.contains(':')) {
     parsev1::ServerSettingNameList list;
-    if (!google::protobuf::util::JsonStringToMessage("{\"names\":" + text + "}", &list).ok()) {
+    FirstTextFormatError errors;
+    google::protobuf::TextFormat::Parser parser;
+    parser.RecordErrorsTo(&errors);
+    if (!parser.ParseFromString(text, &list)) {
       throw std::invalid_argument(std::string(variable) +
-                                  " is not a JSON array of non-empty strings");
+                                  " is not a ServerSettingNameList in protobuf text format: " +
+                                  errors.text());
     }
     for (const std::string& entry : list.names()) {
-      if (trimmed(entry).empty()) {
-        throw std::invalid_argument(std::string(variable) +
-                                    " is not a JSON array of non-empty strings");
+      const std::string item = trimmed(entry);
+      if (item.empty()) {
+        throw std::invalid_argument(std::string(variable) + " has an empty entry");
       }
-      items.push_back(trimmed(entry));
+      items.push_back(item);
     }
     return items;
   }

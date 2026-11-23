@@ -20,6 +20,10 @@ struct TableStructure {
   // Mean probability over the emitted structure tokens.
   float score = 0.0F;
   std::vector<StructuredCell> cells;
+  // True when the decode used every step the model has without reaching
+  // eos: slanet-plus stops at 500 tokens, so a large table's lower rows
+  // are missing, not absent.
+  bool truncated = false;
 };
 
 // Places the decoded HTML structure tokens on a grid.  `tokens` is the raw

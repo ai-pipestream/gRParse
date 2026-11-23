@@ -490,6 +490,59 @@ void verify_corpus_fixtures() {
   std::println("content-sniff-test: {} corpus fixtures sniffed as their extension says", checked);
 }
 
+// The resident-set high-water mark, in bytes; -1 when /proc says nothing.
+long long peak_resident_bytes() {
+  std::ifstream status("/proc/self/status");
+  std::string key;
+  while (status >> key) {
+    if (key == "VmHWM:") {
+      long long kib = -1;
+      status >> kib;
+      return kib < 0 ? -1 : kib * 1024;
+    }
+    std::string rest;
+    std::getline(status, rest);
+  }
+  return -1;
+}
+
+// The fuzz regressions tier: every input fuzz/regressions/ keeps for the
+// compound-file and content-sniff fuzzers replays through the doors those
+// fuzzers drive, under the same heap budget (16 bytes per input byte plus
+// 4 MiB), measured here as growth of the resident-set high-water mark,
+// which writing 5 to clear_refs resets to the current set first. #225's
+// input (a DIFAT chain naming one FAT sector over and over) grew the FAT
+// to 127 times the file. Skipped quietly when the directory is not wired in.
+void verify_fuzz_regressions_stay_in_budget() {
+  const char* regressions = std::getenv("GRPARSE_FUZZ_REGRESSIONS_DIR");
+  if (regressions == nullptr || !fs::is_directory(regressions)) {
+    std::println("content-sniff-test: GRPARSE_FUZZ_REGRESSIONS_DIR unset, regressions skipped");
+    return;
+  }
+  int replayed = 0;
+  for (const char* target : {"cfb-fuzzer", "content-sniff-fuzzer"}) {
+    const fs::path where = fs::path(regressions) / target;
+    if (!fs::is_directory(where)) continue;
+    for (const fs::directory_entry& entry : fs::directory_iterator(where)) {
+      const std::string bytes = read_file(entry.path());
+      const std::string what = std::string(target) + "/" + entry.path().filename().string();
+      std::ofstream("/proc/self/clear_refs") << "5";
+      const long long before = peak_resident_bytes();
+      (void)grparse::encrypted_office_document(bytes);
+      (void)grparse::sniff_mimetype(bytes);
+      (void)grparse::resolve_mimetype("", bytes, entry.path().filename());
+      const long long grew = peak_resident_bytes() - before;
+      const long long budget = 16LL * static_cast<long long>(bytes.size()) + (4LL << 20);
+      require(before >= 0 && grew <= budget,
+              what + ": the sniff grew the process by " + std::to_string(grew) +
+                  " bytes, over its " + std::to_string(budget) + "-byte budget");
+      replayed++;
+    }
+  }
+  require(replayed >= 1, "the regressions tier replayed the inputs it keeps");
+  std::println("content-sniff-test: {} fuzz regression inputs replayed in budget", replayed);
+}
+
 }  // namespace
 
 int main() {
@@ -505,5 +558,6 @@ int main() {
       verify_extension_map,
       verify_resolution_order,
       verify_corpus_fixtures,
+      verify_fuzz_regressions_stay_in_budget,
   });
 }

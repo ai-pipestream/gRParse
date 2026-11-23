@@ -459,6 +459,41 @@ std::string_view classify_doctype(ai::pipestream::parse::v1::InputFormat format,
   return "other";
 }
 
+namespace {
+
+// Prometheus label values escape backslash, double quote and newline.
+std::string label_value(std::string_view raw) {
+  std::string escaped;
+  escaped.reserve(raw.size());
+  for (const char letter : raw) {
+    if (letter == '\\' || letter == '"') escaped += '\\';
+    if (letter == '\n') {
+      escaped += "\\n";
+      continue;
+    }
+    escaped += letter;
+  }
+  return escaped;
+}
+
+}  // namespace
+
+std::string render_ort_session_placements(const std::vector<OrtPlacement>& placements) {
+  std::ostringstream out;
+  out << "# HELP grparse_ort_sessions Model sessions by model and the backend they run on; "
+         "requested differs from actual for a model pinned to CPU in code (pin says why) and "
+         "for a model native TensorRT runs under a CUDA selection (actual TensorRT, an engine, "
+         "not an ONNX Runtime session).\n"
+         "# TYPE grparse_ort_sessions gauge\n";
+  for (const OrtPlacement& placement : placements) {
+    out << "grparse_ort_sessions{model=\"" << label_value(placement.model) << "\",requested=\""
+        << ort_ep_name(placement.requested) << "\",actual=\"" << ort_ep_name(placement.actual)
+        << "\",device=\"" << label_value(placement.device) << "\",pin=\""
+        << label_value(placement.pin_reason) << "\"} " << placement.sessions << '\n';
+  }
+  return out.str();
+}
+
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,
                                       const PageScheduler::Options& options,
@@ -479,7 +514,8 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const RepairTotals& repairs, const DataTotals& data,
                                       const OfficeCvTotals& office_cv) {
   return render_prometheus_metrics(metrics, ocr_pool, options, repairs, data, office_cv,
-                                   ep_fallback_count(), ep_build_retry_count());
+                                   ep_fallback_count(), ep_build_retry_count()) +
+         render_ort_session_placements(ort_placements());
 }
 
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
@@ -630,8 +666,8 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   counter(out, "grparse_ocr_pool_discards_total",
           "OCR sessions rebuilt after a device error.", ocr_pool.discards);
   counter(out, "grparse_ort_ep_fallbacks_total",
-          "Sessions rebuilt on CPU after their selected execution provider refused the graph "
-          "or the device failed.",
+          "Session builds and first inferences the selected execution provider refused; "
+          "placement is strict, so each one failed instead of running on CPU.",
           ep_fallbacks);
   counter(out, "grparse_ort_ep_build_retries_total",
           "Session builds retried after a transient OpenVINO execution-provider failure "

@@ -4,16 +4,21 @@
 #include <chrono>
 #include <cctype>
 #include <cstdlib>
+#include <format>
 #include <initializer_list>
 #include <print>
 #include <stdexcept>
+#include <string_view>
 #include <thread>
 
 #include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/lighton_ocr.h"
+#include "grparse/ocr_rect_render.h"
 #include "grparse/remote_page_source.h"
 #include "grparse/vlm_convert.h"
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 
 namespace grparse {
@@ -33,6 +38,22 @@ size_t configured_size(const char* name, size_t fallback, size_t maximum = 1024)
                                 std::to_string(maximum));
   }
   return fallback;
+}
+
+// A millisecond setting inside [minimum, maximum]: unset takes `fallback`,
+// anything else set refuses startup naming the variable and the range.
+std::chrono::milliseconds configured_milliseconds(const char* name, int fallback, int minimum,
+                                                  int maximum) {
+  const char* configured = std::getenv(name);
+  if (configured == nullptr) return std::chrono::milliseconds{fallback};
+  char* end = nullptr;
+  const long long parsed = std::strtoll(configured, &end, 10);
+  if (end == configured || *end != '\0' || parsed < minimum || parsed > maximum) {
+    throw std::invalid_argument(std::string(name) + " must be an integer number of " +
+                                "milliseconds between " + std::to_string(minimum) + " and " +
+                                std::to_string(maximum));
+  }
+  return std::chrono::milliseconds{parsed};
 }
 
 // An index or a switch whose 0 is meaningful: same contract, floor of 0.
@@ -110,19 +131,29 @@ std::string available_providers() {
   return joined;
 }
 
+// GRPARSE_OPENVINO_DEVICE: GPU (default), GPU.<n>, NPU, NPU.<n>, or CPU.
+// One device, never a list: AUTO:, HETERO:, MULTI: and BATCH: let OpenVINO
+// move layers or whole models to its CPU plugin on its own, which is the
+// silent fallback strict placement exists to rule out.  CPU is accepted
+// because it is an explicit choice, and the placement metric reports it.
 std::string configured_openvino_device() {
   const char* configured = std::getenv("GRPARSE_OPENVINO_DEVICE");
   const std::string device =
       configured == nullptr || *configured == '\0' ? "GPU" : configured;
-  // GPU, GPU.1, CPU, NPU, AUTO:GPU,CPU, HETERO: and friends: validate the
-  // alphabet and let OpenVINO reject unknown devices itself, at startup.
-  for (const char letter : device) {
-    if (std::isalnum(static_cast<unsigned char>(letter)) == 0 && letter != '.' &&
-        letter != ':' && letter != ',' && letter != '_' && letter != '-') {
-      throw std::invalid_argument("GRPARSE_OPENVINO_DEVICE contains unsupported characters");
-    }
+  if (device == "CPU") return device;
+  for (const std::string_view family : {"GPU", "NPU"}) {
+    if (!device.starts_with(family)) continue;
+    const std::string_view rest = std::string_view(device).substr(family.size());
+    if (rest.empty()) return device;
+    const bool indexed = rest.size() > 1 && rest.front() == '.' &&
+                         std::all_of(rest.begin() + 1, rest.end(), [](char letter) {
+                           return std::isdigit(static_cast<unsigned char>(letter)) != 0;
+                         });
+    if (indexed) return device;
   }
-  return device;
+  throw std::invalid_argument(
+      "GRPARSE_OPENVINO_DEVICE must be GPU, GPU.<n>, NPU, NPU.<n> or CPU (got " + device +
+      "); AUTO, HETERO, MULTI and BATCH device lists can move work to CPU on their own");
 }
 
 // GRPARSE_OPENVINO_CACHE_DIR: where the OpenVINO plugin may keep compiled
@@ -146,6 +177,7 @@ std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
       .openvino_cache_dir = configured_openvino_cache_dir(),
   };
   grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
   auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
   if (grparse::ep_hook_invocations() == 0) {
     throw std::runtime_error(
@@ -352,6 +384,10 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
   options.max_active_documents = configured_size("GRPARSE_MAX_ACTIVE_DOCUMENTS", 32, 1024);
   options.capture_picture_images = configure_picture_images(layout_active);
   options.capture_page_images = configure_page_images();
+  // OCR DPI for image rectangles on text-layer pages; at or below the render
+  // DPI (200) they are read from the page raster, as before this setting.
+  options.ocr_image_dpi = static_cast<double>(
+      configured_size("GRPARSE_OCR_IMAGE_DPI", static_cast<size_t>(kDefaultOcrImageDpi), 1200));
   options.barcode_mode = configure_barcode_mode(layout_active, classifier_active);
   options.orientation.enabled = configure_ocr_rotation();
   // Read per input; read here too so a malformed value fails startup.
@@ -366,11 +402,30 @@ CollectorTargets read_collector_targets() {
   derender.timeout = std::chrono::milliseconds(
       configured_size("GRPARSE_ENRICH_TIMEOUT_MS", 5000, 600000));
   derender.vlm_endpoint = collector_env("GRPARSE_ENRICH_VLM_ENDPOINT");
+  // auto lets the enrich service pick the formula prompt by model; the others
+  // pin it (codeformula = Docling's "<formula>" token, for like-for-like runs).
+  namespace enrichv1 = ai::pipestream::enrich::v1;
+  const std::string formula_prompt = configured_mode("GRPARSE_ENRICH_FORMULA_PROMPT", "auto",
+                                                     {"auto", "codeformula", "latex", "latex_hint"});
+  if (formula_prompt == "codeformula") derender.formula_prompt = enrichv1::FORMULA_PROMPT_CODEFORMULA_TOKEN;
+  if (formula_prompt == "latex") derender.formula_prompt = enrichv1::FORMULA_PROMPT_LATEX;
+  if (formula_prompt == "latex_hint") {
+    derender.formula_prompt = enrichv1::FORMULA_PROMPT_LATEX_WITH_TEXT_HINT;
+  }
   VlmConvertOptions vlm;
   vlm.target = collector_env("GRPARSE_VLM_CONVERT_TARGET");
   vlm.timeout = std::chrono::milliseconds(
       configured_size("GRPARSE_VLM_CONVERT_TIMEOUT_MS", 120000, 600000));
   vlm.endpoint = collector_env("GRPARSE_VLM_CONVERT_ENDPOINT");
+  LightonOcrOptions lighton;
+  lighton.target = collector_env("GRPARSE_LIGHTON_TARGET");
+  lighton.timeout = std::chrono::milliseconds(
+      configured_size("GRPARSE_LIGHTON_TIMEOUT_MS", 300000, 3600000));
+  // The checkpoint grpc-lighton-ocr serves (its GRPC_LIGHTON_MODEL); the
+  // wire names it on every call and the peer refuses any other.
+  if (configured_mode("GRPARSE_LIGHTON_MODEL", "0.8b", {"0.8b", "4b"}) == "4b") {
+    lighton.model = ai::pipestream::lightonocr::v1::LIGHTON_MODEL_4B;
+  }
   return CollectorTargets{
       .libreoffice = collector_env("GRPARSE_LIBREOFFICE_TARGET"),
       .asr = collector_env("GRPARSE_ASR_TARGET"),
@@ -398,9 +453,24 @@ CollectorTargets read_collector_targets() {
       // The VLM convert leg through grpc-vlm-convert: off unless a target
       // is named; PROCESSING_PIPELINE_VLM requires it.
       .vlm = std::move(vlm),
+      // The LightOnOCR leg through grpc-lighton-ocr: off unless a target is
+      // named; a VLM request naming the LightOnOCR model then goes there.
+      .lighton = std::move(lighton),
       // Request-named model endpoints: off unless the operator opts in.
       .enable_remote_services =
           configured_mode("GRPARSE_ENABLE_REMOTE_SERVICES", "off", {"on", "off"}) == "on",
+      // How many HTTP/2 connections each collector is dialed over, and the
+      // client keepalive of every collector and backend channel.
+      .channel_options = CollectorChannelOptions{
+          .channels = configured_size("GRPARSE_COLLECTOR_CHANNELS", kDefaultCollectorChannels,
+                                      kMaxCollectorChannels),
+          .keepalive_time = configured_milliseconds(
+              "GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS", kDefaultCollectorKeepaliveTimeMs,
+              kMinCollectorKeepaliveTimeMs, kMaxCollectorKeepaliveTimeMs),
+          .keepalive_timeout = configured_milliseconds(
+              "GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS", kDefaultCollectorKeepaliveTimeoutMs,
+              kMinCollectorKeepaliveTimeoutMs, kMaxCollectorKeepaliveTimeoutMs),
+      },
   };
 }
 
@@ -426,6 +496,11 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   report_collector("fastwarc", targets.fastwarc);
   report_collector("pdf", targets.pdf);
   report_collector("calamine", targets.calamine);
+  std::println("gRParse collector channels: {} per collector (GRPARSE_COLLECTOR_CHANNELS), "
+               "keepalive {} ms (GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS), {} ms timeout "
+               "(GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS)",
+               targets.channel_options.channels, targets.channel_options.keepalive_time.count(),
+               targets.channel_options.keepalive_timeout.count());
   if (targets.derender.enabled()) {
     std::println("gRParse chart derender (enrich): {} ({} ms{})", targets.derender.target,
                  targets.derender.timeout.count(),
@@ -472,6 +547,13 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
   } else {
     std::println("gRParse vlm convert: not configured");
   }
+  if (targets.lighton.enabled()) {
+    std::println("gRParse lighton ocr: {} ({} ms, {})", targets.lighton.target,
+                 targets.lighton.timeout.count(),
+                 ai::pipestream::lightonocr::v1::LightonModel_Name(targets.lighton.model));
+  } else {
+    std::println("gRParse lighton ocr: not configured");
+  }
   std::println("gRParse request-named remote services: {}",
                targets.enable_remote_services
                    ? "enabled (GRPARSE_ENABLE_REMOTE_SERVICES=on)"
@@ -494,6 +576,22 @@ void report_retired_settings() {
   }
 }
 
+std::string openvino_device_setting() { return configured_openvino_device(); }
+
+void report_model_placements() {
+  for (const grparse::OrtPlacement& placement : grparse::ort_placements()) {
+    const std::string device = placement.device.empty() ? "" : " (" + placement.device + ")";
+    const std::string pin = placement.pin_reason.empty()
+                                ? ""
+                                : std::format(", pinned to CPU under {}: {}",
+                                              grparse::ort_ep_name(placement.requested),
+                                              placement.pin_reason);
+    std::println("gRParse model placement: {} on {}{}, {} session{}{}", placement.model,
+                 grparse::ort_ep_name(placement.actual), device, placement.sessions,
+                 placement.sessions == 1 ? "" : "s", pin);
+  }
+}
+
 CallExecutor::Options read_executor_options() {
   // The unary surfaces run on gRPC's callback API, so their parsing blocks
   // on this pool instead of on an event-manager thread. A worker spends
@@ -505,6 +603,29 @@ CallExecutor::Options read_executor_options() {
   executor_options.workers = configured_size("GRPARSE_UNARY_WORKERS", 16, 512);
   executor_options.queue_capacity = configured_size("GRPARSE_UNARY_QUEUE", 64, 4096);
   return executor_options;
+}
+
+StreamingLimits read_streaming_limits() {
+  // StreamProcessDocument's own bounds. The stream cap counts open calls
+  // server wide, where GRPARSE_MAX_CONCURRENT_STREAMS counts them per
+  // connection; the pool runs every stream's plan and collector legs, so
+  // the threads a stream costs come out of it instead of out of the OS.
+  // Size the pool at or above the stream cap times the common leg count.
+  StreamingLimits limits;
+  limits.max_active_streams = configured_size("GRPARSE_MAX_ACTIVE_STREAMS", 64, 4096);
+  limits.executor.workers = configured_size("GRPARSE_STREAM_WORKERS", 64, 4096);
+  limits.executor.queue_capacity = configured_size("GRPARSE_STREAM_QUEUE", 256, 4096);
+  return limits;
+}
+
+TaskRegistryOptions read_task_registry_options() {
+  TaskRegistryOptions options;
+  options.max_tasks = configured_size("GRPARSE_MAX_TASKS", kDefaultMaxTasks, 65536);
+  options.result_ttl = std::chrono::seconds(configured_size(
+      "GRPARSE_TASK_RESULT_TTL_SECONDS", static_cast<size_t>(kDefaultTaskResultTtl.count()),
+      7 * 24 * 3600));
+  options.max_watchers = configured_size("GRPARSE_MAX_WATCHERS", kDefaultMaxTaskWatchers, 65536);
+  return options;
 }
 
 std::optional<RepairOptions> configure_repair() {
@@ -528,14 +649,19 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
                                                  size_t worker_count, int gpu_index) {
   const char* configured = std::getenv("GRPARSE_ORT_EP");
   const std::string ep = configured == nullptr || *configured == '\0' ? "cuda" : configured;
+  // In a build that carries native TensorRT a CUDA selection runs the image
+  // models on TensorRT and creates no ONNX Runtime session for them, so
+  // ONNX Runtime's own CUDA provider is neither needed nor asked about.
+  const bool tensorrt = grparse::native_tensorrt_build();
   if (ep == "cuda") {
-    if (!provider_available("CUDAExecutionProvider")) {
+    if (!tensorrt && !provider_available("CUDAExecutionProvider")) {
       throw std::invalid_argument(
           "GRPARSE_ORT_EP=cuda: this build's ONNX Runtime has no CUDA execution provider "
           "(available: " + available_providers() + ")");
     }
     auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
-    std::println("gRParse OCR execution provider: CUDA (device {})", gpu_index);
+    std::println("gRParse OCR execution provider: {} (device {})",
+                 tensorrt ? "TensorRT on CUDA" : "CUDA", gpu_index);
     return pool;
   }
   if (ep == "openvino") {
@@ -555,7 +681,22 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     return pool;
   }
   if (ep == "auto") {
-    if (provider_available("CUDAExecutionProvider")) {
+    if (tensorrt) {
+      // auto looks for a device, not for a runtime that happens to work: with
+      // a CUDA device present the models build on TensorRT or startup fails,
+      // exactly as under GRPARSE_ORT_EP=cuda.  Only a host with no such
+      // device moves on.
+      std::string detail;
+      if (grparse::tensorrt_device_present(gpu_index, &detail)) {
+        auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
+        std::println(
+            "gRParse OCR execution provider: TensorRT on CUDA (device {}, selected by "
+            "GRPARSE_ORT_EP=auto)",
+            gpu_index);
+        return pool;
+      }
+      std::println(stderr, "GRPARSE_ORT_EP=auto: no CUDA device for TensorRT ({})", detail);
+    } else if (provider_available("CUDAExecutionProvider")) {
       try {
         auto pool = build_pool_with(grparse::OrtEp::kCuda, models, worker_count, gpu_index);
         std::println("gRParse OCR execution provider: CUDA (device {}, selected by GRPARSE_ORT_EP=auto)",

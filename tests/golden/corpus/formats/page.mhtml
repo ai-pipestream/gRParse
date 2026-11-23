@@ -1,0 +1,25 @@
+From: <Saved by gRParse fixtures>
+Subject: Golden corpus page
+Date: Sat, 01 Jan 2000 00:00:00 -0000
+MIME-Version: 1.0
+Content-Type: multipart/related;
+	type="text/html";
+	boundary="----golden-boundary"
+
+------golden-boundary
+Content-Type: text/html; charset=utf-8
+Content-Transfer-Encoding: 8bit
+Content-Location: https://example.com/golden.html
+
+<!DOCTYPE html><html><head><title>Golden corpus page</title></head><body><h1>Golden corpus page</h1><p>A saved web page written for the gRParse golden corpus.</p><img src="https://example.com/bars.png" alt="Three bars"></body></html>
+------golden-boundary
+Content-Type: image/png
+Content-Transfer-Encoding: base64
+Content-Location: https://example.com/bars.png
+
+iVBORw0KGgoAAAANSUhEUgAAAGAAAABACAIAAABqVuVZAAAAiUlEQVR42u3QQQ3AIBAAQaz0jYEq
+qYcmmMJBJdRZccDjkuNBZ7MKpnyaVhAAAgQIECBAgAAJEKDlQLU94QEBAgQIECBAgAABAgQI0N5A
+Z7/DAwIECBAgQIAAAQIECNAfgN7rCA8IECBAgAABAgQIECBAgAABAgQIECBAgAABAgQIUAaQAAEC
+lNoACEkfqI3E1nUAAAAASUVORK5CYII=
+
+------golden-boundary--

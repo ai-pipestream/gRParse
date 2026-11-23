@@ -66,7 +66,25 @@ OcrRecommendationReason ocr_recommendation_reason(pdfv1::OcrRecommendationReason
   }
 }
 
+// A MIXED document whose OCR recommendation gives the scanned pages as its
+// only reason: the recommendation is about the pages it names, if any.
+bool recommends_only_named_scans(const PdfClassification& classification) {
+  const auto& reasons = classification.ocr_recommendation_reasons;
+  return classification.pdf_class == PdfClass::kMixed && !reasons.empty() &&
+         std::ranges::all_of(reasons, [](OcrRecommendationReason reason) {
+           return reason == OcrRecommendationReason::kScannedPages;
+         });
+}
+
 }  // namespace
+
+bool pdf_info_forces_ocr(const PdfClassification& info) {
+  // route_pdf_by_classification forces OCR on a recommendation unless the
+  // recommendation names its pages; the reasons and the class are final on
+  // info, while the page set can still grow. So only a recommendation that
+  // could never be the named-scans exception is settled here.
+  return info.ocr_recommended && !recommends_only_named_scans(info);
+}
 
 bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
   return !needs_ocr && !encoding_issues && !blank(markdown);
@@ -86,12 +104,8 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
   // are pixels), a scan's OCR layer, a dense layout, a reason this build
   // cannot name, or no reason at all (an inspector older than the field)
   // keeps the recommendation on every page.
-  const auto& reasons = classification.ocr_recommendation_reasons;
   const bool recommendation_names_its_pages =
-      classification.pdf_class == PdfClass::kMixed && !classification.pages_needing_ocr.empty() &&
-      !reasons.empty() && std::ranges::all_of(reasons, [](OcrRecommendationReason reason) {
-        return reason == OcrRecommendationReason::kScannedPages;
-      });
+      !classification.pages_needing_ocr.empty() && recommends_only_named_scans(classification);
   decision.force_ocr = classification.encoding_issues ||
                        (classification.ocr_recommended && !recommendation_names_its_pages);
   switch (classification.pdf_class) {
@@ -134,7 +148,8 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
                            const std::string& bytes,
                            CollectorDeadline inbound_deadline,
                            std::optional<std::pair<int, int>> page_range,
-                           CollectorCancelled cancelled, PdfPageSink page_sink) {
+                           CollectorCancelled cancelled, PdfPageSink page_sink,
+                           PdfInfoSink info_sink) {
   PdfParseResult result;
   if (channel == nullptr) {
     result.outcome.error = "pdf collector is not configured (GRPARSE_PDF_TARGET)";
@@ -224,6 +239,11 @@ PdfParseResult collect_pdf(const std::shared_ptr<grpc::Channel>& channel,
       fast_path_open = streaming && result.classification.pdf_class == PdfClass::kTextBased &&
                        !result.classification.ocr_recommended && ocr_pages.empty();
       run_open = fast_path_open;
+      if (info_sink) {
+        PdfClassification info_only = result.classification;
+        info_only.pages_needing_ocr.assign(ocr_pages.begin(), ocr_pages.end());
+        info_sink(info_only);
+      }
     } else if (event.has_page()) {
       // The pass that decoded the page can convict it where the sampling
       // detection on info did not look.

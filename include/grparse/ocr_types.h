@@ -148,6 +148,10 @@ struct OcrPage {
   bool skip_ocr = false;
   // Layout detections for this page; empty when no layout model is active.
   std::vector<LayoutRegion> regions = {};
+  // Where the PDF places images on this page, in the same frame as `lines`
+  // (digital pages only; empty otherwise). The OCR of a text-layer page reads
+  // these (ocr_image_regions.h).
+  std::vector<cv::Rect> image_placements = {};
   // Which detector produced `regions`, for item source attribution; empty
   // when no layout model ran.
   std::string layout_model = {};
@@ -188,5 +192,12 @@ struct OcrPage {
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.
 // Digital lines win on overlap; OCR fills the gaps. Result is reading-order sorted.
 OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr);
+
+// Adds a recognizer's read of one region crop (a picture on a digital
+// page: a chart whose labels live only in its bitmap) to `page`. The crop's
+// lines shift by the crop origin into page space, take the OCR origin, and
+// drop where they repeat a line the page already has (the text layer's own
+// labels of a vector chart). Returns how many lines were added.
+size_t add_region_read(OcrPage* page, OcrPage crop_read, int crop_left, int crop_top);
 
 }  // namespace grparse

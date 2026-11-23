@@ -27,6 +27,7 @@
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/table_structure_engine.h"
+#include "task_registry.h"
 
 namespace grparse {
 
@@ -95,7 +96,11 @@ PageScheduler::Options read_scheduler_options(const WorkerConfig& workers, bool 
 // Unset leaves that collector unconfigured: documents routed to it then
 // fail that collector with a clear error instead of being converted
 // through any intermediate. GRPARSE_ASR_MODEL names the whisper model
-// grpc-asr must serve; the asr wire requires one.
+// grpc-asr must serve; the asr wire requires one. GRPARSE_COLLECTOR_CHANNELS
+// (default 2, 1 to 64) sizes every collector's channel pool;
+// GRPARSE_COLLECTOR_KEEPALIVE_TIME_MS (default 330000, 10000 to 7200000) and
+// GRPARSE_COLLECTOR_KEEPALIVE_TIMEOUT_MS (default 20000, 1000 to 600000) set
+// the client keepalive of every collector and backend channel.
 CollectorTargets read_collector_targets();
 
 // One startup line per collector, then the chart derender leg and the
@@ -108,8 +113,29 @@ void report_collector_targets(const CollectorTargets& targets, bool layout_activ
 // ignored without a word: GRPARSE_POI_TARGET (grPOIc is no longer used).
 void report_retired_settings();
 
+// One startup line per model naming the execution provider and device its
+// sessions run on, after every engine is built, e.g.
+// "gRParse model placement: layout on OpenVINO (GPU), 1 session".  A model
+// pinned to CPU under a GPU selection says so with its reason.
+void report_model_placements();
+
+// GRPARSE_OPENVINO_DEVICE, validated: GPU (the default), GPU.<n>, NPU,
+// NPU.<n> or CPU.  Device lists (AUTO:, HETERO:, MULTI:, BATCH:) throw
+// std::invalid_argument, since they let OpenVINO move work to CPU itself.
+std::string openvino_device_setting();
+
 // The unary executor's pool: GRPARSE_UNARY_WORKERS and GRPARSE_UNARY_QUEUE.
 CallExecutor::Options read_executor_options();
+
+// The streaming surface's admission cap and pool: GRPARSE_MAX_ACTIVE_STREAMS
+// (default 64), GRPARSE_STREAM_WORKERS (default 64) and GRPARSE_STREAM_QUEUE
+// (default 256), each 1 to 4096.
+StreamingLimits read_streaming_limits();
+
+// The async task registry's bounds: GRPARSE_MAX_TASKS (default 256),
+// GRPARSE_TASK_RESULT_TTL_SECONDS (default 3600) and GRPARSE_MAX_WATCHERS
+// (default 256).
+TaskRegistryOptions read_task_registry_options();
 
 // GRPARSE_EMBEDDING_BACKEND=off (default), cpu, openvino, or tensorrt. This
 // selection is independent of OCR's GRPARSE_ORT_EP. Model artifacts are read

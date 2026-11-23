@@ -17,6 +17,7 @@
 
 #include "render/renderer_base.h"
 #include "grparse/assembly_blocks.h"
+#include "grparse/assembly_floats.h"
 #include "grparse/assembly_table_data.h"
 #include "grparse/base64.h"
 #include "grparse/list_marker.h"
@@ -63,7 +64,8 @@ pipestream::parse::v1::TextSource text_source_for(const OcrPage& page, const Ocr
 }
 
 // Region label -> document item label for the text lines inside it.  Covers
-// both detectors' vocabularies; lines inside table/picture regions keep TEXT,
+// both detectors' vocabularies; lines inside table/picture regions keep TEXT
+// (a picture's lines hang off the picture item as its children),
 // because the region itself is emitted as a TableItem/PictureItem whose cells
 // come from fill_table_data and whose captions bind once the page is
 // assembled (append_page_data). `recognized` false means the label
@@ -286,19 +288,9 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   // Floats and caption items emitted on this page, kept for the caption
   // attachment pass; body_order collects the page's body children in the
   // order a reader meets them.
-  struct EmittedFloat {
-    const LayoutRegion* region;
-    std::string self_ref;
-    google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* captions;
-    google::protobuf::RepeatedPtrField<pipestream::document::v1::RefItem>* children;
-  };
   std::vector<EmittedFloat> floats;
-  struct EmittedCaption {
-    const LayoutRegion* region;
-    std::string self_ref;
-    pipestream::document::v1::TextItemBase* base;
-  };
   std::vector<EmittedCaption> captions;
+  std::vector<PendingPanelCaption> pending_panel_captions;
   std::vector<std::string> body_order;
 
   const auto emit_float = [&](const LayoutRegion& region) {
@@ -313,9 +305,10 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       fill_table_data(source, region, table->mutable_data());
-      add_collector_source(region.structured_cells.empty() ? "geometry" : "slanet-plus",
+      add_collector_source(assign_table_lines(source, region).structured ? "slanet-plus" : "geometry",
                            region.confidence, table->mutable_source());
-      floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children()});
+      floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children(),
+                        table->mutable_parent()});
       body_order.push_back(self_ref);
       return;
     }
@@ -349,24 +342,17 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         prediction->set_class_name(figure_class.label);
       }
     }
-    // Decoded payloads ride on the typed barcode arm, the wire's only home,
-    // plus the legacy misc-annotation struct for one release. The dialect
-    // exporters derive their pipestream__barcodes projection from the typed
-    // arm themselves; the producer never writes an untyped copy.
+    // Decoded payloads ride on the typed barcode arm, the wire's only home.
+    // The dialect exporters derive their pipestream__barcodes projection from
+    // the typed arm themselves; the producer never writes an untyped copy.
     for (const auto& barcode : region.barcodes) {
       auto* typed = picture->add_annotations()->mutable_barcode();
       typed->set_format(barcode.format);
       typed->set_value(barcode.text);
       typed->set_provenance("zxing-cpp");
-      auto* misc = picture->add_annotations()->mutable_misc();
-      misc->set_kind("barcode");
-      auto& fields = *misc->mutable_content()->mutable_fields();
-      fields["format"].set_string_value(barcode.format);
-      fields["value"].set_string_value(barcode.text);
-      fields["provenance"].set_string_value("zxing-cpp");
     }
     floats.push_back({&region, self_ref, picture->mutable_captions(),
-                      picture->mutable_children()});
+                      picture->mutable_children(), picture->mutable_parent()});
     body_order.push_back(self_ref);
   };
 
@@ -374,7 +360,6 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     const LayoutRegion* region = block.region;
     // Code lines keep their line structure; prose members join with spaces.
     const char separator = region != nullptr && region->label == "code" ? '\n' : ' ';
-    std::string merged;
     struct MemberSpan {
       size_t line;
       uint64_t start;
@@ -382,18 +367,13 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     };
     std::vector<MemberSpan> spans;
     spans.reserve(block.lines.size());
-    uint64_t code_points = 0;
+    LineJoiner joiner(separator);
     for (const size_t line_index : block.lines) {
-      const auto& line = source.lines[line_index];
-      if (!merged.empty()) {
-        merged.push_back(separator);
-        ++code_points;
-      }
-      const uint64_t length = utf8_codepoint_count(line.text);
-      spans.push_back({line_index, code_points, code_points + length});
-      code_points += length;
-      merged += line.text;
+      const uint64_t start = joiner.add(source.lines[line_index].text);
+      spans.push_back({line_index, start, joiner.code_points()});
     }
+    const uint64_t code_points = joiner.code_points();
+    std::string merged = joiner.take();
     if (code_points > static_cast<uint64_t>(std::numeric_limits<int32_t>::max())) {
       throw std::length_error("Text block exceeds document charspan range");
     }
@@ -406,9 +386,22 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
 
     const std::string self_ref = "#/texts/" + std::to_string(cursor->text_index++);
     bool recognized_label = true;
-    const auto label = region == nullptr
-                           ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
-                           : label_for_region(region->label, &recognized_label);
+    // A line inside a picture that opens "(a) ", "(b) " is the panel's own
+    // caption: the layout model gives these labels no region, so they fall
+    // into the panel's picture, and the panel lists them as its caption.
+    // A panel label set just under its panel, outside the panel's box but
+    // inside the figure, labels the panel directly above it. A text layer
+    // splits "(a) Augmentation recognition" into word cells, so this is
+    // judged on the whole block, never on a single word.
+    const LayoutRegion* owner = panel_label_owner(source, block, region, merged);
+    const bool panel_caption =
+        owner != nullptr && owner->label == "picture" &&
+        opens_panel_caption(merged, std::ranges::any_of(source.regions, [owner](const LayoutRegion& other) {
+          return &other != owner && other.label == "picture" && region_nested_in(*owner, other);
+        }));
+    const auto label = panel_caption    ? pipestream::document::v1::DOC_ITEM_LABEL_CAPTION
+                       : region == nullptr ? pipestream::document::v1::DOC_ITEM_LABEL_TEXT
+                                        : label_for_region(region->label, &recognized_label);
     auto* item = output->add_texts();
     // Each structural label takes its dedicated arm so the fields only that
     // arm carries (heading level, list marker, code language) can ever be
@@ -443,8 +436,36 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
         break;
     }
     const bool furniture = is_furniture_region(region);
+    // Text inside a picture (a chart's axis titles, ticks and legend) is the
+    // picture's own content, as the reference files it: a child of the
+    // picture item, out of the body order, so it neither streams as prose
+    // nor is lost. The picture was emitted first (region_anchor rule 1).
+    EmittedFloat* holder = nullptr;
+    bool panel_pending = false;
+    if (owner != nullptr && owner->label == "picture") {
+      for (auto& emitted : floats) {
+        if (emitted.region == owner) holder = &emitted;
+      }
+      // The block's own picture is always out before it (region_anchor rule
+      // 1); a panel it moved to may not be yet.
+      if (holder == nullptr && owner != region) {
+        for (auto& emitted : floats) {
+          if (emitted.region == region) holder = &emitted;
+        }
+        panel_pending = holder != nullptr;
+      }
+    }
     base->set_self_ref(self_ref);
-    base->mutable_parent()->set_ref(furniture ? "#/furniture" : "#/body");
+    base->mutable_parent()->set_ref(holder != nullptr ? holder->self_ref
+                                    : furniture       ? "#/furniture"
+                                                      : "#/body");
+    if (holder != nullptr) holder->children->Add()->set_ref(self_ref);
+    if (panel_pending) {
+      pending_panel_captions.push_back(
+          {owner, static_cast<size_t>(holder - floats.data()), self_ref, base});
+    } else if (holder != nullptr && panel_caption) {
+      holder->captions->Add()->set_ref(self_ref);
+    }
     base->set_content_layer(furniture ? pipestream::document::v1::CONTENT_LAYER_FURNITURE
                                       : pipestream::document::v1::CONTENT_LAYER_BODY);
     base->set_label(label);
@@ -614,7 +635,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (code_item == nullptr && region != nullptr && region->label == "caption") {
       captions.push_back({region, self_ref, base});
     }
-    if (!furniture) body_order.push_back(self_ref);
+    if (!furniture && holder == nullptr) body_order.push_back(self_ref);
   };
 
   size_t next_placed = 0;
@@ -627,45 +648,7 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     if (!blocks[index].suppressed) emit_block(blocks[index]);
   }
 
-  // A caption binds to the nearest table or picture it visually labels: at
-  // least 30% of the caption's width overlapping horizontally and a vertical
-  // gap of at most 1.5 caption heights, nearest gap wins. The claimed
-  // caption re-parents under the float and leaves body order; renderers then
-  // emit it with its float instead of as free prose. The link is written on
-  // both sides, as docling-core's add_text(parent=float) does: the caption's
-  // parent names the float, and the float lists the caption among its
-  // children as well as its captions. A parent that does not list its child
-  // is the one-sided link the integrity check reports and the opt-in
-  // repair_referenced_orphans pass exists to mend in foreign documents; a
-  // document this assembler produces never needs it.
-  for (auto& caption : captions) {
-    const double width = caption.region->right - caption.region->left;
-    const double height = caption.region->bottom - caption.region->top;
-    if (width <= 0 || height <= 0) continue;
-    const EmittedFloat* best = nullptr;
-    double best_gap = 0;
-    for (const auto& target : floats) {
-      const double overlap = std::min(caption.region->right, target.region->right) -
-                             std::max(caption.region->left, target.region->left);
-      if (overlap < 0.3 * width) continue;
-      double gap = 0;
-      if (caption.region->top >= target.region->bottom) {
-        gap = caption.region->top - target.region->bottom;
-      } else if (caption.region->bottom <= target.region->top) {
-        gap = target.region->top - caption.region->bottom;
-      }
-      if (gap > 1.5 * height) continue;
-      if (best == nullptr || gap < best_gap) {
-        best = &target;
-        best_gap = gap;
-      }
-    }
-    if (best == nullptr) continue;
-    caption.base->mutable_parent()->set_ref(best->self_ref);
-    best->captions->Add()->set_ref(caption.self_ref);
-    best->children->Add()->set_ref(caption.self_ref);
-    std::erase(body_order, caption.self_ref);
-  }
+  link_floats(floats, captions, pending_panel_captions, source.height, &body_order);
 
   for (const auto& ref : body_order) output->add_body_order()->set_ref(ref);
 }

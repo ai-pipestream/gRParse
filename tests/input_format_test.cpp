@@ -36,6 +36,10 @@ void verify_common_mime_mappings() {
   require_format("text/markdown", "a.md", parsev1::INPUT_FORMAT_MD, "md");
   require_format("text/html", "a.html", parsev1::INPUT_FORMAT_HTML, "html");
   require_format("text/csv", "a.csv", parsev1::INPUT_FORMAT_CSV, "csv");
+  require_format("text/calendar", "a.ics", parsev1::INPUT_FORMAT_CALENDAR, "ics mime");
+  require_format("text/plain", "invite.ics", parsev1::INPUT_FORMAT_CALENDAR, "ics extension");
+  require_format("application/octet-stream", "invite.ifb", parsev1::INPUT_FORMAT_CALENDAR,
+                 "ifb extension");
   require_format("audio/mpeg", "a.mp3", parsev1::INPUT_FORMAT_AUDIO, "mp3");
   require_format("video/mp4", "a.mp4", parsev1::INPUT_FORMAT_VIDEO, "mp4");
   require_format("application/x-afp", "a.afp", parsev1::INPUT_FORMAT_AFP, "afp");
@@ -58,6 +62,8 @@ void verify_common_mime_mappings() {
 // and template variants, and plain text (which parses as Markdown).
 void verify_container_and_variant_mappings() {
   require_format("application/zip", "a.dclx", parsev1::INPUT_FORMAT_DCLX, "dclx");
+  require_format("application/xml", "notes.dclg", parsev1::INPUT_FORMAT_XML_DOCLANG,
+                 "a DocLang document by its own extension, not bare XML read as JATS");
   require_format("application/gzip", "books.TAR.GZ", parsev1::INPUT_FORMAT_METS_GBS, "mets");
   require_format("application/json", "a.boxnote", parsev1::INPUT_FORMAT_BOXNOTE, "boxnote");
   require_format("text/plain", "a.txt", parsev1::INPUT_FORMAT_MD, "text/plain");
@@ -93,6 +99,18 @@ void verify_allowlist() {
           "pdf allowlist accepts pdf");
   require(!grparse::from_formats_allows(pdf_only, parsev1::INPUT_FORMAT_MD),
           "pdf allowlist rejects md");
+
+  google::protobuf::RepeatedField<int> calendar_only;
+  calendar_only.Add(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_CALENDAR),
+          "a calendar allowlist accepts calendar");
+  require(!grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_MD),
+          "naming CALENDAR alone does not allow a parsed format");
+  calendar_only.Add(parsev1::INPUT_FORMAT_MD);
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_MD),
+          "CALENDAR beside MD allows the parsed format");
+  require(grparse::from_formats_allows(calendar_only, parsev1::INPUT_FORMAT_CALENDAR),
+          "the same list still allows CALENDAR");
 }
 
 }  // namespace

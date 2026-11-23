@@ -7,10 +7,13 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <string_view>
+#include <vector>
 #include <unistd.h>
 
 #include "grparse_session_ep.h"
 #include "support/check.h"
+#include "support/tiny_onnx_model.h"
 
 namespace {
 
@@ -109,79 +112,198 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::set_ort_ep_selection(kept);
 }
 
-// The minimal ONNX model a fallback can rebuild on CPU: ir_version 8, opset
-// 13, one Identity from input "x" to output "y", hand-encoded protobuf so the
-// fixture carries no generator dependency.
-constexpr unsigned char kTinyModelBytes[] = {
-    0x08, 0x08,                                           // ir_version = 8
-    0x42, 0x02, 0x10, 0x0D,                               // opset_import: version 13
-    0x3A, 0x37,                                           // graph, 55 bytes
-    0x12, 0x01, 0x67,                                     // name = "g"
-    0x0A, 0x10,                                           // node
-    0x0A, 0x01, 0x78,                                     //   input "x"
-    0x12, 0x01, 0x79,                                     //   output "y"
-    0x22, 0x08, 0x49, 0x64, 0x65, 0x6E, 0x74, 0x69, 0x74, 0x79,  // op_type Identity
-    0x5A, 0x0F, 0x0A, 0x01, 0x78,                         // input "x"
-    0x12, 0x0A, 0x0A, 0x08, 0x08, 0x01,                   //   tensor elem_type float
-    0x12, 0x04, 0x0A, 0x02, 0x08, 0x01,                   //   shape [1]
-    0x62, 0x0F, 0x0A, 0x01, 0x79,                         // output "y"
-    0x12, 0x0A, 0x0A, 0x08, 0x08, 0x01,                   //   tensor elem_type float
-    0x12, 0x04, 0x0A, 0x02, 0x08, 0x01,                   //   shape [1]
-};
-
-std::filesystem::path write_tiny_model() {
-  const auto path = std::filesystem::temp_directory_path() /
-                    std::format("grparse-tiny-{}.onnx", ::getpid());
-  std::ofstream out(path, std::ios::binary | std::ios::trunc);
-  out.write(reinterpret_cast<const char*>(kTinyModelBytes), sizeof(kTinyModelBytes));
-  out.close();
-  require(out.good(), "the tiny model fixture is written");
-  return path;
+// Runs `build` and returns the message of the exception it must throw.
+template <typename Build>
+std::string refusal_message(Build&& build) {
+  try {
+    build();
+  } catch (const std::exception& error) {
+    return error.what();
+  }
+  require(false, "a refused provider must throw, never return a session");
+  return {};
 }
 
-void verify_make_session_falls_back_and_counts() {
-  const std::filesystem::path model = write_tiny_model();
+const grparse::OrtPlacement* find_placement(const std::vector<grparse::OrtPlacement>& placements,
+                                            std::string_view model) {
+  for (const auto& placement : placements) {
+    if (placement.model == model) return &placement;
+  }
+  return nullptr;
+}
+
+void verify_make_session_refuses_and_counts() {
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   // CUDA is never available in the test binaries (CPU and OpenVINO ONNX
   // Runtime packages reject the provider outright; CI has no GPU for the
-  // CUDA package), so a CUDA selection always drives make_session down its
-  // catch block: the fallback counter must move and the CPU rebuild must
-  // load the model.  Retries are scoped to OpenVINO, so CUDA must not
-  // retry: one attempt, one fallback.
+  // CUDA package), so a CUDA selection is a refused build every time.  Strict
+  // placement: the build throws, counts one refusal, records no placement,
+  // and never hands back a CPU session.  Retries are scoped to OpenVINO, so
+  // CUDA makes exactly one attempt.
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCuda;
   grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
   const uint64_t before = grparse::ep_fallback_count();
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
-  Ort::Session session = grparse::make_session(env, model, "tiny test model");
-  require_equal(grparse::ep_fallback_count(), before + 1,
-                "a refused provider counts one fallback");
+  const std::string message =
+      refusal_message([&] { (void)grparse::make_session(env, model, "tiny test model"); });
+  // A build that carries native TensorRT refuses before ONNX Runtime is
+  // asked at all: a CUDA selection there never gets an ONNX Runtime session.
+  const bool native = grparse::native_tensorrt_build();
+  require(message.contains(native ? "TensorRT (CUDA device 0)" : "CUDA execution provider") &&
+              message.contains("tiny test model") &&
+              message.contains(native ? "will not run on ONNX Runtime or on CPU"
+                                      : "will not run on CPU"),
+          "the refusal names the backend, the model and the strict policy: " + message);
+  require_equal(grparse::ep_fallback_count(), before + 1, "a refused provider counts once");
   require_equal(grparse::ep_build_retry_count(), retries_before,
                 "a refused CUDA build is not retried");
-  require(session.GetInputCount() == 1 && session.GetOutputCount() == 1,
-          "the CPU fallback session loads the tiny model");
+  require(grparse::ort_placements().empty(), "a refused build records no placement");
   std::filesystem::remove(model);
 }
 
-void verify_make_session_retries_on_openvino_then_falls_back() {
+void verify_make_session_retries_on_openvino_then_refuses() {
   // The OpenVINO provider is unusable in the test binaries too (absent from
   // the CPU package, present but device-less in the OpenVINO package), but
-  // it is the retryable provider: the build must be attempted three times
-  // before the pre-existing CPU fallback fires.
+  // it is the retryable provider: three attempts, then the refusal.
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kOpenVino;
   grparse::set_ort_ep_selection(selection);
-  const std::filesystem::path model = write_tiny_model();
+  grparse::reset_ort_placements();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   const uint64_t before = grparse::ep_fallback_count();
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
-  Ort::Session session = grparse::make_session(env, model, "tiny test model");
+  const std::string message =
+      refusal_message([&] { (void)grparse::make_session(env, model, "tiny test model"); });
+  require(message.contains("OpenVINO execution provider (GPU)"),
+          "the refusal names the OpenVINO device: " + message);
   require_equal(grparse::ep_build_retry_count(), retries_before + 2,
-                "a refused OpenVINO build retries twice before falling back");
-  require_equal(grparse::ep_fallback_count(), before + 1,
-                "the pre-existing fallback still counts once");
-  require(session.GetInputCount() == 1 && session.GetOutputCount() == 1,
-          "the CPU fallback session loads the tiny model");
+                "a refused OpenVINO build retries twice before refusing");
+  require_equal(grparse::ep_fallback_count(), before + 1, "the refusal counts once");
+  require(grparse::ort_placements().empty(), "a refused build records no placement");
+  std::filesystem::remove(model);
+}
+
+void verify_strict_placement_options() {
+  // The switch that stops ONNX Runtime from running unclaimed nodes on its
+  // CPU provider: on for OpenVINO, off for CPU (nothing to fall back from)
+  // and CUDA (whose provider keeps shape ops on CPU by design).
+  Ort::SessionOptions openvino;
+  grparse::apply_strict_placement(openvino, grparse::OrtEp::kOpenVino);
+  require(openvino.HasConfigEntry(grparse::kDisableCpuEpFallbackKey) &&
+              openvino.GetConfigEntry(grparse::kDisableCpuEpFallbackKey) == "1",
+          "OpenVINO sessions refuse CPU-placed nodes");
+  for (const grparse::OrtEp ep : {grparse::OrtEp::kCpu, grparse::OrtEp::kCuda}) {
+    Ort::SessionOptions options;
+    grparse::apply_strict_placement(options, ep);
+    require(!options.HasConfigEntry(grparse::kDisableCpuEpFallbackKey),
+            "only OpenVINO sessions set the CPU-node switch");
+  }
+  require(std::string_view(grparse::kDisableCpuEpFallbackKey) == "session.disable_cpu_ep_fallback",
+          "the key is ONNX Runtime's own spelling");
+}
+
+void verify_cpu_builds_record_placement() {
+  // Two builds of one model on one provider are one entry with two sessions:
+  // the ledger is what the startup log and grparse_ort_sessions read.
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kCpu;
+  grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
+  Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+  (void)grparse::make_session(env, model, "pooled model");
+  (void)grparse::make_session(env, model, "pooled model");
+  std::unique_ptr<Ort::Session> net(grparse::make_rapidocr_session(env, model, "ocr net", 1));
+  const auto placements = grparse::ort_placements();
+  require_equal(placements.size(), size_t{2}, "one entry per model");
+  require(placements[0].model == "pooled model" && placements[0].sessions == 2 &&
+              placements[0].requested == grparse::OrtEp::kCpu &&
+              placements[0].actual == grparse::OrtEp::kCpu && placements[0].pin_reason.empty(),
+          "the pooled model has two CPU sessions, first-built order");
+  require(placements[1].model == "ocr net" && placements[1].sessions == 1,
+          "the OCR builder records its net too");
+  std::filesystem::remove(model);
+}
+
+// TensorRT is where a model runs under a CUDA selection, never a selection
+// itself, and its engines sit in the same ledger as the sessions.
+void verify_native_tensorrt_placement_and_refusal() {
+  require(grparse::ort_ep_name(grparse::OrtEp::kTensorRt) == "TensorRT", "the backend has a name");
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kTensorRt;
+  const std::string rejected = refusal_message([&] { grparse::set_ort_ep_selection(selection); });
+  require(rejected.contains("not a selection"), "TensorRT cannot be selected: " + rejected);
+
+  selection.ep = grparse::OrtEp::kCuda;
+  selection.cuda_device = 1;
+  grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
+  grparse::record_native_placement("layout");
+  grparse::record_native_placement("layout");
+  grparse::record_native_placement("OCR detection");
+  const auto placements = grparse::ort_placements();
+  require_equal(placements.size(), size_t{2}, "one entry per model");
+  require(placements[0].model == "layout" && placements[0].sessions == 2 &&
+              placements[0].requested == grparse::OrtEp::kCuda &&
+              placements[0].actual == grparse::OrtEp::kTensorRt && placements[0].device == "1" &&
+              placements[0].pin_reason.empty(),
+          "CUDA was asked for, TensorRT runs it, on the selected device");
+
+  const uint64_t before = grparse::ep_fallback_count();
+  const std::string message =
+      grparse::tensorrt_refusal("layout", "/models/layout_heron.onnx", "the builder said no").what();
+  require(message.contains("TensorRT (CUDA device 1) refused /models/layout_heron.onnx") &&
+              message.contains("the builder said no") &&
+              message.contains("will not run on ONNX Runtime or on CPU"),
+          "the refusal carries the builder's words and the policy: " + message);
+  require_equal(grparse::ep_fallback_count(), before + 1, "a TensorRT refusal counts once");
+
+  if (grparse::native_tensorrt_build()) {
+    // The patched nets' hook must not load ONNX Runtime's CUDA provider:
+    // it counts and appends nothing (this would throw without a GPU).
+    const uint64_t hooks = grparse::ep_hook_invocations();
+    Ort::SessionOptions options;
+    grparse::append_execution_provider(options, 0);
+    require_equal(grparse::ep_hook_invocations(), hooks + 1, "the hook still counts");
+    const std::filesystem::path model = grparse_test::write_tiny_model();
+    Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+    const std::string net = refusal_message(
+        [&] { delete grparse::make_rapidocr_session(env, model, "ocr net", 1); });
+    require(net.contains("builds no ONNX Runtime session"),
+            "no OCR net gets an ONNX Runtime session under CUDA: " + net);
+    std::filesystem::remove(model);
+  }
+  grparse::reset_ort_placements();
+  grparse::set_ort_ep_selection(grparse::OrtEpSelection{});
+}
+
+void verify_pinned_cpu_session_is_declared() {
+  // The one way to run on CPU under a GPU selection: a pin with a reason,
+  // visible in the ledger as requested=OpenVINO, actual=CPU.
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kOpenVino;
+  grparse::set_ort_ep_selection(selection);
+  grparse::reset_ort_placements();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
+  Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
+  const uint64_t before = grparse::ep_fallback_count();
+  Ort::Session session =
+      grparse::make_pinned_cpu_session(env, model, "pinned model", "test reason");
+  require(session.GetInputCount() == 1, "the pinned session loads the model");
+  const auto placements = grparse::ort_placements();
+  const grparse::OrtPlacement* pinned = find_placement(placements, "pinned model");
+  require(pinned != nullptr && pinned->requested == grparse::OrtEp::kOpenVino &&
+              pinned->actual == grparse::OrtEp::kCpu && pinned->pin_reason == "test reason" &&
+              pinned->device.empty(),
+          "the pin is recorded with what was asked for and why");
+  require_equal(grparse::ep_fallback_count(), before, "a pin is not a refusal");
+  const std::string message = refusal_message(
+      [&] { (void)grparse::make_pinned_cpu_session(env, model, "pinned model", ""); });
+  require(message.contains("needs a reason"), "a pin without a reason is rejected");
   std::filesystem::remove(model);
 }
 
@@ -194,7 +316,7 @@ void verify_make_session_retries_then_succeeds() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCpu;
   grparse::set_ort_ep_selection(selection);
-  const std::filesystem::path model = write_tiny_model();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   grparse::ort_ep_test_inject_build_failures(2);
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
@@ -212,7 +334,7 @@ void verify_injected_failures_exhaust_and_throw_on_cpu() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCpu;
   grparse::set_ort_ep_selection(selection);
-  const std::filesystem::path model = write_tiny_model();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   grparse::ort_ep_test_inject_build_failures(5);
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
@@ -235,7 +357,7 @@ void verify_make_rapidocr_session_retries_then_succeeds() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kCpu;
   grparse::set_ort_ep_selection(selection);
-  const std::filesystem::path model = write_tiny_model();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   grparse::ort_ep_test_inject_build_failures(1);
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
@@ -256,7 +378,7 @@ void verify_make_rapidocr_session_fails_loudly_on_openvino() {
   grparse::OrtEpSelection selection;
   selection.ep = grparse::OrtEp::kOpenVino;
   grparse::set_ort_ep_selection(selection);
-  const std::filesystem::path model = write_tiny_model();
+  const std::filesystem::path model = grparse_test::write_tiny_model();
   const uint64_t before = grparse::ep_fallback_count();
   const uint64_t retries_before = grparse::ep_build_retry_count();
   Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-test");
@@ -270,8 +392,8 @@ void verify_make_rapidocr_session_fails_loudly_on_openvino() {
   require(threw, "an exhausted OCR build throws instead of degrading to CPU");
   require_equal(grparse::ep_build_retry_count(), retries_before + 2,
                 "the OCR builder retries twice before giving up");
-  require_equal(grparse::ep_fallback_count(), before,
-                "the OCR builder never counts a CPU fallback");
+  require_equal(grparse::ep_fallback_count(), before + 1,
+                "the OCR builder counts its refusal like every other builder");
   std::filesystem::remove(model);
 }
 
@@ -287,9 +409,9 @@ void verify_cpu_selection_failure_does_not_count() {
   } catch (const std::exception&) {
     threw = true;
   }
-  require(threw, "a missing model on CPU throws instead of falling back");
+  require(threw, "a missing model on CPU throws");
   require_equal(grparse::ep_fallback_count(), before,
-                "a CPU failure is not an execution-provider fallback");
+                "a CPU failure is not an execution-provider refusal");
 }
 
 }  // namespace
@@ -302,9 +424,13 @@ int main() {
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
       verify_ocr_batch_size_follows_provider,
-      verify_make_session_falls_back_and_counts,
+      verify_make_session_refuses_and_counts,
       verify_cpu_selection_failure_does_not_count,
-      verify_make_session_retries_on_openvino_then_falls_back,
+      verify_make_session_retries_on_openvino_then_refuses,
+      verify_strict_placement_options,
+      verify_cpu_builds_record_placement,
+      verify_native_tensorrt_placement_and_refusal,
+      verify_pinned_cpu_session_is_declared,
       verify_make_session_retries_then_succeeds,
       verify_injected_failures_exhaust_and_throw_on_cpu,
       verify_make_rapidocr_session_retries_then_succeeds,

@@ -15,6 +15,7 @@ export async function streamThroughUi(page: Page, ui: ServiceUi) {
   const label = describeUi(ui);
   const run = page.locator("#run");
   await expect(run, `${label} run button`).toBeEnabled();
+  if (ui.layout !== undefined) await setEbcdicOptions(page, ui);
   if (ui.fixture) await page.locator("#pick").setInputFiles(corpusFile(ui.fixture));
   else await expect(page.locator("#sample option"), `${label} bundled samples`).not.toHaveCount(0);
   await run.click();
@@ -22,6 +23,27 @@ export async function streamThroughUi(page: Page, ui: ServiceUi) {
   const verdict = page.locator("#verdict");
   await expect(verdict, `${label} verdict stayed idle: "${await verdict.textContent()}"`).not.toHaveClass(/\bidle\b/);
   await expect(page.locator(ui.stat!), `${label} ${ui.statLabel} counter stayed at zero`).toHaveText(/[1-9]/);
+  if (ui.emitDocument) {
+    await expect(page.locator("#log"), `${label} no folded Document came back`).toContainText("folded Document received");
+  }
+}
+
+// The ebcdic frontend loads its first bundled sample's companion layout into
+// `#layout` once the page is up; the row's own layout is typed over it only
+// after that, so the late load cannot overwrite it.
+async function setEbcdicOptions(page: Page, ui: ServiceUi) {
+  const label = describeUi(ui);
+  await expect(page.locator("#sample option"), `${label} bundled samples`).not.toHaveCount(0);
+  await expect(page.locator("#layout"), `${label} companion layout never loaded`).not.toHaveValue("");
+  await page.locator("#layout").fill(ui.layout!);
+  await expect(page.locator("#layout"), `${label} layout box`).toHaveValue(ui.layout!);
+  if (ui.encoding) {
+    const options = await page.locator("#encoding option").allTextContents();
+    const encoding = options.find((option) => ui.encoding!.test(option));
+    expect(encoding, `${label} code page ${ui.encoding} not offered: ${JSON.stringify(options)}`).toBeDefined();
+    await page.locator("#encoding").selectOption(encoding!);
+  }
+  if (ui.emitDocument) await page.locator("#emitDoc").check();
 }
 
 // The libreoffice frontend: selecting a file starts the render.

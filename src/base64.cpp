@@ -119,13 +119,14 @@ std::string decode_base64(const std::string& value) {
     return detail::scalar_decode_base64(value);
   }
   // The kernel accepts an unpadded final quad and stray padded lengths the
-  // contract rejects; the cheap structural recount catches those without
-  // rescanning payload bytes.
+  // contract rejects, and a body of whitespace alone as an empty payload
+  // (the base64-differential fuzzer's first finding); the cheap structural
+  // recount catches those without rescanning payload bytes.
   std::size_t significant = 0;
   for (const unsigned char character : value) {
     if (!std::isspace(character)) ++significant;
   }
-  if (significant % 4 != 0) {
+  if (significant == 0 || significant % 4 != 0) {
     return detail::scalar_decode_base64(value);  // throws the contract error
   }
   decoded.resize(outcome.count);

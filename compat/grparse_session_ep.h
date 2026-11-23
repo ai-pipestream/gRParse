@@ -4,8 +4,11 @@
 #include <cstdint>
 #include <filesystem>
 #include <mutex>
+#include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
+#include <vector>
 
 #include <onnxruntime/core/session/onnxruntime_cxx_api.h>
 
@@ -20,7 +23,10 @@
 
 namespace grparse {
 
-enum class OrtEp { kCpu, kCuda, kOpenVino };
+// kTensorRt is never a selection: it is where a model actually runs when the
+// selection is kCuda in a build that carries native TensorRT
+// (native_tensorrt_build), and it appears only as a placement's `actual`.
+enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt };
 
 // Numeric precision a session asks its provider for.  kProviderDefault leaves
 // the provider's own choice alone, which for the OpenVINO GPU plugin is half
@@ -32,7 +38,8 @@ enum class OrtPrecision { kProviderDefault, kFloat32 };
 struct OrtEpSelection {
   OrtEp ep = OrtEp::kCpu;
   int cuda_device = 0;
-  // OpenVINO device_type: GPU, GPU.<n>, CPU, NPU, or an AUTO:/HETERO: list.
+  // OpenVINO device_type: GPU, GPU.<n>, NPU, NPU.<n> or CPU; never a device
+  // list (server_config.cpp rejects AUTO:/HETERO:/MULTI:/BATCH:).
   std::string openvino_device = "GPU";
   // Directory the OpenVINO plugin may keep compiled blobs in, so a session
   // create reuses the previous compile instead of repeating it.  Empty
@@ -68,6 +75,43 @@ int ort_intra_op_threads();
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
 
+// True when this build runs the cuda flavor's models on native TensorRT
+// (src/tensorrt/) instead of ONNX Runtime's CUDA provider.  In such a build
+// a CUDA selection never creates an ONNX Runtime session for an image model.
+bool native_tensorrt_build();
+
+// GRPARSE_CUDA_TF32: "off" (the default) computes FP32 convolutions and
+// matrix products exactly; "on" allows TF32.  Applies to ONNX Runtime's CUDA
+// provider and to native TensorRT alike.  Any other value throws
+// std::invalid_argument.
+bool cuda_tf32_enabled();
+
+// Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
+// src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
+// for every new input shape; with dynamic page and line sizes one 101-paper
+// run left 16,822 compiled blobs and made OCR 11x slower than CUDA.  When on,
+// the detector input is padded with white to a bucketed size and its map is
+// cropped back, and a line is padded to a bucketed width whose extra time
+// steps are not decoded.  GRPARSE_OCR_SHAPE_BUCKETS=auto (default: the
+// detector only, for the OpenVINO provider on a GPU device), on, det, rec or
+// off.
+bool ocr_shape_buckets();
+// The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
+// 64) at least `side` pixels.
+int ocr_det_bucket(int side);
+// The detector's longest side: `configured` on every backend of this build.
+int ocr_det_max_side(int configured);
+// The detector input shape (width, height) a `width` x `height` resize is
+// padded to: unchanged without buckets, each side bucketed on its own
+// otherwise.
+std::pair<int, int> ocr_det_bucket_shape(int width, int height);
+// The smallest recognizer width bucket at least `width` pixels.
+int ocr_rec_bucket(int width);
+// How bucket padding is filled: true repeats the edge pixels
+// (GRPARSE_OCR_BUCKET_PAD=replicate, the default), false pads the detector
+// with white and the recognizer with zeros (=zero).
+bool ocr_pad_replicate();
+
 // Must be called before any OCR engine is constructed.  Later sessions use
 // the newest selection; sessions already built keep the provider they bound.
 void set_ort_ep_selection(OrtEpSelection selection);
@@ -79,12 +123,72 @@ OrtEpSelection ort_ep_selection();
 // is active.
 uint64_t ep_hook_invocations();
 
-// How many sessions make_session has rebuilt on CPU after the selected
-// execution provider refused the graph or the device failed.  A monitoring
-// surface: every increment is also a stderr line, and a rising count on a
-// deployment that was promised GPU acceleration is the earliest signal that
-// the promise broke.
+// How many session builds the selected execution provider refused (after the
+// OpenVINO retries ran out), plus first inferences that failed on the
+// provider.  Placement is strict: each one of these failed the build and
+// threw; none was rebuilt on CPU.  Exported as grparse_ort_ep_fallbacks_total
+// (the name predates strict placement); a healthy GPU deployment reads 0.
 uint64_t ep_fallback_count();
+
+// Counts one refusal, logs it loudly, and returns the exception a builder
+// throws: "<what>: the <ep> execution provider (<device>) refused <model>
+// (<detail>); GPU placement is strict and this model will not run on CPU".
+// For callers whose provider failure surfaces after the session exists (the
+// layout engine's first inference).
+std::runtime_error ep_refusal(std::string_view what, const std::filesystem::path& model_path,
+                              std::string_view detail);
+
+// The same for a model native TensorRT refused (an engine that does not
+// build, a failed first inference): "<what>: TensorRT (CUDA device <n>)
+// refused <model> (<detail>); GPU placement is strict and this model will
+// not run on ONNX Runtime or on CPU".  Also what make_session and
+// make_rapidocr_session throw under a CUDA selection in a build that
+// carries native TensorRT, where no ONNX Runtime session may stand in for
+// an engine.
+std::runtime_error tensorrt_refusal(std::string_view what, const std::filesystem::path& model_path,
+                                    std::string_view detail);
+
+// Where one model's sessions actually run, as the builders recorded them.
+// `requested` is the process selection when the session was built, `actual`
+// the provider the session was built for.  The two differ for a model that
+// pins itself to CPU in code (make_pinned_cpu_session), which carries its
+// reason, and for a model native TensorRT runs under a CUDA selection
+// (actual kTensorRt); there is no other way for them to differ.  `device` is
+// the OpenVINO device type or the CUDA device index; empty on CPU.
+struct OrtPlacement {
+  std::string model;
+  OrtEp requested = OrtEp::kCpu;
+  OrtEp actual = OrtEp::kCpu;
+  std::string device;
+  std::string pin_reason;
+  uint64_t sessions = 0;
+};
+
+// Records one model built on the selection's native backend (TensorRT under
+// a CUDA selection, src/inference_model.cpp) in the same placements as the
+// ONNX Runtime sessions, so grparse_ort_sessions shows every model.
+void record_native_placement(std::string_view what);
+
+// Every placement recorded so far, one entry per (model, requested, actual,
+// device), in first-built order.  Deterministic for a fixed build sequence.
+std::vector<OrtPlacement> ort_placements();
+
+// Forgets every recorded placement.  The server calls it before each
+// GRPARSE_ORT_EP=auto attempt, so a provider that built some OCR nets and
+// then refused one leaves no entries behind; tests call it between cases.
+void reset_ort_placements();
+
+// The session config key that makes ONNX Runtime refuse to place any node
+// on its own CPU provider when another provider was appended.  Without it,
+// ops the OpenVINO provider does not claim run on CPU silently and the GPU
+// does a fraction of the work.  Set on every OpenVINO session.
+inline constexpr const char* kDisableCpuEpFallbackKey = "session.disable_cpu_ep_fallback";
+
+// Sets kDisableCpuEpFallbackKey on options for a session that will run on
+// `ep` when that provider is OpenVINO; leaves CPU and CUDA options alone (the
+// CUDA provider leaves shape ops on CPU by design).  append_execution_provider
+// calls it before appending the provider.
+void apply_strict_placement(Ort::SessionOptions& options, OrtEp ep);
 
 // How many session builds were retried after a transient OpenVINO
 // execution-provider failure before either succeeding or giving up: the
@@ -139,22 +243,21 @@ class OvCompileGate final {
 
 // Builds one session for a model file on the configured provider.
 //
-// A provider that refuses the graph - an unsupported operator, a device that
-// will not initialize, an export the plugin rejects outright, the OpenVINO
-// toolchain's JIT compiler failing intermittently - costs that model its
-// acceleration, not the whole server: an OpenVINO build retries a small
-// bounded number of times with short jittered backoff (the failures are
-// intermittent and usually pass on a later attempt, still on the GPU), then
-// the session is rebuilt on CPU with the error logged in full.  Other
-// providers keep their single-attempt behavior.  `what` names the model in
-// that message.  A model file that does not parse at all still throws, on
-// every attempt.  CPU selections build once, with no retries: a CPU failure
-// is deterministic.
+// Placement is strict: a provider that refuses the graph - an unsupported
+// operator, a node it will not claim (OpenVINO sessions set
+// kDisableCpuEpFallbackKey, so ONNX Runtime cannot quietly run such a node on
+// its CPU provider), a device that will not initialize, the OpenVINO
+// toolchain's JIT compiler failing - fails the build with ep_refusal's
+// exception.  Nothing is rebuilt on CPU: a GPU deployment whose model cannot
+// run on the GPU must not come up looking healthy and run at CPU speed.  An
+// OpenVINO build first retries a small bounded number of times with short
+// jittered backoff (the JIT failures are intermittent and usually pass on a
+// later attempt, still on the GPU).  CPU selections build once, with no
+// retries: a CPU failure is deterministic.  Every successful build records
+// its placement (ort_placements).
 //
-// This fallback is pre-existing policy and applies to the models that build
-// through make_session (table structure, layout, figure classification).  The
-// OCR nets are deliberately different: they build through
-// make_rapidocr_session, which never retreats to CPU.
+// A model that must run on CPU under a GPU selection says so in code with
+// make_pinned_cpu_session; that is the only way to get a CPU session here.
 //
 // The OpenVINO toolchain's other failure class - heap corruption or a
 // longjmp across the stack inside the compile - kills the process outright
@@ -177,11 +280,20 @@ Ort::Session make_session(Ort::Env& env, const std::filesystem::path& model_path
 Ort::Session* make_rapidocr_session(Ort::Env& env, const std::filesystem::path& model_path,
                                     std::string_view what, int num_thread);
 
-// The CPU-only session make_session falls back to, exposed for callers that
-// must retreat AFTER creation: some provider failures only surface at the
-// first inference (a runtime kernel compile), which make_session cannot see.
+// A plain CPU session with the process threading.  Records no placement;
+// the builders above record theirs.  Under a GPU selection use
+// make_pinned_cpu_session, which says why.
 Ort::Session make_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
                               int intra_op_threads = kIntraOpProcessDefault);
+
+// A model that cannot run on the selected GPU provider and is placed on CPU
+// on purpose.  `reason` is mandatory and lands in the startup log and the
+// grparse_ort_sessions metric (pin label), so the CPU placement is visible,
+// counted per session, and reviewable in the diff that added it.  Not a
+// fallback: no GPU build is attempted.
+Ort::Session make_pinned_cpu_session(Ort::Env& env, const std::filesystem::path& model_path,
+                                     std::string_view what, std::string_view reason,
+                                     int intra_op_threads = kIntraOpProcessDefault);
 
 
 }  // namespace grparse

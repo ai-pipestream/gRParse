@@ -96,6 +96,24 @@ void StorageFold::link_child(const std::string& parent_ref,
   group_by_ref(parent_ref)->add_children()->set_ref(child_ref);
 }
 
+void StorageFold::drop_empty_list(const std::string& group_ref,
+                                  const std::string& parent_ref) {
+  if (group_by_ref(group_ref)->children_size() > 0) return;
+  // Every item a list emits hangs under its group, so a group with no
+  // children had nothing added after it: it is the last group and its
+  // parent's last child. Checked anyway, so a wrong guess keeps the group.
+  docv1::GroupItem* parent = group_by_ref(parent_ref);
+  const int last_group = document_->groups_size() - 1;
+  const int last_child = parent->children_size() - 1;
+  if (last_group < 0 || document_->groups(last_group).self_ref() != group_ref ||
+      last_child < 0 || parent->children(last_child).ref() != group_ref) {
+    return;
+  }
+  parent->mutable_children()->RemoveLast();
+  document_->mutable_groups()->RemoveLast();
+  warn("a list carried no items and was dropped");
+}
+
 void StorageFold::stamp_source(
     google::protobuf::RepeatedPtrField<docv1::SourceType>* source) {
   docv1::CollectorSource* collector = source->Add()->mutable_collector();
@@ -419,6 +437,7 @@ void StorageFold::emit_list(const Node& node, const std::string& parent_ref,
     }
     emit_block(child, group_ref);
   }
+  drop_empty_list(group_ref, parent_ref);
 }
 
 void StorageFold::emit_list_item(const Node& node, const std::string& group_ref,
@@ -478,6 +497,7 @@ void StorageFold::emit_task_list(const Node& node,
     item->set_enumerated(false);
     item->set_marker("-");
   }
+  drop_empty_list(group_ref, parent_ref);
 }
 
 docv1::TableItem* StorageFold::add_table(const std::string& parent_ref,

@@ -305,13 +305,22 @@ class LatexRenderer : RendererBase {
   // vocabulary drops. A caption linked into the tree twice renders with its
   // owner only.
   void collect_reference_sets() {
-    const auto claim = [this](const auto& captions) {
+    const auto claim_captions = [this](const auto& captions) {
       for (const auto& ref : captions) caption_refs_.insert(ref.ref());
     };
-    for (const auto& table : document_.tables()) claim(table.captions());
-    for (const auto& picture : document_.pictures()) claim(picture.captions());
+    const auto claim_footnotes = [this](const auto& footnotes) {
+      for (const auto& ref : footnotes) footnote_refs_.insert(ref.ref());
+    };
+    for (const auto& table : document_.tables()) {
+      claim_captions(table.captions());
+      claim_footnotes(table.footnotes());
+    }
+    for (const auto& picture : document_.pictures()) {
+      claim_captions(picture.captions());
+      claim_footnotes(picture.footnotes());
+    }
     for (const auto& item : document_.texts()) {
-      if (item.item_case() == docv1::BaseTextItem::kCode) claim(item.code().captions());
+      if (item.item_case() == docv1::BaseTextItem::kCode) claim_captions(item.code().captions());
     }
 
     std::set<std::string> seen;
@@ -454,9 +463,10 @@ class LatexRenderer : RendererBase {
   }
 
   // Code is never escaped or formatted; inline code escapes only the macro
-  // parameter character, with the reference's doubled-backslash literal
-  // verbatim. A code label on the generic text arm is the model's rebuild of
-  // a code item and takes the same path with the base fields.
+  // parameter character, with one backslash (`\#`). Two backslashes are a
+  // line break and leave `#` as a macro parameter. A code label on the
+  // generic text arm is the model's rebuild of a code item and takes the
+  // same path with the base fields.
   std::string serialize_code(const docv1::BaseTextItem& item, bool inline_scope) {
     const bool own_variant = item.item_case() == docv1::BaseTextItem::kCode;
     const auto* base = own_variant ? nullptr : text_base(item);
@@ -469,7 +479,7 @@ class LatexRenderer : RendererBase {
       safe.reserve(text.size());
       for (const char c : text) {
         if (c == '#') {
-          safe.append("\\\\#");
+          safe.append("\\#");
         } else {
           safe.push_back(c);
         }
@@ -493,7 +503,7 @@ class LatexRenderer : RendererBase {
   std::string serialize_text(const std::string& ref, const docv1::BaseTextItem& item,
                              bool inline_scope) {
     // A caption or footnote renders through the item that claims it.
-    if (caption_refs_.contains(ref)) return std::string();
+    if (caption_refs_.contains(ref) || footnote_refs_.contains(ref)) return std::string();
     const TextClass kind = classify_text(item);
     if (kind == TextClass::kCode) return serialize_code(item, inline_scope);
     const auto* base = text_base(item);
@@ -553,6 +563,27 @@ class LatexRenderer : RendererBase {
     const std::vector<std::string> texts = caption_texts(captions);
     if (texts.empty()) return std::string();
     return post_process(join(texts, " "), nullptr, nullptr);
+  }
+
+  // Each note of a float, as docling's LaTeX serializer writes it: a local
+  // footnotesize paragraph. Notes join with a blank line. A note the walk
+  // already consumed is skipped.
+  std::string serialized_footnotes(
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& footnotes) {
+    std::vector<std::string> notes;
+    for (const auto& ref : footnotes) {
+      const ArenaRef resolved = parse_ref(ref.ref());
+      if (resolved.kind != ArenaRef::kText || resolved.index >= document_.texts_size()) {
+        continue;
+      }
+      if (!consume(ref.ref())) continue;
+      const auto* base = text_base(document_.texts(resolved.index));
+      if (base == nullptr || excluded_layer(base->content_layer())) continue;
+      const std::string body = post_process(base->text(), nullptr, nullptr);
+      if (body.empty()) continue;
+      notes.push_back("{\\footnotesize " + body + "\\par}");
+    }
+    return join(notes, "\n\n");
   }
 
   // -- tables -----------------------------------------------------------------
@@ -657,19 +688,22 @@ class LatexRenderer : RendererBase {
   }
 
   // A table wraps in the table environment when it has content or a caption.
-  std::string table_block(const docv1::TableData& data, const std::string& caption) {
+  std::string table_block(const docv1::TableData& data, const std::string& caption,
+                          const std::string& footnotes) {
     const std::string body = tabular(data);
-    if (body.empty() && caption.empty()) return std::string();
+    if (body.empty() && caption.empty() && footnotes.empty()) return std::string();
     std::vector<std::string> lines;
     lines.emplace_back("\\begin{table}[h]");
     if (!caption.empty()) lines.push_back("\\caption{" + caption + "}");
     if (!body.empty()) lines.push_back(body);
+    if (!footnotes.empty()) lines.push_back("\n" + footnotes);
     lines.emplace_back("\\end{table}");
     return join(lines, "\n");
   }
 
   std::string serialize_table(const docv1::TableItem& table) {
-    return table_block(table.data(), serialized_captions(table.captions()));
+    return table_block(table.data(), serialized_captions(table.captions()),
+                       serialized_footnotes(table.footnotes()));
   }
 
   // -- pictures ---------------------------------------------------------------
@@ -752,12 +786,14 @@ class LatexRenderer : RendererBase {
     const std::string caption = serialized_captions(picture.captions());
     if (!caption.empty()) lines.push_back("\\caption{" + caption + "}");
     for (auto& comment : picture_annotations(picture)) lines.push_back(std::move(comment));
+    const std::string footnotes = serialized_footnotes(picture.footnotes());
+    if (!footnotes.empty()) lines.push_back("\n" + footnotes);
     lines.emplace_back("\\end{figure}");
     std::vector<std::string> parts;
     parts.push_back(join(lines, "\n"));
     if (const docv1::TableData* chart = chart_data(picture);
         chart != nullptr && !chart->table_cells().empty()) {
-      const std::string chart_table = table_block(*chart, std::string());
+      const std::string chart_table = table_block(*chart, std::string(), std::string());
       if (!chart_table.empty()) parts.push_back(chart_table);
     }
     return join(parts, "\n\n");
@@ -767,14 +803,18 @@ class LatexRenderer : RendererBase {
 
   // docling's _post_process_title: the first \title{...} in the body moves to
   // the preamble, every occurrence leaves the body, and the remaining body is
-  // stripped with its runs of 3+ newlines collapsed to two. The scan repeats
-  // the reference regex's caveat: no nested braces inside a title.
+  // stripped with its runs of 3+ newlines collapsed to two. Brace depth
+  // counts nested groups. A backslash escapes the next character, so \{ and
+  // \} stay inside the title. A later \title{...} is removed and does not
+  // replace the first.
   static bool hoist_title(std::string* body, std::string* title_cmd) {
-    std::string& text = *body;
+    const std::string text = *body;
     std::string title;
+    std::string kept;
     bool found = false;
+    std::size_t cursor = 0;
     std::size_t search = 0;
-    while (true) {
+    while (search < text.size()) {
       const std::size_t at = text.find("\\title", search);
       if (at == std::string::npos) break;
       std::size_t pos = at + 6;
@@ -786,9 +826,26 @@ class LatexRenderer : RendererBase {
         search = at + 6;
         continue;
       }
+      int depth = 1;
       std::size_t end = pos + 1;
-      while (end < text.size() && text[end] != '{' && text[end] != '}') ++end;
-      if (end >= text.size() || text[end] != '}') {
+      bool closed = false;
+      while (end < text.size()) {
+        if (text[end] == '\\' && end + 1 < text.size()) {
+          end += 2;
+          continue;
+        }
+        if (text[end] == '{') {
+          ++depth;
+        } else if (text[end] == '}') {
+          --depth;
+          if (depth == 0) {
+            closed = true;
+            break;
+          }
+        }
+        ++end;
+      }
+      if (!closed) {
         search = at + 6;
         continue;
       }
@@ -796,22 +853,27 @@ class LatexRenderer : RendererBase {
         title = text.substr(pos + 1, end - pos - 1);
         found = true;
       }
-      text.erase(at, end + 1 - at);
-      search = at;
+      kept.append(text, cursor, at - cursor);
+      cursor = end + 1;
+      search = cursor;
     }
     if (!found) return false;
+    kept.append(text, cursor, std::string::npos);
+    *body = std::move(kept);
     *title_cmd = "\\title{" + title + "}";
     // re.sub(r"\n{3,}", "\n\n", body).strip()
+    const std::string& stripped = *body;
     std::string collapsed;
-    collapsed.reserve(text.size());
-    for (std::size_t i = 0; i < text.size();) {
-      if (text[i] != '\n') {
-        collapsed.push_back(text[i++]);
+    collapsed.reserve(stripped.size());
+    for (std::size_t i = 0; i < stripped.size();) {
+      if (stripped[i] != '\n') {
+        collapsed.push_back(stripped[i++]);
         continue;
       }
       std::size_t run = i;
-      while (run < text.size() && text[run] == '\n') ++run;
-      collapsed.append(run - i >= 3 ? "\n\n" : std::string_view(text).substr(i, run - i));
+      while (run < stripped.size() && stripped[run] == '\n') ++run;
+      collapsed.append(run - i >= 3 ? "\n\n"
+                                    : std::string_view(stripped).substr(i, run - i));
       i = run;
     }
     *body = trimmed(collapsed);
@@ -854,6 +916,7 @@ class LatexRenderer : RendererBase {
   // The caption references rendered through their owner and the body-tree
   // items the label vocabulary drops.
   std::set<std::string> caption_refs_;
+  std::set<std::string> footnote_refs_;
   std::set<std::string> excluded_refs_;
 };
 

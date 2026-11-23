@@ -3,9 +3,11 @@
 #include <cstdint>
 #include <map>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
+#include "grparse/line_joiner.h"
 #include "grparse/ocr_types.h"
 
 namespace grparse {

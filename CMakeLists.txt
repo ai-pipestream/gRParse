@@ -91,7 +91,16 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-confident-angle-vote.patch"
         # Line crops cut from the page in place, the debug result image built
         # only when saved, and recognizer scores decoded in place.
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch"
+        # The nets run through grparse::InferenceModel: an ONNX Runtime
+        # session on the cpu flavor, native TensorRT on the cuda flavor; a
+        # startup prewarm for backends that need one.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-model-backend.patch"
+        # A line narrower or wider than the recognizer's shape range is
+        # padded or resized into it (grparse::ocr_rec_min_width and
+        # ocr_rec_max_width; no limit on ONNX Runtime).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -106,30 +115,33 @@ foreach(patched_net DbNet AngleNet CrnnNet)
   endif()
 endforeach()
 unset(GRPARSE_NET_SOURCE)
-# The patch also default-initializes the session pointers the destructors
-# delete; a tree cached before that hunk existed would pass the hook check
-# above and segfault in the destructor when a session build throws. Fail the
-# configure instead, same remedy.
-file(READ "${rapidocr_SOURCE_DIR}/include/CrnnNet.h" GRPARSE_CRNN_HEADER)
-string(FIND "${GRPARSE_CRNN_HEADER}" "session = nullptr" GRPARSE_CRNN_NULLPTR_AT)
-if(GRPARSE_CRNN_NULLPTR_AT EQUAL -1)
-  message(FATAL_ERROR "include/CrnnNet.h is unpatched: the rapidocr source tree predates the "
-    "session-nullptr hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
-    "the build directory (or the docker build cache) and re-run CMake.")
-endif()
-unset(GRPARSE_CRNN_HEADER)
+# The session-pointer default the session-ep patch added is gone with the
+# model-backend patch (the nets own a grparse::InferenceModel); the
+# model-backend check below covers a tree cached before either.
 # The patch also reroutes the nets' session construction through grparse's
 # retrying builder; a tree cached with only the older hunks would pass the
 # checks above and still build bare `new Ort::Session` calls that die on the
 # first provider failure.  Fail the configure instead, same remedy.
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
-string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_session" GRPARSE_DBNET_BUILDER_AT)
+# make_rapidocr_model (patches/rapidocr-model-backend.patch) builds through
+# that retrying builder on ONNX Runtime and natively on TensorRT.
+string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_model" GRPARSE_DBNET_BUILDER_AT)
 if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
-  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates the "
-    "retrying-builder hunk of patches/rapidocr-session-ep.patch. Delete _deps/rapidocr-* from "
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-model-backend.patch. Delete _deps/rapidocr-* from "
     "the build directory (or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)
+# A tree cached before the width-limits patch would hand native TensorRT a
+# line outside its recognizer profiles and fail that page.
+file(READ "${rapidocr_SOURCE_DIR}/src/CrnnNet.cpp" GRPARSE_CRNN_SOURCE)
+string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_max_width" GRPARSE_CRNN_LIMITS_AT)
+if(GRPARSE_CRNN_LIMITS_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-rec-width-limits.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_CRNN_SOURCE)
 # The geometry include is a separate patch; a tree cached before it existed
 # fails to compile DbNet.cpp with OpenCV 5.  Fail the configure instead.
 # A tree cached before the batching patch existed would build and quietly
@@ -158,6 +170,14 @@ if(GRPARSE_CRNN_DECODE_AT EQUAL -1)
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_CRNN_SOURCE)
+file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_pad_replicate" GRPARSE_DBNET_BUCKETS_AT)
+if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/include/DbNet.h" GRPARSE_DBNET_HEADER)
 string(FIND "${GRPARSE_DBNET_HEADER}" "opencv2/geometry.hpp" GRPARSE_DBNET_GEOMETRY_AT)
 if(GRPARSE_DBNET_GEOMETRY_AT EQUAL -1)
@@ -174,18 +194,28 @@ unset(GRPARSE_DBNET_HEADER)
 # Intel GPU/CPU/NPU plugins.  `cpu` is Microsoft's plain CPU release, the only
 # package published for both x86_64 and aarch64, and what the multi-arch
 # Dockerfile.cpu image links.
+# Microsoft's ONNX Runtime release downloads have answered 404 since
+# github.com/microsoft/onnxruntime went offline on 2026-11-17.  Every archive
+# below is also kept, byte for byte, as an asset of this repository's
+# `ort-archives-1` release (scripts/mirror-ort-archives.sh, recovered from the
+# 2026-11-16 deps seeds), and that copy is tried first.  URL_HASH is the same
+# checksum either way, so a mirror can only ever serve the exact pinned file.
+set(GRPARSE_ORT_MIRROR
+  "https://github.com/ai-pipestream/gRParse/releases/download/ort-archives-1")
 set(GRPARSE_ORT_PACKAGE "cuda" CACHE STRING
   "ONNX Runtime package to link: cuda, openvino, or cpu")
 if(GRPARSE_ORT_PACKAGE STREQUAL "cuda")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-x64-gpu_cuda13-1.30.0.tgz
     URL_HASH SHA256=382d79133112388cf94ce5855789b7c9bef12bef76a08b6b277e5a317213adcd
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
   set(GRPARSE_ORT_LIBRARY "${onnxruntime_SOURCE_DIR}/lib/libonnxruntime.so")
 elseif(GRPARSE_ORT_PACKAGE STREQUAL "openvino")
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-x64-1.24.1.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.24.1/onnxruntime-linux-x64-1.24.1.tgz
     URL_HASH SHA256=9142552248b735920f9390027e4512a2cacf8946a1ffcbe9071a5c210531026f
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   set(GRPARSE_ORTOV_WHEEL_NAME
@@ -220,7 +250,8 @@ elseif(GRPARSE_ORT_PACKAGE STREQUAL "cpu")
       "for ${CMAKE_SYSTEM_PROCESSOR} (x86_64 and aarch64 only)")
   endif()
   FetchContent_Declare(onnxruntime
-    URL https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz
+    URL "${GRPARSE_ORT_MIRROR}/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz"
+        https://github.com/microsoft/onnxruntime/releases/download/v1.30.0/onnxruntime-linux-${GRPARSE_ORT_CPU_ARCH}-1.30.0.tgz
     URL_HASH SHA256=${GRPARSE_ORT_CPU_SHA256}
     DOWNLOAD_EXTRACT_TIMESTAMP TRUE)
   FetchContent_MakeAvailable(onnxruntime)
@@ -378,7 +409,17 @@ target_link_libraries(grparse_curl INTERFACE CURL::libcurl)
 target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 
 # The execution-provider hook the patched RapidOcrOnnx nets call into.
-add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp)
+# src/inference_model.cpp is the one typed model interface behind it; the
+# src/tensorrt/ files listed here hold no TensorRT type (profile choice, the
+# engine cache's naming, the OCR profiles) and build in every flavor, and
+# cmake/TensorRt.cmake adds the ones that do under GRPARSE_NATIVE_TENSORRT.
+add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
+  src/inference_model.cpp
+  src/tensorrt/engine_cache.cpp
+  src/tensorrt/ocr_profiles.cpp
+  src/tensorrt/onnx_dim_names.cpp
+  src/tensorrt/shape_profiles.cpp
+  src/targets/sha256.cpp)
 target_include_directories(grparse_ort_ep PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}/compat")
 target_link_libraries(grparse_ort_ep PUBLIC onnxruntime PRIVATE grparse_flags)
 
@@ -740,6 +781,7 @@ add_library(grparse_core STATIC
   src/call_executor.cpp
   src/collector_coordinator.cpp
   src/confluence_storage.cpp
+  src/confluence_storage_format.cpp
   src/confluence/storage_blocks.cpp
   src/confluence/storage_fold.cpp
   src/confluence/storage_node.cpp
@@ -811,6 +853,10 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/task_registry.cpp
+  src/vlm_custom_options.cpp
+  src/option_rejection.cpp
+  src/service_identity.cpp
   src/structure_validation.cpp
   src/document_parser_service.cpp
   src/document_streaming_service.cpp
@@ -819,6 +865,8 @@ add_library(grparse_core STATIC
   src/office_cv_enrichment.cpp
   src/figure_classifier.cpp
   src/document_assembly.cpp
+  src/assembly_floats.cpp
+  src/line_joiner.cpp
   src/list_marker.cpp
   src/assembly_blocks.cpp
   src/assembly_headings.cpp
@@ -832,6 +880,9 @@ add_library(grparse_core STATIC
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp
+  src/code_formula_crops.cpp
+  src/ocr_image_regions.cpp
+  src/ocr_rect_render.cpp
   src/page_previews.cpp
   src/page_source_watch.cpp
   src/page_projection.cpp
@@ -845,7 +896,6 @@ add_library(grparse_core STATIC
   src/targets/bundle.cpp
   src/targets/s3_client.cpp
   src/targets/s3_uploader.cpp
-  src/targets/sha256.cpp
   src/targets/sigv4.cpp
   src/targets/target_step.cpp
   src/targets/zip_writer.cpp
@@ -858,33 +908,24 @@ target_include_directories(grparse_core PUBLIC include)
 # The served version string is "grparse-<version>-<flavor>": the version is
 # the project() line at the top of this file (the one place a release bumps,
 # docs/RELEASING.md) and the flavor names the accelerator this build carries.
-# PUBLIC so the contract test asserts the exact string the server serves.
+# PUBLIC so the contract test asserts the exact string the server serves;
+# both change once per release or per flavor, so they never bust ccache.
+target_compile_definitions(grparse_core
+  PUBLIC GRPARSE_VERSION="${PROJECT_VERSION}"
+         GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}")
 # The parse identity's build field (Document.parse.build): SHA-256 over the
 # path and SHA-256 of every file that can change what a parse produces, so
 # two builds that carry the same unbumped version still tell apart. Taken
 # when CMake configures, which every image build does from scratch; a dev
 # tree that edits sources without reconfiguring keeps its old digest.
-file(GLOB_RECURSE GRPARSE_IDENTITY_SOURCES LIST_DIRECTORIES false
-  RELATIVE "${CMAKE_CURRENT_SOURCE_DIR}"
-  "${CMAKE_CURRENT_SOURCE_DIR}/src/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/include/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/collectors/*.proto"
-  "${CMAKE_CURRENT_SOURCE_DIR}/backends/*.proto"
-  "${CMAKE_CURRENT_SOURCE_DIR}/patches/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/cmake/*"
-  "${CMAKE_CURRENT_SOURCE_DIR}/*.proto")
-list(APPEND GRPARSE_IDENTITY_SOURCES CMakeLists.txt)
-list(SORT GRPARSE_IDENTITY_SOURCES)
-set(GRPARSE_IDENTITY_MANIFEST "")
-foreach(identity_source IN LISTS GRPARSE_IDENTITY_SOURCES)
-  file(SHA256 "${CMAKE_CURRENT_SOURCE_DIR}/${identity_source}" identity_digest)
-  string(APPEND GRPARSE_IDENTITY_MANIFEST "${identity_source} ${identity_digest}\n")
-endforeach()
-string(SHA256 GRPARSE_SOURCE_DIGEST "${GRPARSE_IDENTITY_MANIFEST}")
-target_compile_definitions(grparse_core
-  PUBLIC GRPARSE_VERSION="${PROJECT_VERSION}"
-         GRPARSE_ORT_PACKAGE_NAME="${GRPARSE_ORT_PACKAGE}"
-         GRPARSE_SOURCE_DIGEST="${GRPARSE_SOURCE_DIGEST}")
+# The digest changes on every commit, so it is a define of one translation
+# unit (src/service_identity.cpp, read through grparse::source_digest()) and
+# never of the target: on the command line of every object it made each
+# commit miss ccache on all of grparse_core and every test (#239).
+include(cmake/SourceDigest.cmake)
+grparse_source_digest(GRPARSE_SOURCE_DIGEST "${CMAKE_CURRENT_SOURCE_DIR}")
+set_source_files_properties(src/service_identity.cpp PROPERTIES
+  COMPILE_DEFINITIONS "GRPARSE_SOURCE_DIGEST=\"${GRPARSE_SOURCE_DIGEST}\"")
 target_link_libraries(grparse_core
   # grparse_curl is PUBLIC for its link options alone: they belong to every
   # executable that ends up with both TLS stacks in its link closure.
@@ -911,7 +952,10 @@ if(BUILD_TESTING)
     confluence-storage-test
     docling-map-test
     document-assembly-test
+    assembly-floats-test
     convert-options-test
+    vlm-custom-options-test
+    engine-model-config-wire-test
     docling-parity-golden-test
     document-collectors-test
     document-merge-test
@@ -927,7 +971,15 @@ if(BUILD_TESTING)
     office-collector-test
     office-fallback-test
     office-cv-enrichment-test
+    ocr-shape-buckets-test
     ort-session-ep-test
+    inference-model-test
+    tensorrt-profiles-test
+    tensorrt-engine-cache-test
+    onnx-dim-names-test
+    code-formula-crops-test
+    ocr-image-regions-test
+    ocr-rect-render-test
     page-previews-test
     page-projection-test
     stream-delta-test
@@ -951,13 +1003,46 @@ if(BUILD_TESTING)
     heading-hierarchy-test
     list-marker-test
     input-format-test
-    paragraph-split-test)
+    paragraph-split-test
+    service-identity-test
+    ocr-box-rescue-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
     target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
     add_test(NAME ${test_name} COMMAND ${test_name})
   endforeach()
+  # docling-serve 16713d5 EngineModelConfig, compiled beside gRParse's so the
+  # wire test can compare tag to type and round-trip the bytes.
+  set(SERVE_ENGINE_DIR "${CMAKE_CURRENT_BINARY_DIR}/serve_engine_model")
+  file(MAKE_DIRECTORY "${SERVE_ENGINE_DIR}")
+  add_custom_command(
+    OUTPUT "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.cc"
+           "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${SERVE_ENGINE_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/fixtures/docling_serve_engine_model.proto
+    DEPENDS tests/fixtures/docling_serve_engine_model.proto protoc
+    VERBATIM)
+  add_library(grparse_serve_engine_fixture STATIC
+    "${SERVE_ENGINE_DIR}/docling_serve_engine_model.pb.cc")
+  target_include_directories(grparse_serve_engine_fixture PUBLIC "${SERVE_ENGINE_DIR}")
+  target_link_libraries(grparse_serve_engine_fixture PUBLIC grparse_proto)
+  target_link_libraries(engine-model-config-wire-test PRIVATE grparse_serve_engine_fixture)
+  target_include_directories(engine-model-config-wire-test PRIVATE "${SERVE_ENGINE_DIR}")
+  # The identity test compares source_digest() with the configure-time value
+  # under another name, so GRPARSE_SOURCE_DIGEST stays on one command line.
+  set_source_files_properties(tests/service_identity_test.cpp PROPERTIES
+    COMPILE_DEFINITIONS "GRPARSE_STAMPED_DIGEST=\"${GRPARSE_SOURCE_DIGEST}\"")
+  # The digest function itself, over scratch trees: stable for one tree,
+  # moved by any identity source (cmake/SourceDigest.cmake, #239).
+  add_test(NAME source-digest-script
+    COMMAND ${CMAKE_COMMAND} -DGRPARSE_SOURCE_ROOT=${CMAKE_SOURCE_DIR}
+      -DSCRATCH=${CMAKE_CURRENT_BINARY_DIR}/source-digest-test
+      -P ${CMAKE_SOURCE_DIR}/tests/source_digest_test.cmake)
+  set_tests_properties(source-digest-script PROPERTIES TIMEOUT 60 LABELS grparse)
   # The YAML export test loads its output back to check the scalar tags.
   target_link_libraries(document-render-test PRIVATE yaml-cpp::yaml-cpp)
   # The image builds stage the runtime library closure with
@@ -967,6 +1052,17 @@ if(BUILD_TESTING)
   add_test(NAME stage-runtime-closure-script
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stage-runtime-closure-test.sh)
   set_tests_properties(stage-runtime-closure-script PROPERTIES TIMEOUT 120 LABELS grparse)
+  # The CUDA GPU placement receipt (scripts/test/gpu-placement-cuda-test.sh,
+  # stack suite gpu-placement-cuda) run against a fake docker: its own checks
+  # are tested in every build, where there is no GPU.
+  add_test(NAME gpu-placement-cuda-script
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test/gpu-placement-cuda-selftest.sh)
+  set_tests_properties(gpu-placement-cuda-script PROPERTIES TIMEOUT 300 LABELS grparse)
+  # The checker every image build runs after ctest, over synthetic JUnit
+  # files: a skip outside the allowed tiers fails it (scripts/check-skips.sh).
+  add_test(NAME check-skips-script
+    COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/check-skips-test.sh)
+  set_tests_properties(check-skips-script PROPERTIES TIMEOUT 60 LABELS grparse)
   # Opt-in oracle battery (eval/README.md): skips (77) unless GRPARSE_TARGET,
   # VLM_ENDPOINT and EVAL_CORPUS are set in the environment, so a green
   # build never claims it ran.
@@ -1064,8 +1160,10 @@ if(BUILD_TESTING)
   add_dependencies(grparse-tests ${GRPARSE_DATA_TESTS})
   set_tests_properties(${GRPARSE_DATA_TESTS} PROPERTIES
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # The fuzz regressions tier replays the inputs the fuzzers found
+  # (fuzz/regressions/), under the fuzzers' heap budget.
   set_tests_properties(content-sniff-test PROPERTIES
-    ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus")
+    ENVIRONMENT "GRPARSE_TEST_CORPUS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus;GRPARSE_FUZZ_REGRESSIONS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/fuzz/regressions")
   # The response cap's setting lives in the server's own source, not the
   # library, like the rest of the startup configuration.
   target_sources(unary-response-cap-test PRIVATE src/server_config.cpp)
@@ -1250,6 +1348,51 @@ if(BUILD_TESTING)
     TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
 endif()
 
+# ---- LightOnOCR leg: grpc-lighton-ocr contract, collector, and tests ---------
+# Appended as one block, mirroring the VLM convert leg above. The contract is
+# vendored under collectors/ (its document.proto is this repo's, pinned in
+# collectors/PINS.tsv) and compiled by its own protoc step; the stubs join
+# grparse_proto, the collector joins grparse_core, and the test joins the
+# suite.
+file(MAKE_DIRECTORY "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1")
+configure_file(collectors/lighton_ocr.proto
+  "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto" COPYONLY)
+set(LIGHTON_OCR_PROTO "${STAGED_PROTO_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.proto")
+set(LIGHTON_OCR_GENERATED
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.h"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${LIGHTON_OCR_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${LIGHTON_OCR_PROTO}
+  DEPENDS collectors/lighton_ocr.proto document.proto
+          "${GENERATED_DIR}/ai/pipestream/document/v1/document.pb.h"
+          protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.pb.cc"
+  "${GENERATED_DIR}/ai/pipestream/lightonocr/v1/lighton_ocr.grpc.pb.cc")
+target_sources(grparse_core PRIVATE src/collectors/lighton_collector.cpp)
+if(BUILD_TESTING)
+  set(GRPARSE_LIGHTON_TESTS lighton-ocr-test)
+  foreach(test_name IN LISTS GRPARSE_LIGHTON_TESTS)
+    string(REPLACE "-" "_" test_source "${test_name}")
+    add_executable(${test_name} "tests/${test_source}.cpp")
+    target_link_libraries(${test_name} PRIVATE grparse_core grparse_flags)
+    add_test(NAME ${test_name} COMMAND ${test_name})
+  endforeach()
+  add_dependencies(grparse-tests ${GRPARSE_LIGHTON_TESTS})
+  set_tests_properties(${GRPARSE_LIGHTON_TESTS} PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+endif()
+
 # ---- orientation recovery: turned scans re-read upright -----------------------
 # Appended as one block, like the data plane above: the source joins
 # grparse_core and the test joins the grparse suite with the same timeout and
@@ -1355,4 +1498,87 @@ if(BUILD_TESTING)
   endforeach()
 endif()
 
+# ---- performance regression tier (#251) --------------------------------------
+# grparse-bench times six cases over fixed in-memory fixtures (no models, no
+# network) and compares them with tests/bench/baseline.textproto, a typed
+# BenchBaseline in a test-only proto read with TextFormat, like the storage
+# fixture's config above. It carries the `bench` tier label
+# (cmake/TestTiers.cmake), so the image builds compile it with grparse-tests
+# but never run it; it skips (77) unless GRPARSE_BENCH_ENFORCE=1, which the
+# nightly sets, turns a case slower than baseline x 1.5 into a failure.
+# bench-baseline-test is a unit test: the baseline parses and names every
+# case. The source tree's path is a define of those two translation units
+# only, so --record knows which file to rewrite.
+if(BUILD_TESTING)
+  set(BENCH_PROTO_DIR "${CMAKE_CURRENT_BINARY_DIR}/bench_proto")
+  file(MAKE_DIRECTORY "${BENCH_PROTO_DIR}")
+  add_custom_command(
+    OUTPUT "${BENCH_PROTO_DIR}/bench_baseline.pb.cc" "${BENCH_PROTO_DIR}/bench_baseline.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/bench
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${BENCH_PROTO_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/bench/bench_baseline.proto
+    DEPENDS tests/bench/bench_baseline.proto protoc
+    VERBATIM)
+  add_library(grparse_bench_baseline STATIC "${BENCH_PROTO_DIR}/bench_baseline.pb.cc")
+  target_include_directories(grparse_bench_baseline PUBLIC "${BENCH_PROTO_DIR}")
+  target_link_libraries(grparse_bench_baseline PUBLIC grparse_proto)
+  set_source_files_properties(tests/bench/grparse_bench.cpp tests/bench/bench_baseline_test.cpp
+    PROPERTIES COMPILE_DEFINITIONS "GRPARSE_BENCH_SOURCE_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}\"")
+  add_executable(grparse-bench tests/bench/grparse_bench.cpp)
+  target_link_libraries(grparse-bench PRIVATE grparse_core grparse_bench_baseline grparse_flags)
+  add_executable(bench-baseline-test tests/bench/bench_baseline_test.cpp)
+  target_link_libraries(bench-baseline-test PRIVATE grparse_bench_baseline grparse_flags)
+  foreach(target_name grparse-bench bench-baseline-test)
+    target_include_directories(${target_name} PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+    add_test(NAME ${target_name} COMMAND ${target_name})
+  endforeach()
+  add_dependencies(grparse-tests grparse-bench bench-baseline-test)
+  # Serial, so a parallel ctest run does not time the cases against each
+  # other; the issue's budget is under 60 s on the self-hosted runner.
+  set_tests_properties(grparse-bench PROPERTIES
+    LABELS grparse SKIP_RETURN_CODE 77 RUN_SERIAL TRUE TIMEOUT 300)
+  set_tests_properties(bench-baseline-test PROPERTIES
+    LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
+endif()
+
 include(cmake/Embeddings.cmake)
+include(cmake/TensorRt.cmake)
+# ---- golden corpus: every InputFormat has a fixture, read directly --------
+# Appended as one block. The corpus manifest (tests/golden/
+# corpus_manifest.textproto) is typed by a test-only proto that imports the
+# staged parse_types.proto for its InputFormat and Collector enums, so it is
+# compiled by its own protoc step against the staged tree. The test reads
+# tests/golden/corpus itself, sniffs and routes every fixture, and needs no
+# service: it is unit tier.
+if(BUILD_TESTING)
+  set(GOLDEN_MANIFEST_DIR "${CMAKE_CURRENT_BINARY_DIR}/golden_manifest")
+  file(MAKE_DIRECTORY "${GOLDEN_MANIFEST_DIR}")
+  add_custom_command(
+    OUTPUT "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.cc"
+           "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.h"
+    COMMAND $<TARGET_FILE:protoc>
+    ARGS --proto_path=${CMAKE_CURRENT_SOURCE_DIR}/tests/golden
+         --proto_path=${STAGED_PROTO_DIR}
+         --proto_path=${protobuf_SOURCE_DIR}/src
+         --cpp_out=${GOLDEN_MANIFEST_DIR}
+         ${CMAKE_CURRENT_SOURCE_DIR}/tests/golden/corpus_manifest.proto
+    DEPENDS tests/golden/corpus_manifest.proto parse_types.proto protoc
+    VERBATIM)
+  add_library(grparse_golden_manifest STATIC "${GOLDEN_MANIFEST_DIR}/corpus_manifest.pb.cc")
+  target_include_directories(grparse_golden_manifest PUBLIC "${GOLDEN_MANIFEST_DIR}")
+  target_link_libraries(grparse_golden_manifest PUBLIC grparse_proto)
+  add_executable(golden-corpus-test tests/golden_corpus_test.cpp)
+  target_include_directories(golden-corpus-test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/tests")
+  target_link_libraries(golden-corpus-test PRIVATE grparse_core grparse_golden_manifest grparse_flags)
+  add_test(NAME golden-corpus-test COMMAND golden-corpus-test)
+  add_dependencies(grparse-tests golden-corpus-test)
+  set_tests_properties(golden-corpus-test PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse
+    ENVIRONMENT "GRPARSE_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}")
+endif()
+
+# Tier labels for every test above, the compose-stack suites, and the
+# check that keeps each test in exactly one tier (#244).
+include(cmake/TestTiers.cmake)

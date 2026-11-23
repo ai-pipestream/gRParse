@@ -1,0 +1,63 @@
+{
+ "schema_name": "DoclingDocument",
+ "version": "1.7.0",
+ "name": "sample",
+ "origin": {
+  "mimetype": "text/markdown",
+  "binary_hash": 1,
+  "filename": "sample.md"
+ },
+ "furniture": {
+  "self_ref": "#/furniture",
+  "children": [],
+  "content_layer": "furniture",
+  "name": "_root_",
+  "label": "unspecified"
+ },
+ "body": {
+  "self_ref": "#/body",
+  "children": [
+   {
+    "$ref": "#/texts/0"
+   },
+   {
+    "$ref": "#/texts/1"
+   }
+  ],
+  "content_layer": "body",
+  "name": "_root_",
+  "label": "unspecified"
+ },
+ "groups": [],
+ "texts": [
+  {
+   "self_ref": "#/texts/0",
+   "parent": {
+    "$ref": "#/body"
+   },
+   "children": [],
+   "content_layer": "body",
+   "label": "title",
+   "prov": [],
+   "orig": "Golden Corpus Notes",
+   "text": "Golden Corpus Notes"
+  },
+  {
+   "self_ref": "#/texts/1",
+   "parent": {
+    "$ref": "#/body"
+   },
+   "children": [],
+   "content_layer": "body",
+   "label": "text",
+   "prov": [],
+   "orig": "This serialized DoclingDocument was written for the gRParse golden corpus.",
+   "text": "This serialized DoclingDocument was written for the gRParse golden corpus."
+  }
+ ],
+ "pictures": [],
+ "tables": [],
+ "key_value_items": [],
+ "form_items": [],
+ "pages": {}
+}

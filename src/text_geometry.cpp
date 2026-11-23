@@ -158,4 +158,28 @@ OcrPage merge_digital_and_ocr(OcrPage digital, OcrPage ocr) {
   return merged;
 }
 
+size_t add_region_read(OcrPage* page, OcrPage crop_read, int crop_left, int crop_top) {
+  std::vector<AxisAlignedBox> existing;
+  existing.reserve(page->lines.size());
+  for (const auto& line : page->lines) {
+    if (!line.text.empty() && !line.polygon.empty()) existing.push_back(bounding_box(line));
+  }
+  size_t added = 0;
+  for (auto& line : crop_read.lines) {
+    if (line.text.empty() || line.polygon.empty()) continue;
+    for (auto& point : line.polygon) {
+      point.x += crop_left;
+      point.y += crop_top;
+    }
+    const AxisAlignedBox box = bounding_box(line);
+    const bool repeat = std::ranges::any_of(
+        existing, [&box](const AxisAlignedBox& other) { return boxes_overlap_significantly(other, box); });
+    if (repeat) continue;
+    line.origin = TextOrigin::kOcr;
+    page->lines.push_back(std::move(line));
+    ++added;
+  }
+  return added;
+}
+
 }  // namespace grparse

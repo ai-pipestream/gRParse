@@ -34,11 +34,13 @@ cv::Mat preview_of(const cv::Mat& raster) {
 
 PagePreviewSession::PagePreviewSession(
     std::shared_ptr<const std::string> bytes, std::function<bool()> stop,
-    std::chrono::system_clock::time_point deadline, DocumentPasswords passwords)
+    std::chrono::system_clock::time_point deadline, DocumentPasswords passwords,
+    std::shared_ptr<CancelRegistry> cancel_registry)
     : bytes_(std::move(bytes)),
       stop_(std::move(stop)),
       deadline_(deadline),
-      passwords_(std::move(passwords)) {}
+      passwords_(std::move(passwords)),
+      cancel_registry_(std::move(cancel_registry)) {}
 
 PagePreviewSession::~PagePreviewSession() = default;
 
@@ -58,7 +60,7 @@ bool PagePreviewSession::ensure_open() {
   if (!passwords_.empty()) source_->set_passwords(passwords_);
   // A backend call that hangs (the opening Probe or a render) ends with
   // the request, not its own timeout.
-  watch_ = std::make_unique<PageSourceWatch>(source_, deadline_, stop_);
+  watch_ = std::make_unique<PageSourceWatch>(source_, deadline_, stop_, cancel_registry_);
   try {
     page_count_ = source_->page_count();
   } catch (const std::exception&) {

@@ -61,6 +61,12 @@ on:
 permissions:
   contents: read
 
+# Two pushes to main queue instead of racing for the same tags; a publish is
+# never cancelled half way (#240).
+concurrency:
+  group: publish-${{ github.ref }}
+  cancel-in-progress: false
+
 env:
   HUB_REPO: docker.io/pipestreamai/grparse
   FORGEJO_REPO: git.rokkon.com/ai-pipestream/grparse
@@ -197,6 +203,15 @@ jobs:
           registry: dhi.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Restore the pinned model files
+        # Keyed on models/MANIFEST, so a hit is the same pinned files;
+        # --verify below checks every sha256 either way (#245).
+        if: ${{ matrix.variant == 'cpu' }}
+        id: models-cache
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: models-all-tokenizer-${{ hashFiles('models/MANIFEST') }}
       - name: Provide the pinned model files
         # The same step as ci.yml's cpu-image job, so the published cpu image
         # runs the model-backed goldens (layout, table structure, figure
@@ -207,20 +222,22 @@ jobs:
         if: ${{ matrix.variant == 'cpu' }}
         run: |
           set -euo pipefail
-          docker build --progress=plain -f Dockerfile.models \
-            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-publish-models .
-          id=$(docker create grparse-publish-models)
-          docker cp "$id:/models/." models/
-          docker rm "$id"
+          if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning::models-all-tokenizer cache miss; building Dockerfile.models, the only step that installs scripts/models-requirements.txt"
+            docker build --progress=plain -f Dockerfile.models \
+              --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-publish-models .
+            id=$(docker create grparse-publish-models)
+            docker cp "$id:/models/." models/
+            docker rm "$id"
+          fi
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
       - name: Free runner disk for the seeded build
         # The seed image (about 9 GB unpacked for cpu, more with the CUDA
         # devel base), its tree copied into /build and the build outgrow the
         # hosted runner's free space. The SDKs removed are unused here.
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Choose the deps seed, build parallelism and test flags
         id: args
         env:
@@ -251,6 +268,8 @@ jobs:
           VARIANT: ${{ matrix.variant }}
           ARCH: ${{ steps.names.outputs.arch }}
         run: sh scripts/ccache-mount.sh load "$VARIANT" "$ARCH" "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build (runs the test suite in the build stage) and push by digest
         id: build
         uses: docker/build-push-action@v7
@@ -505,3 +524,20 @@ jobs:
           done
           ./scripts/publish-manifests.sh --suffix '' --version "$VERSION" \
             --platforms linux/amd64,linux/arm64 "${repos[@]}" "${digests[@]}"
+
+  # A red publish on main used to be invisible: ci.yml skips the image legs
+  # on main pushes (#240) and nothing else looks at this workflow. 46e84fa
+  # showed a green CI run while every production image failed to build.
+  report-failure:
+    name: Open an issue when main fails to publish
+    needs: [publish, publish-demo-shell]
+    if: ${{ failure() && github.ref == 'refs/heads/main' && github.server_url == 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      issues: write
+    steps:
+      - uses: actions/checkout@v7
+      - env:
+          GH_TOKEN: ${{ github.token }}
+        run: sh scripts/report-workflow-failure.sh

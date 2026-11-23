@@ -25,6 +25,7 @@
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/prometheus_metrics.h"
+#include "grparse/remote_page_source.h"
 #include "grparse_session_ep.h"
 #include "server_config.h"
 
@@ -218,6 +219,15 @@ std::unique_ptr<grpc::Server> start_server(const std::string& listen_address,
   builder.SetResourceQuota(quota);
   builder.AddChannelArgument(GRPC_ARG_MAX_CONCURRENT_STREAMS,
                              static_cast<int>(limits.max_concurrent_streams));
+  // Keepalive both ways: the server probes its clients on the schedule the
+  // collector channels use, and lets a client probe it as often as every
+  // 20 s, idle or not, without a GOAWAY too_many_pings.
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIME_MS, grparse::kServerKeepaliveTimeMs);
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_TIMEOUT_MS, grparse::kServerKeepaliveTimeoutMs);
+  builder.AddChannelArgument(grparse::kPingTimeoutArgument, grparse::kServerKeepaliveTimeoutMs);
+  builder.AddChannelArgument(GRPC_ARG_HTTP2_MIN_RECV_PING_INTERVAL_WITHOUT_DATA_MS,
+                             grparse::kServerMinRecvPingIntervalMs);
+  builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
   builder.RegisterService(&service);
   builder.RegisterService(&streaming_service);
   return builder.BuildAndStart();
@@ -289,6 +299,9 @@ int main() {
     grparse::PageScheduler scheduler(*engines, options, grparse::PageSourceFactory{},
                                      layout.get(), table_structure.get(), figure_classes.get());
     const grparse::CollectorTargets targets = grparse::read_collector_targets();
+    // Before any parse can dial a PDF backend: its channels take the same
+    // keepalive as the collector channels.
+    grparse::set_pdf_backend_channel_options(targets.channel_options);
     // The hybrid leg: office documents' page renders run through the same
     // layout/classifier/barcode engines the CV path uses, sharing its pools.
     const grparse::OfficeCvEnrichment office_cv{
@@ -299,6 +312,7 @@ int main() {
     const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
     grparse::report_collector_targets(targets, layout != nullptr, figure_classes != nullptr);
     grparse::report_retired_settings();
+    grparse::report_model_placements();
     const grparse::CallExecutor::Options executor_options = grparse::read_executor_options();
     std::println("gRParse unary executor: {} workers, queue {}", executor_options.workers,
                  executor_options.queue_capacity);
@@ -319,7 +333,21 @@ int main() {
     service.set_response_byte_cap(grparse::read_response_byte_cap());
     std::println("gRParse unary response: at most {} MiB (GRPARSE_MAX_RESPONSE_BYTES)",
                  service.response_byte_cap() / (1024 * 1024));
-    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight);
+    const grparse::TaskRegistryOptions task_options = grparse::read_task_registry_options();
+    service.set_task_options(task_options);
+    std::println("gRParse async tasks: at most {} held, results kept {} s, at most {} watchers "
+                 "(GRPARSE_MAX_TASKS, GRPARSE_TASK_RESULT_TTL_SECONDS, GRPARSE_MAX_WATCHERS)",
+                 task_options.max_tasks,
+                 std::chrono::duration_cast<std::chrono::seconds>(task_options.result_ttl).count(),
+                 task_options.max_watchers);
+    const grparse::StreamingLimits streaming_limits = grparse::read_streaming_limits();
+    std::println("gRParse streaming: at most {} streams open (GRPARSE_MAX_ACTIVE_STREAMS), "
+                 "{} workers, queue {}",
+                 streaming_limits.max_active_streams, streaming_limits.executor.workers,
+                 streaming_limits.executor.queue_capacity);
+    grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight,
+                                                        {}, streaming_limits);
+    streaming_service.set_remote_fetch_slots(service.remote_fetch_slots());
     const auto server = start_server(process.listen_address, service, streaming_service,
                                      grparse::read_grpc_limits());
     if (!server) {

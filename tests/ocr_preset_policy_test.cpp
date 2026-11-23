@@ -2,7 +2,8 @@
 // "default", GRPARSE_ALLOWED_OCR_PRESETS narrowing the built-ins only, typed
 // custom presets that stay selectable whatever that list says
 // (docling-serve #723), GRPARSE_ALLOWED_OCR_KINDS, and the startup errors a
-// bad GRPARSE_CUSTOM_OCR_PRESETS raises.
+// bad GRPARSE_CUSTOM_OCR_PRESETS raises, with list settings read as comma
+// lists or ServerSettingNameList text format and bracketed arrays refused.
 
 #include <map>
 #include <string>
@@ -90,9 +91,15 @@ void custom_presets_stay_selectable() {
                  "ocr_preset 'easyocr' is not allowed");
   expect_refused(narrowed, "auto", parsev1::OPTION_REJECTION_REASON_NOT_ALLOWED,
                  "ocr_preset 'auto' is not allowed");
-  // A JSON array is accepted too, and unknown names drop out as upstream.
-  const auto json = from({{"GRPARSE_ALLOWED_OCR_PRESETS", R"(["auto", "easyocr"])"}});
-  require(json.preset_ids() == std::vector<std::string>{"auto", "default"}, "JSON list");
+  // The comma form, trimmed, and unknown names drop out as upstream.
+  const auto comma = from({{"GRPARSE_ALLOWED_OCR_PRESETS", " auto , easyocr "}});
+  require(comma.preset_ids() == std::vector<std::string>{"auto", "default"}, "comma list");
+  // A ServerSettingNameList in protobuf text format gives the same list.
+  const auto text = from({{"GRPARSE_ALLOWED_OCR_PRESETS", R"pb(names: "auto" names: "easyocr")pb"}});
+  require(text.preset_ids() == comma.preset_ids(), "text format list");
+  const auto bracketed =
+      from({{"GRPARSE_ALLOWED_OCR_PRESETS", R"pb(names: [ "auto", "easyocr" ])pb"}});
+  require(bracketed.preset_ids() == comma.preset_ids(), "text format repeated-field list");
 }
 
 // A preset is a name and policy gate: ocr_lang beside a custom preset
@@ -156,6 +163,22 @@ void startup_errors() {
          "GRPARSE_DEFAULT_OCR_KIND names 'korean', which is not an OCR kind");
   throws({{"GRPARSE_ALLOWED_OCR_KINDS", "auto,,rapidocr"}}, "has an empty entry");
   throws({{"GRPARSE_ALLOWED_OCR_KINDS", "paddle"}}, "names 'paddle', which is not an OCR kind");
+  // List settings take the comma form or text format; a bracketed array is
+  // refused with the comma form shown.
+  throws({{"GRPARSE_ALLOWED_OCR_PRESETS", R"(["auto", "rapidocr"])"}},
+         "GRPARSE_ALLOWED_OCR_PRESETS starts with '[', but list settings are not bracketed "
+         "arrays: write it comma-separated, such as a,b,c");
+  throws({{"GRPARSE_ALLOWED_OCR_KINDS", " [\"auto\"]"}},
+         "GRPARSE_ALLOWED_OCR_KINDS starts with '['");
+  const auto kinds_text = from({{"GRPARSE_ALLOWED_OCR_KINDS", R"pb(names: "auto")pb"},
+                                {"GRPARSE_CUSTOM_OCR_PRESETS", kKorean}});
+  expect_refused(kinds_text, "chinese_doc", parsev1::OPTION_REJECTION_REASON_NOT_ALLOWED,
+                 "Allowed kinds: ['auto', 'auto'].");
+  throws({{"GRPARSE_ALLOWED_OCR_KINDS", R"pb(names: "auto" kinds: "rapidocr")pb"}},
+         "GRPARSE_ALLOWED_OCR_KINDS is not a ServerSettingNameList in protobuf text format: "
+         "line 1 column");
+  throws({{"GRPARSE_ALLOWED_OCR_KINDS", R"pb(names: "auto" names: " ")pb"}},
+         "GRPARSE_ALLOWED_OCR_KINDS has an empty entry");
 }
 
 }  // namespace

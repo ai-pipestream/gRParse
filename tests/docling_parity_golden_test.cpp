@@ -8,6 +8,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <filesystem>
 #include <fstream>
 #include <functional>
 #include <unordered_map>
@@ -234,6 +235,36 @@ void verify_hello_text_goldens_match_when_present() {
   compare_documents(docling, grparse, "hello-text");
 }
 
+// Fixtures whose goldens are not recorded yet (DEVIATIONS.md, "Pending
+// fixtures"). Recording a Docling golden means running Docling offline with
+// the pins in VERSIONS.txt, which the build never does. Each pending
+// fixture's source must be in the corpus and neither golden may exist yet:
+// once scripts/regen_docling_parity_goldens.py writes them this fails until
+// the fixture moves to a compared case with its counts pinned, so a recorded
+// golden can never sit in the tree uncompared.
+void verify_pending_fixtures_are_not_left_uncompared() {
+  struct Pending {
+    std::string stem;
+    std::string source;
+  };
+  const Pending pending[] = {
+      // A heading, a paragraph, one 3x3 table and one picture with a caption:
+      // the fixture the table-cell and picture loops need (#257).
+      {"table-picture", "tests/golden/corpus/formats/table-picture.pdf"},
+  };
+  const std::filesystem::path root(repo_root());
+  for (const Pending& one : pending) {
+    require(std::filesystem::is_regular_file(root / one.source),
+            "pending parity fixture " + one.source + " is in the corpus");
+    for (const char* side : {".docling.pb", ".grparse.pb"}) {
+      const auto golden = root / "tests/golden/docling_parity" / (one.stem + side);
+      require(!std::filesystem::exists(golden),
+              golden.string() + " is recorded: pin its counts in DEVIATIONS.md, compare it "
+              "like hello-text, and take " + one.stem + " off the pending list");
+    }
+  }
+}
+
 void verify_comparator_rejects_missing_geometry_and_wrong_order() {
   const std::string base = repo_root() + "/tests/golden/docling_parity/hello-text";
   const auto original = load_document(base + ".grparse.pb");
@@ -273,5 +304,6 @@ int main() {
       verify_comparator_rejects_missing_geometry_and_wrong_order,
       verify_text_layer_replaced_is_optional_extension,
       verify_hello_text_goldens_match_when_present,
+      verify_pending_fixtures_are_not_left_uncompared,
   });
 }

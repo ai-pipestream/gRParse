@@ -104,12 +104,15 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 
 // grpc-epub, then grpc-markup once per chapter: the whole book. The epub
 // stream's chapter XHTML and image bytes are kept instead of dropped, each
-// chapter is dialed through `markup` with the HTML hint, and the chapters'
-// Documents and the images plug into the skeleton (see epub_book.h). A
-// chapter the markup collector cannot parse leaves its group empty and
-// says so in a warning; the book never fails for one chapter. The chapter
-// dials share one ceiling (the leg's cap from when they start), not a cap
-// each; chapters past it stay empty, with a warning. With no
+// chapter is dialed through `markup` with the HTML hint as soon as its
+// chapter event arrives (at most eight dials at once, while the rest of the
+// book is still being inflated), and once the stream ends the chapters'
+// Documents and the images plug into the skeleton in spine order (see
+// epub_book.h), whatever order the dials finished in. A chapter the markup
+// collector cannot parse leaves its group empty and says so in a warning;
+// the book never fails for one chapter. The epub stream and the chapter
+// dials share one ceiling (the leg's cap from when the epub call starts),
+// not a cap each; chapters past it stay empty, with a warning. With no
 // markup channel (`GRPARSE_MARKUP_TARGET` unset) the skeleton is the
 // outcome, with a warning naming the variable, so the degradation is
 // visible rather than silent. An image spine item (a cover or plate in the
@@ -117,9 +120,12 @@ CollectorOutcome collect_epub_document(const std::shared_ptr<grpc::Channel>& cha
 // bytes its chapter event carried.
 //
 // The chapters and images the stream carries are decompressed archive
-// entries, so a small book can inflate far past its upload: once they
-// pass `stream_byte_cap` together the call is cancelled and the leg fails
-// with RESOURCE_EXHAUSTED.
+// entries, so a small book can inflate far past its upload: once the bytes
+// held at one time pass `stream_byte_cap` the call is cancelled and the leg
+// fails with RESOURCE_EXHAUSTED. A chapter's XHTML counts from its arrival
+// until its dial returns, so the cap bounds bytes in flight: a long book
+// whose chapters are parsed as fast as they arrive fits, a book whose
+// markup dials stall does not.
 inline constexpr size_t kEpubStreamByteCap = 512U * 1024U * 1024U;
 CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                    const std::shared_ptr<grpc::Channel>& markup,
@@ -168,11 +174,14 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
                                                kNoCollectorDeadline,
                                            CollectorCancelled cancelled = {});
 
-// grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire is
-// handle-based and carries no document event: OpenWorkbook uploads the
-// bytes, one StreamWorksheetRange per sheet streams the cells, and the fold
-// happens here — one sheet group and one TableItem per sheet. CloseWorkbook
-// runs on every path, success or failure.
+// grpc-calamine (workbooks: xls/xlsx/xlsm/xlsb/ods). The wire carries no
+// document event, so the fold happens here: one sheet group and one
+// TableItem per sheet. One ParseWorkbook stream uploads the bytes and
+// streams every sheet back, with no handle left on the server. A server
+// that answers UNIMPLEMENTED (one older than the RPC) gets the handle path
+// instead, OpenWorkbook, one StreamWorksheetRange per sheet, and
+// CloseWorkbook on every path; the outcome then says so in its `protocol`
+// and in a warning.
 CollectorOutcome collect_calamine_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
@@ -266,6 +275,16 @@ struct PdfRouteDecision {
 
 PdfRouteDecision route_pdf_by_classification(const PdfClassification& classification);
 
+// Whether the info event alone already settles force_ocr: `info` is the
+// classification as the info event left it, before any page or the
+// trailer. True when it recommends OCR for reasons that are not only the
+// scanned pages of a MIXED document; nothing that arrives later can then
+// undo the decision (pages only add to the OCR set, and encoding issues
+// only force recognition harder), so route_pdf_by_classification of the
+// finished classification forces OCR too and never takes the fast path.
+// False leaves the routing to the trailer.
+bool pdf_info_forces_ocr(const PdfClassification& info);
+
 // One page's share of the inspector's fold (its page_document event): the
 // items folding that page made, under the refs they carry in the whole
 // Document, plus the page count the info event reported.
@@ -280,6 +299,11 @@ struct PdfPageSlice {
 // false once nobody is listening (the call is gone), which stops the
 // streaming for the rest of the parse.
 using PdfPageSink = std::function<bool(PdfPageSlice slice)>;
+
+// Receives the classification once the info event is read, before any page
+// or the trailer, so a caller can act on what the info event already
+// decides (see pdf_info_forces_ocr) while the rest of the stream drains.
+using PdfInfoSink = std::function<void(const PdfClassification& info)>;
 
 // The pdf client's full return: the collector outcome (its Document, which
 // the server folds whenever emit_document is set) plus the classification
@@ -314,12 +338,14 @@ bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& 
 // sink as it arrives. The first page that is not clean ends the run; the
 // slices after it are held for the caller to route once the trailer is in.
 // An inspector that predates page documents sends none, and the parse is
-// exactly what it was without a sink.
+// exactly what it was without a sink. An info sink is called once, right
+// after the info event, on the calling thread.
 PdfParseResult collect_pdf(
     const std::shared_ptr<grpc::Channel>& channel, const std::string& bytes,
     CollectorDeadline inbound_deadline = kNoCollectorDeadline,
     std::optional<std::pair<int, int>> page_range = std::nullopt,
-    CollectorCancelled cancelled = {}, PdfPageSink page_sink = {});
+    CollectorCancelled cancelled = {}, PdfPageSink page_sink = {},
+    PdfInfoSink info_sink = {});
 
 // The plain collector leg for a selection the pdf collector shares with
 // other collectors: the collector's Document is the contribution, whatever

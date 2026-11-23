@@ -10,6 +10,35 @@ import {
   uploadThroughDocumentTab,
 } from "../lib/document-tab";
 import { openShell, tabButton } from "../lib/shell";
+import { expectNoGrpcError, linesOfType, postNdjson } from "../lib/bridges";
+import { corpusFile } from "../lib/corpus";
+
+// The protobuf-JSON shape of the few Document fields the chart derender
+// case reads (examples/web-demo/server.js decodes with defaults on).
+interface PictureJson {
+  label?: string;
+  image?: { uri?: string } | null;
+  annotations?: { classification?: { predictedClasses?: { className?: string }[] } | null }[];
+  meta?: { classification?: { predictions?: { className?: string }[] } | null; tabularChart?: unknown } | null;
+}
+interface DocumentJson {
+  pictures?: PictureJson[];
+  warnings?: { message?: string }[];
+}
+
+// gRParse's own rule for a picture the derender leg sends to grpc-enrich
+// (chart_derender_candidates): a chart verdict and inline pixels.
+const CHART_CLASSES = new Set(["bar_chart", "line_chart", "pie_chart"]);
+function topClass(picture: PictureJson): string {
+  for (const annotation of picture.annotations ?? []) {
+    const predicted = annotation.classification?.predictedClasses ?? [];
+    if (predicted.length > 0) return predicted[0].className ?? "";
+  }
+  return picture.meta?.classification?.predictions?.[0]?.className ?? "";
+}
+function chartVerdict(picture: PictureJson): boolean {
+  return CHART_CLASSES.has(topClass(picture)) || picture.label === "DOC_ITEM_LABEL_CHART";
+}
 
 test.describe("Document tab", () => {
   test("status dot is green in the shell tab bar", async ({ page }) => {
@@ -59,4 +88,35 @@ test.describe("Document tab", () => {
       }
     });
   }
+
+  // The chart derender leg: a raster chart goes through the CV path, and
+  // gRParse sends the picture it classified as a chart to grpc-enrich over
+  // EnrichDocument. The leg is advisory, so its outcome is either the
+  // picture's tabular chart or a document warning saying why there is none;
+  // a chart that produced neither never reached the leg.
+  test("chart derender: bar_chart.png's chart goes from gRParse to grpc-enrich", async ({ request }) => {
+    const label = "[document bridge | grparse CV + enrich | bar_chart.png]";
+    const chart = corpusFile("bar_chart.png");
+    const lines = await postNdjson(
+      request,
+      `/api/document/parse?filename=${encodeURIComponent(chart.name)}&contentType=${encodeURIComponent(chart.mimeType)}`,
+      chart.buffer,
+      label,
+    );
+    expectNoGrpcError(lines, label);
+    const [line] = linesOfType(lines, "document");
+    expect(line, `${label} no document line: ${JSON.stringify(lines).slice(0, 500)}`).toBeDefined();
+    const doc = line.document as DocumentJson;
+    const pictures = doc.pictures ?? [];
+    const charts = pictures.filter(chartVerdict);
+    test.skip(charts.length === 0, `no picture classified as a chart (top classes: ${JSON.stringify(pictures.map(topClass))}); the figure classifier is off in this stack, so the derender leg has nothing to send`);
+    const sendable = charts.filter((picture) => (picture.image?.uri ?? "").startsWith("data:"));
+    test.skip(sendable.length === 0, "the chart picture carries no inline image (GRPARSE_PICTURE_IMAGES off), so the derender leg has no pixels to send");
+    const derendered = sendable.filter((picture) => Boolean(picture.meta?.tabularChart));
+    const reported = (doc.warnings ?? []).filter((warning) => /chart derender|document enrich/.test(warning.message ?? ""));
+    expect(
+      derendered.length + reported.length,
+      `${label} the chart came back with no table and no derender warning: warnings ${JSON.stringify(doc.warnings)}`,
+    ).toBeGreaterThan(0);
+  });
 });

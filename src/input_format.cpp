@@ -25,6 +25,12 @@ std::optional<parsev1::InputFormat> input_format_for(
   std::ranges::transform(name, name.begin(),
                          [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
 
+  // iCalendar bodies sniff as plain text, so the name or the declared type
+  // is what tells them apart from Markdown.
+  if (mimetype == "text/calendar" || mimetype == "text/x-vcalendar" || ext == ".ics" ||
+      ext == ".ical" || ext == ".ifb" || ext == ".icalendar") {
+    return parsev1::INPUT_FORMAT_CALENDAR;
+  }
   // Formats whose bytes sniff as their container (a zip, a gzip, JSON) and
   // which only the name tells apart, as the collector routing does.
   if (ext == ".dclx") return parsev1::INPUT_FORMAT_DCLX;
@@ -113,7 +119,10 @@ std::optional<parsev1::InputFormat> input_format_for(
     if (filename.string().find("uspto") != std::string::npos) {
       return parsev1::INPUT_FORMAT_XML_USPTO;
     }
-    if (ext == ".doclang" || filename.string().find("doclang") != std::string::npos) {
+    // .dclg is the DocLang document's own extension (the xml collector's
+    // XML_DIALECT_DOCLANG); without it a DocLang file fell through to JATS.
+    if (ext == ".dclg" || ext == ".doclang" ||
+        filename.string().find("doclang") != std::string::npos) {
       return parsev1::INPUT_FORMAT_XML_DOCLANG;
     }
     return parsev1::INPUT_FORMAT_XML_JATS;

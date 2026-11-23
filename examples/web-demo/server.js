@@ -236,17 +236,6 @@ function proxyToFrontend(entry, request, response) {
 // Event mapping: reduce protobuf shapes to the compact JSON the page renders.
 // ---------------------------------------------------------------------------
 
-function structToObject(value) {
-  if (!value || !value.fields) return {};
-  const result = {};
-  for (const [key, field] of Object.entries(value.fields)) {
-    if (field.stringValue !== undefined) result[key] = field.stringValue;
-    else if (field.numberValue !== undefined) result[key] = field.numberValue;
-    else if (field.boolValue !== undefined) result[key] = field.boolValue;
-  }
-  return result;
-}
-
 function shortLabel(label) {
   return typeof label === "string" ? label.replace("DOC_ITEM_LABEL_", "").toLowerCase() : "text";
 }
@@ -325,9 +314,9 @@ function mapPicture(picture, pageHeight) {
         predictions.push(predicted);
       }
     }
-    if (annotation.misc && annotation.misc.kind === "barcode") {
-      const content = structToObject(annotation.misc.content);
-      barcodes.push({ format: content.format, value: content.value });
+    // Decoded codes ride the typed barcode arm only.
+    if (annotation.barcode) {
+      barcodes.push({ format: annotation.barcode.format, value: annotation.barcode.value });
     }
   }
   return {

@@ -73,4 +73,11 @@ std::vector<size_t> xy_cut_order(const std::vector<OrderBox>& boxes, const CutPo
 // identical either way; only the sort key changes.
 std::vector<size_t> reading_order(const OcrPage& page, bool trust_source_order = false);
 
+// The given page lines in visual line order: grouped into rows of lines
+// level with each other (vertical overlap over half the shorter height),
+// rows top to bottom, each row left to right. A text layer's word cells on
+// one visual line differ in top by a pixel or two (a capital, a bracket),
+// so sorting by top alone interleaves the words of neighbouring rows.
+std::vector<size_t> visual_line_order(const OcrPage& page, std::vector<size_t> lines);
+
 }  // namespace grparse

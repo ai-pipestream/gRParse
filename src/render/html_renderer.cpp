@@ -302,7 +302,7 @@ class HtmlRenderer : RendererBase {
         if (!consume(child.ref())) continue;
         const auto* base = text_base(document_.texts(ref.index));
         if (base == nullptr || base->text().empty()) continue;
-        if (!paragraph.empty()) paragraph.push_back(' ');
+        // Inline runs carry their own boundary whitespace.
         paragraph.append(paragraph_text(base->text()));
       }
       if (!paragraph.empty()) add_element("<p>" + paragraph + "</p>");

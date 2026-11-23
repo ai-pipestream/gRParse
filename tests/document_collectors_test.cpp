@@ -4,10 +4,20 @@
 // warning surfacing, and the failure paths are proven without any collector
 // binary.
 
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <netinet/in.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <unistd.h>
+
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <condition_variable>
+#include <cstdint>
 #include <cstdio>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <mutex>
@@ -88,6 +98,7 @@ class ServerFixture {
   }
 
   std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+  int port() const { return port_; }
 
   std::shared_ptr<grpc::Channel> channel() const {
     return grpc::CreateChannel("127.0.0.1:" + std::to_string(port_),
@@ -188,6 +199,7 @@ void verify_asr_forwards_pipeline_options() {
   parsev1::AsrPipelineOptions asr;
   asr.set_language("de");
   asr.set_task(parsev1::ASR_TASK_TRANSLATE);
+  asr.set_task_raw("translate");
   asr.set_word_timestamps(true);
   asr.set_diarize(false);
   asr.set_model_type(parsev1::ASR_MODEL_TYPE_WHISPER_TINY_MLX);
@@ -195,11 +207,20 @@ void verify_asr_forwards_pipeline_options() {
   asr.mutable_mlx_whisper()->set_condition_on_previous_text(false);
   asr.mutable_mlx_whisper()->set_hallucination_silence_threshold(2.0);
   asr.mutable_mlx_whisper()->set_initial_prompt("names");
+  asr.set_window_seconds(15);
+  asr.mutable_decoding()->set_strategy(asrv1::SAMPLING_STRATEGY_BEAM_SEARCH);
+  asr.mutable_decoding()->set_beam_size(4);
+  asr.mutable_decoding()->set_best_of(3);
+  asr.mutable_decoding()->set_initial_prompt("domain glossary");
+  asr.mutable_decoding()->set_no_speech_threshold(0.7f);
+  asr.mutable_decoding()->set_suppress_non_speech_tokens(true);
+  asr.set_channel_mode(asrv1::CHANNEL_MODE_PER_CHANNEL);
   const auto outcome = grparse::collect_asr_document(
       server.channel(), "small", "clip.wav", "abc", asr);
   require(outcome.success, "asr with pipeline options succeeds: " + outcome.error);
   require(service.last_options.language() == "de", "language forwarded");
   require(service.last_options.task() == asrv1::TASK_TRANSLATE, "task forwarded");
+  require(service.last_options.task_raw() == "translate", "task_raw forwarded");
   require(service.last_options.word_timestamps(), "word_timestamps forwarded");
   require(!service.last_options.diarize(), "diarize override forwarded");
   require(service.last_options.model_type() == asrv1::ASR_MODEL_TYPE_WHISPER_TINY_MLX,
@@ -211,6 +232,17 @@ void verify_asr_forwards_pipeline_options() {
               service.last_options.mlx_whisper().hallucination_silence_threshold() == 2.0 &&
               service.last_options.mlx_whisper().initial_prompt() == "names",
           "mlx_whisper slim 2.145.0 fields forwarded typed");
+  require(service.last_options.window_seconds() == 15, "window_seconds forwarded");
+  require(service.last_options.has_decoding() &&
+              service.last_options.decoding().strategy() == asrv1::SAMPLING_STRATEGY_BEAM_SEARCH &&
+              service.last_options.decoding().beam_size() == 4 &&
+              service.last_options.decoding().best_of() == 3 &&
+              service.last_options.decoding().initial_prompt() == "domain glossary" &&
+              service.last_options.decoding().no_speech_threshold() == 0.7f &&
+              service.last_options.decoding().suppress_non_speech_tokens(),
+          "decoding options forwarded typed");
+  require(service.last_options.channel_mode() == asrv1::CHANNEL_MODE_PER_CHANNEL,
+          "channel_mode forwarded");
   require(service.last_options.model().empty(),
           "request preset must not be overridden by deployment model");
   asr.set_model("tiny.en");
@@ -219,10 +251,16 @@ void verify_asr_forwards_pipeline_options() {
   require(service.last_options.model() == "tiny.en", "explicit model wins");
   asr.Clear();
   asr.set_task(static_cast<parsev1::AsrTask>(12345));
+  asr.set_task_raw("summarize");
+  asr.set_channel_mode(static_cast<asrv1::ChannelMode>(54321));
   require(grparse::collect_asr_document(server.channel(), "small", "clip.wav", "abc", asr).success,
           "fake accepts unknown task for forwarding inspection");
   require(static_cast<int>(service.last_options.task()) == 12345,
           "unknown task must reach ASR validation without becoming unspecified");
+  require(service.last_options.task_raw() == "summarize",
+          "task_raw reaches ASR validation verbatim");
+  require(static_cast<int>(service.last_options.channel_mode()) == 54321,
+          "unknown channel_mode reaches ASR validation without becoming unspecified");
   require(service.last_options.model() == "small", "partial request retains deployment model");
 }
 
@@ -480,6 +518,218 @@ void verify_cancellation_ends_a_hanging_collector() {
           "the leg ends on the cancellation, not on its own ceiling");
 }
 
+// A loopback TCP relay in front of a real server that can go silent: once
+// frozen it forwards nothing in either direction and closes nothing, so the
+// client's connection stays open and unanswered, which is what a collector
+// container that restarted behind it, or a NAT or Tailscale path that went
+// dead, looks like from the coordinator. No RST, no FIN: only keepalive can
+// tell. Closing the relay closes every socket it holds.
+class FreezableRelay {
+ public:
+  explicit FreezableRelay(int upstream_port) : upstream_port_(upstream_port) {
+    listener_ = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    socklen_t length = sizeof(address);
+    if (listener_ < 0 || ::bind(listener_, reinterpret_cast<sockaddr*>(&address), length) != 0 ||
+        ::listen(listener_, 16) != 0 ||
+        ::getsockname(listener_, reinterpret_cast<sockaddr*>(&address), &length) != 0 ||
+        ::pipe2(wake_, O_CLOEXEC) != 0) {
+      throw std::runtime_error("the relay could not listen");
+    }
+    port_ = ntohs(address.sin_port);
+    thread_ = std::thread([this] { run(); });
+  }
+  FreezableRelay(const FreezableRelay&) = delete;
+  FreezableRelay& operator=(const FreezableRelay&) = delete;
+  ~FreezableRelay() {
+    stop_.store(true);
+    wake();
+    thread_.join();
+    for (const auto& [client, upstream] : pairs_) {
+      ::close(client);
+      ::close(upstream);
+    }
+    ::close(listener_);
+    ::close(wake_[0]);
+    ::close(wake_[1]);
+  }
+
+  std::string address() const { return "127.0.0.1:" + std::to_string(port_); }
+
+  // From now on nothing is read from or written to any connection.
+  void freeze() {
+    frozen_.store(true);
+    wake();
+  }
+
+ private:
+  void wake() {
+    const char byte = 0;
+    if (::write(wake_[1], &byte, 1) < 0) {
+      // The loop is awake already or gone; either way nothing to do.
+    }
+  }
+
+  int dial_upstream() const {
+    const int upstream = ::socket(AF_INET, SOCK_STREAM | SOCK_CLOEXEC, 0);
+    sockaddr_in address{};
+    address.sin_family = AF_INET;
+    address.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    address.sin_port = htons(static_cast<uint16_t>(upstream_port_));
+    if (upstream >= 0 &&
+        ::connect(upstream, reinterpret_cast<sockaddr*>(&address), sizeof(address)) == 0) {
+      return upstream;
+    }
+    if (upstream >= 0) ::close(upstream);
+    return -1;
+  }
+
+  // Copies what `from` has to `to`; false when `from` is done.
+  static bool forward(int from, int to) {
+    char buffer[64 * 1024];
+    const ssize_t got = ::read(from, buffer, sizeof(buffer));
+    if (got <= 0) return false;
+    for (ssize_t sent = 0; sent < got;) {
+      const ssize_t wrote = ::write(to, buffer + sent, static_cast<size_t>(got - sent));
+      if (wrote <= 0) return false;
+      sent += wrote;
+    }
+    return true;
+  }
+
+  void run() {
+    while (!stop_.load()) {
+      std::vector<pollfd> polled{{wake_[0], POLLIN, 0}, {listener_, POLLIN, 0}};
+      const bool frozen = frozen_.load();
+      if (!frozen) {
+        for (const auto& [client, upstream] : pairs_) {
+          polled.push_back({client, POLLIN, 0});
+          polled.push_back({upstream, POLLIN, 0});
+        }
+      }
+      if (::poll(polled.data(), polled.size(), 1000) < 0 && errno != EINTR) return;
+      if ((polled[0].revents & POLLIN) != 0) {
+        char drained[64];
+        if (::read(wake_[0], drained, sizeof(drained)) < 0) return;
+      }
+      if ((polled[1].revents & POLLIN) != 0) {
+        const int client = ::accept4(listener_, nullptr, nullptr, SOCK_CLOEXEC);
+        if (client >= 0) {
+          const int upstream = dial_upstream();
+          if (upstream < 0) {
+            ::close(client);
+          } else {
+            pairs_.emplace_back(client, upstream);
+          }
+        }
+      }
+      if (frozen) continue;
+      for (size_t i = 2; i < polled.size(); i += 2) {
+        const auto [client, upstream] = std::pair{polled[i].fd, polled[i + 1].fd};
+        bool open = true;
+        if ((polled[i].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+          open = forward(client, upstream);
+        }
+        if (open && (polled[i + 1].revents & (POLLIN | POLLHUP | POLLERR)) != 0) {
+          open = forward(upstream, client);
+        }
+        if (!open) {
+          ::close(client);
+          ::close(upstream);
+          std::erase(pairs_, std::pair{client, upstream});
+        }
+      }
+    }
+  }
+
+  int upstream_port_ = 0;
+  int listener_ = -1;
+  int port_ = 0;
+  int wake_[2] = {-1, -1};
+  std::atomic<bool> frozen_{false};
+  std::atomic<bool> stop_{false};
+  // Touched only by the relay thread until it is joined.
+  std::vector<std::pair<int, int>> pairs_;
+  std::thread thread_;
+};
+
+// Takes the whole upload, says so, and then never writes a byte, holding
+// the call open until it is released or cancelled.
+class SilentXmlService final : public xmlv1::XmlParseService::Service {
+ public:
+  grpc::Status ParseXml(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<xmlv1::ParseXmlResponse, xmlv1::ParseXmlRequest>* stream)
+      override {
+    xmlv1::ParseXmlRequest request;
+    while (stream->Read(&request)) {
+    }
+    std::unique_lock lock(mutex_);
+    accepted_ = true;
+    changed_.notify_all();
+    changed_.wait_for(lock, std::chrono::seconds{30},
+                      [&] { return released_ || context->IsCancelled(); });
+    return grpc::Status::OK;
+  }
+
+  bool wait_until_accepted(std::chrono::milliseconds patience) {
+    std::unique_lock lock(mutex_);
+    return changed_.wait_for(lock, patience, [&] { return accepted_; });
+  }
+  void release() {
+    std::lock_guard lock(mutex_);
+    released_ = true;
+    changed_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool accepted_ = false;
+  bool released_ = false;
+};
+
+// Issue #250: a collector that accepts the stream and then goes silent at
+// the transport (no reply, no RST) fails the leg UNAVAILABLE within the
+// channel's keepalive time plus its keepalive timeout, not at the leg's
+// deadline. The pool's channels come from CollectorEndpoints, so this is
+// the production channel arguments with only the two timings shortened.
+void verify_silent_collector_fails_on_keepalive() {
+  SilentXmlService service;
+  ServerFixture server(&service);
+  FreezableRelay relay(server.port());
+  grparse::CollectorTargets targets;
+  targets.xml = relay.address();
+  targets.channel_options.keepalive_time = std::chrono::milliseconds{1000};
+  targets.channel_options.keepalive_timeout = std::chrono::milliseconds{1000};
+  auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets);
+
+  std::thread freezer([&] {
+    if (service.wait_until_accepted(std::chrono::seconds{10})) relay.freeze();
+  });
+  const auto started = std::chrono::steady_clock::now();
+  const auto deadline = std::chrono::system_clock::now() + std::chrono::seconds{12};
+  const auto outcome = grparse::run_remote_collector(parsev1::COLLECTOR_XML, endpoints, "id",
+                                                     "a.xml", "application/xml", "<a/>", {},
+                                                     deadline);
+  const auto elapsed = std::chrono::steady_clock::now() - started;
+  freezer.join();
+  service.release();
+  require(!outcome.success, "a silent collector is not a success");
+  require(outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a silent collector fails UNAVAILABLE, not DEADLINE_EXCEEDED: " + outcome.error);
+  // Keepalive time + timeout is 2 s; a ping is throttled to one a second
+  // and the timer counts from the last frame read, so allow up to 6 s,
+  // still half the 12 s deadline.
+  require(elapsed < std::chrono::seconds{6},
+          "the leg fails on the keepalive, well before its deadline (" +
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(elapsed)
+                                 .count()) +
+              " ms)");
+}
+
 // ---- ebcdic ----------------------------------------------------------------
 
 class FakeEbcdicService final : public ebcdicv1::EbcdicParseService::Service {
@@ -699,11 +949,15 @@ class BookEpubService final : public epubv1::EpubParseService::Service {
 // Parses the XHTML the book fake hands out: expects the HTML hint, and
 // projects a heading per <h1> and a picture per <img src>, so the fold's
 // href resolution and placement are exercised end to end. Records every
-// dial so the test can prove one leg per XHTML chapter.
+// dial so the test can prove one leg per XHTML chapter, with the time
+// each dial reached it; `delay` (by chapter bytes) holds a dial's answer back
+// so the dials can be made to finish out of order.
 class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
  public:
-  explicit HtmlMarkupService(size_t rendezvous_count = 0)
-      : rendezvous_count_(rendezvous_count) {}
+  explicit HtmlMarkupService(
+      size_t rendezvous_count = 0,
+      std::function<std::chrono::milliseconds(const std::string&)> delay = {})
+      : rendezvous_count_(rendezvous_count), delay_(std::move(delay)) {}
 
   grpc::Status ParseMarkup(
       grpc::ServerContext*,
@@ -722,6 +976,8 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
     {
       std::unique_lock<std::mutex> lock(mutex_);
       dials_.push_back(bytes);
+      dial_times_.push_back(std::chrono::steady_clock::now());
+      dialed_.notify_all();
       ++in_flight_;
       if (in_flight_ > peak_concurrent_) {
         peak_concurrent_ = in_flight_;
@@ -744,6 +1000,7 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
                           "book chapters must be dialed with the HTML hint");
     }
+    if (delay_) std::this_thread::sleep_for(delay_(bytes));
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -788,10 +1045,24 @@ class HtmlMarkupService final : public markupv1::MarkupParseService::Service {
     return peak_concurrent_;
   }
 
+  // Waits up to `limit` for at least `count` dials to have arrived.
+  bool wait_for_dials(size_t count, std::chrono::milliseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return dialed_.wait_for(lock, limit, [this, count] { return dials_.size() >= count; });
+  }
+
+  std::vector<std::chrono::steady_clock::time_point> dial_times() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return dial_times_;
+  }
+
  private:
   const size_t rendezvous_count_;
+  const std::function<std::chrono::milliseconds(const std::string&)> delay_;
   std::mutex mutex_;
   std::condition_variable cv_;
+  std::condition_variable dialed_;
+  std::vector<std::chrono::steady_clock::time_point> dial_times_;
   size_t in_flight_ = 0;
   size_t peak_concurrent_ = 0;
   std::vector<std::string> dials_;
@@ -859,6 +1130,199 @@ void verify_epub_book_stream_has_a_byte_cap() {
               outcome.error.contains("32 bytes"),
           "a book past the cap fails as resource exhaustion: " + outcome.error);
   require(markup.dials().empty(), "nothing past the cap is folded");
+}
+
+// Streams a book the way grpc-epub does, one chapter event per inflated
+// entry with a pause between them, and holds its document event back until
+// the markup fake has seen a dial (or a few seconds have passed), recording
+// which came first. A coordinator that buffers the whole stream before it
+// dials never lets a dial in before the document event.
+class PacedBookEpubService final : public epubv1::EpubParseService::Service {
+ public:
+  explicit PacedBookEpubService(HtmlMarkupService* markup) : markup_(markup) {}
+
+  grpc::Status ParseEpub(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<epubv1::ParseEpubResponse, epubv1::ParseEpubRequest>*
+          stream) override {
+    epubv1::ParseEpubRequest request;
+    while (stream->Read(&request)) {
+    }
+    epubv1::ParseEpubResponse event;
+    docv1::Document skeleton;
+    skeleton.mutable_body()->set_self_ref("#/body");
+    skeleton.mutable_furniture()->set_self_ref("#/furniture");
+    for (int index = 0; index < 3; ++index) {
+      const std::string href = "OPS/ch0" + std::to_string(index + 1) + ".xhtml";
+      auto* chapter = event.mutable_chapter();
+      chapter->set_spine_index(static_cast<uint32_t>(index));
+      chapter->set_href(href);
+      chapter->set_media_type("application/xhtml+xml");
+      chapter->set_content("<html><body><h1>Paced " + std::to_string(index + 1) +
+                           "</h1></body></html>");
+      stream->Write(event);
+      event.Clear();
+      auto* group = skeleton.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(index));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_label(docv1::GROUP_LABEL_CHAPTER);
+      group->set_name(href);
+      skeleton.mutable_body()->add_children()->set_ref(group->self_ref());
+      std::this_thread::sleep_for(std::chrono::milliseconds(20));
+    }
+    dialed_before_document_.store(markup_->wait_for_dials(1, std::chrono::seconds(3)));
+    document_written_at_.store(std::chrono::steady_clock::now());
+    *event.mutable_document() = skeleton;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_chapters_emitted(3);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  bool dialed_before_document() const { return dialed_before_document_.load(); }
+  std::chrono::steady_clock::time_point document_written_at() const {
+    return document_written_at_.load();
+  }
+
+ private:
+  HtmlMarkupService* markup_;
+  std::atomic<bool> dialed_before_document_{false};
+  std::atomic<std::chrono::steady_clock::time_point> document_written_at_{};
+};
+
+// The markup dials run while the epub stream is still in flight: the first
+// chapter is dialed before grpc-epub has written its document event, and
+// the book still folds every chapter once the stream ends.
+void verify_epub_book_dials_chapters_while_the_stream_is_in_flight() {
+  HtmlMarkupService markup;
+  ServerFixture markup_server(&markup);
+  PacedBookEpubService epub(&markup);
+  ServerFixture epub_server(&epub);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "the paced book collects: " + outcome.error);
+  require(epub.dialed_before_document(),
+          "the first chapter is dialed before the epub stream writes its document event");
+  const auto dial_times = markup.dial_times();
+  require(dial_times.size() == 3, "every XHTML chapter is dialed once");
+  require(dial_times.front() < epub.document_written_at(),
+          "the first markup dial starts before the epub stream finishes");
+  require(outcome.document.texts_size() == 3 &&
+              outcome.document.texts(0).section_header().base().text() == "Paced 1" &&
+              outcome.document.texts(2).section_header().base().text() == "Paced 3",
+          "the chapters still fold into the book");
+}
+
+// A longer book with an image spine item and a non-XHTML item between its
+// chapters, whose markup dials finish in reverse order (the first chapter's
+// is held longest): the fold still reads the chapters in spine order, each
+// heading under its own group, exactly as when the dials ran one by one
+// after the stream.
+class LongBookEpubService final : public epubv1::EpubParseService::Service {
+ public:
+  static constexpr int kItems = 12;
+  static constexpr int kImageItem = 4;
+  static constexpr int kStyleItem = 7;
+
+  static std::string href(int index) {
+    if (index == kImageItem) return "OPS/plate.svg";
+    if (index == kStyleItem) return "OPS/notes.txt";
+    return "OPS/ch" + std::to_string(index) + ".xhtml";
+  }
+
+  grpc::Status ParseEpub(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<epubv1::ParseEpubResponse, epubv1::ParseEpubRequest>*
+          stream) override {
+    epubv1::ParseEpubRequest request;
+    while (stream->Read(&request)) {
+    }
+    epubv1::ParseEpubResponse event;
+    docv1::Document skeleton;
+    skeleton.mutable_body()->set_self_ref("#/body");
+    skeleton.mutable_furniture()->set_self_ref("#/furniture");
+    for (int index = 0; index < kItems; ++index) {
+      auto* chapter = event.mutable_chapter();
+      chapter->set_spine_index(static_cast<uint32_t>(index));
+      chapter->set_href(href(index));
+      if (index == kImageItem) {
+        chapter->set_media_type("image/svg+xml");
+        chapter->set_content("<svg/>");
+      } else if (index == kStyleItem) {
+        chapter->set_media_type("text/plain");
+        chapter->set_content("not a chapter");
+      } else {
+        chapter->set_media_type("application/xhtml+xml");
+        chapter->set_content("<html><body><h1>Chapter " + std::to_string(index) +
+                             "</h1></body></html>");
+      }
+      stream->Write(event);
+      event.Clear();
+      auto* group = skeleton.add_groups();
+      group->set_self_ref("#/groups/" + std::to_string(index));
+      group->mutable_parent()->set_ref("#/body");
+      group->set_label(docv1::GROUP_LABEL_CHAPTER);
+      group->set_name(href(index));
+      skeleton.mutable_body()->add_children()->set_ref(group->self_ref());
+    }
+    *event.mutable_document() = skeleton;
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_chapters_emitted(kItems);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+void verify_epub_book_folds_chapters_in_spine_order() {
+  // Chapter n is held (kItems - n) x 15 ms: the earliest chapters answer last.
+  HtmlMarkupService markup(0, [](const std::string& bytes) {
+    const size_t at = bytes.find("Chapter ");
+    const int index = at == std::string::npos ? 0 : std::stoi(bytes.substr(at + 8));
+    return std::chrono::milliseconds((LongBookEpubService::kItems - index) * 15);
+  });
+  ServerFixture markup_server(&markup);
+  LongBookEpubService epub;
+  ServerFixture epub_server(&epub);
+  const auto outcome = grparse::collect_epub_book(epub_server.channel(),
+                                                  markup_server.channel(), "PK\x03\x04zip");
+  require(outcome.success, "the long book collects: " + outcome.error);
+  require(markup.dials().size() == LongBookEpubService::kItems - 2,
+          "every XHTML chapter is dialed once, the image and the text item never");
+  const auto& book = outcome.document;
+  require(book.groups_size() == LongBookEpubService::kItems,
+          "the skeleton's groups are all there");
+  require(book.texts_size() == LongBookEpubService::kItems - 2,
+          "one heading per XHTML chapter");
+  int text = 0;
+  for (int index = 0; index < LongBookEpubService::kItems; ++index) {
+    const auto& group = book.groups(index);
+    if (index == LongBookEpubService::kStyleItem) {
+      require(group.children_size() == 0, "the non-XHTML item's group stays empty");
+      continue;
+    }
+    require(group.children_size() == 1, "each chapter group holds its one item");
+    if (index == LongBookEpubService::kImageItem) {
+      require(group.children(0).ref() == "#/pictures/0",
+              "the image spine item becomes its group's picture");
+      continue;
+    }
+    const auto& header = book.texts(text).section_header().base();
+    require(header.text() == "Chapter " + std::to_string(index),
+            "the headings follow the spine, not the order the dials finished: #/texts/" +
+                std::to_string(text) + " is '" + header.text() + "'");
+    require(header.parent().ref() == group.self_ref() &&
+                group.children(0).ref() == header.self_ref(),
+            "each heading sits under its own chapter's group");
+    ++text;
+  }
+  int not_xhtml = 0;
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains("OPS/notes.txt") && warning.contains("is not XHTML")) ++not_xhtml;
+    require(!warning.contains("were not parsed"), "no chapter was cut: " + warning);
+  }
+  require(not_xhtml == 1, "the non-XHTML item is reported once");
 }
 
 void verify_epub_book_without_markup_keeps_the_skeleton() {
@@ -2217,11 +2681,166 @@ void verify_fastwarc_payload_text_is_utf8() {
 
 namespace {
 
-// The handle lifecycle: OpenWorkbook uploads and names two sheets,
-// StreamWorksheetRange serves typed cells per sheet index, CloseWorkbook
+// The two-sheet workbook every calamine fake serves, on both wires: the
+// metadata names two sheets and a defined name, and each sheet's range
+// events carry typed cells. ParseWorkbook serves it on one stream; with
+// `bidi` off the fake predates that RPC and answers UNIMPLEMENTED, and the
+// handle lifecycle serves it instead: OpenWorkbook uploads and names the
+// sheets, StreamWorksheetRange serves cells per sheet index, CloseWorkbook
 // counts its calls so the tests can prove the handle is always released.
+void fill_calamine_metadata(calaminev1::Metadata* metadata) {
+  auto* properties = metadata->mutable_properties();
+  properties->set_title("Quarterly totals");
+  properties->set_creator("Example author");
+  properties->set_created("2026-01-02T03:04:05Z");
+  properties->set_modified("source-specific date");
+  properties->set_revision("003");
+  properties->set_company("Example Ltd");
+  properties->set_description("Declared workbook metadata");
+  calaminev1::Sheet* first = metadata->add_sheets();
+  first->set_name("First");
+  first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+  first->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+  calaminev1::Sheet* second = metadata->add_sheets();
+  second->set_name("Second");
+  second->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+  second->set_visible(calaminev1::SHEET_VISIBLE_HIDDEN);
+  calaminev1::DefinedName* name = metadata->add_defined_names();
+  name->set_name("Answer");
+  name->set_definition("First!$B$2");
+}
+
+std::vector<calaminev1::StreamWorksheetRangeResponse> calamine_sheet_events(uint32_t index) {
+  std::vector<calaminev1::StreamWorksheetRangeResponse> events;
+  calaminev1::StreamWorksheetRangeResponse event;
+  event.mutable_started()->set_sheet_name(index == 0 ? "First" : "Second");
+  if (index == 0) {
+    auto* declared = event.mutable_started()->add_tables();
+    declared->set_name("Scores");
+    declared->mutable_range()->mutable_start()->set_row(0);
+    declared->mutable_range()->mutable_start()->set_col(0);
+    declared->mutable_range()->mutable_end()->set_row(2);
+    declared->mutable_range()->mutable_end()->set_col(5);
+    declared->set_header_row_count(1);
+    for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
+      declared->add_columns(name);
+    }
+    auto* format = event.mutable_started()->add_number_formats();
+    format->set_style_id(2);
+    format->set_format_id(2);
+    format->set_code("0.00");
+    format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
+  }
+  if (index == 1) {
+    // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
+    calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
+    area->mutable_start()->set_row(0);
+    area->mutable_start()->set_col(1);
+    area->mutable_end()->set_row(0);
+    area->mutable_end()->set_col(2);
+  }
+  events.push_back(event);
+  if (index == 0) {
+    event.Clear();
+    calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
+    calaminev1::WorksheetRow* header = batch->add_rows();
+    header->set_row_index(0);
+    header->add_values()->set_string_value("Name");
+    header->add_values()->set_string_value("Score");
+    auto* styled_empty = header->add_values();
+    styled_empty->mutable_empty();
+    styled_empty->set_style_id(2);
+    events.push_back(event);
+    // Row 1 holds nothing: the contract says so with one row_gap event
+    // rather than a blank row, and the fold must not count it as data.
+    event.Clear();
+    calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
+    gap->set_first_row_index(1);
+    gap->set_row_count(1);
+    events.push_back(event);
+    event.Clear();
+    batch = event.mutable_rows();
+    calaminev1::WorksheetRow* data = batch->add_rows();
+    data->set_row_index(2);
+    data->add_values()->set_int_value(7);
+    auto* formula_cell = data->add_values();
+    formula_cell->set_float_value(2.5);
+    formula_cell->set_formula("5/2");
+    formula_cell->set_style_id(2);
+    data->add_values()->set_bool_value(true);
+    // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
+    // contract's own example); 45000 is 2023-03-15 with no time of day.
+    calaminev1::CellData* when = data->add_values();
+    when->mutable_date_time()->set_value(45943.5);
+    calaminev1::CellData* day = data->add_values();
+    day->mutable_date_time()->set_value(45000);
+    data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
+    data->add_values()->mutable_empty();
+    events.push_back(event);
+  } else {
+    // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
+    event.Clear();
+    calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+    row->set_row_index(0);
+    row->add_values()->mutable_date_time()->set_value(45000.999999);
+    // ODS spells its dates as ISO text; a bare time of day stays text.
+    row->add_values()->set_date_time_iso("2015-04-13");
+    row->add_values()->set_date_time_iso("09:30:00");
+    // An eight-digit reference keeps plain notation.
+    row->add_values()->set_float_value(10412459);
+    events.push_back(event);
+  }
+  return events;
+}
+
 class FakeCalamineService final : public calaminev1::CalamineService::Service {
  public:
+  explicit FakeCalamineService(bool bidi = true) : bidi_(bidi) {}
+
+  grpc::Status ParseWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<calaminev1::ParseWorkbookResponse,
+                               calaminev1::ParseWorkbookRequest>* stream) override {
+    if (!bidi_) {
+      return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "ParseWorkbook");
+    }
+    calaminev1::ParseWorkbookRequest frame;
+    if (!stream->Read(&frame) || !frame.has_open()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "open must come first");
+    }
+    const calaminev1::ParseWorkbookOpen open = frame.open();
+    if (!open.emit_ranges() || !open.range_options().include_formulas()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                          "ranges with formulas must be requested");
+    }
+    while (stream->Read(&frame)) {
+      if (!frame.has_chunk()) {
+        return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "only chunks follow open");
+      }
+      bytes_received_ += frame.chunk().data().size();
+      if (frame.chunk().last()) break;
+    }
+    if (bytes_received_ == 0) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "no bytes");
+    }
+    calaminev1::ParseWorkbookResponse event;
+    event.mutable_metadata()->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
+    fill_calamine_metadata(event.mutable_metadata()->mutable_metadata());
+    stream->Write(event);
+    for (uint32_t index = 0; index < 2; ++index) {
+      for (const auto& range : calamine_sheet_events(index)) {
+        event.Clear();
+        event.mutable_range()->set_sheet_index(index);
+        *event.mutable_range()->mutable_event() = range;
+        stream->Write(event);
+      }
+    }
+    event.Clear();
+    event.mutable_done()->set_range_sheets(2);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
   grpc::Status OpenWorkbook(
       grpc::ServerContext*,
       grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
@@ -2242,26 +2861,7 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     }
     response->set_workbook_id("wb-1");
     response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
-    calaminev1::Metadata* metadata = response->mutable_metadata();
-    auto* properties = metadata->mutable_properties();
-    properties->set_title("Quarterly totals");
-    properties->set_creator("Example author");
-    properties->set_created("2026-01-02T03:04:05Z");
-    properties->set_modified("source-specific date");
-    properties->set_revision("003");
-    properties->set_company("Example Ltd");
-    properties->set_description("Declared workbook metadata");
-    calaminev1::Sheet* first = metadata->add_sheets();
-    first->set_name("First");
-    first->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
-    first->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
-    calaminev1::Sheet* second = metadata->add_sheets();
-    second->set_name("Second");
-    second->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
-    second->set_visible(calaminev1::SHEET_VISIBLE_HIDDEN);
-    calaminev1::DefinedName* name = metadata->add_defined_names();
-    name->set_name("Answer");
-    name->set_definition("First!$B$2");
+    fill_calamine_metadata(response->mutable_metadata());
     return grpc::Status::OK;
   }
 
@@ -2274,83 +2874,7 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
     if (!request->include_formulas()) {
       return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "formulas must be requested");
     }
-    calaminev1::StreamWorksheetRangeResponse event;
-    event.mutable_started()->set_sheet_name(
-        request->sheet().sheet_index() == 0 ? "First" : "Second");
-    if (request->sheet().sheet_index() == 0) {
-      auto* declared = event.mutable_started()->add_tables();
-      declared->set_name("Scores");
-      declared->mutable_range()->mutable_start()->set_row(0);
-      declared->mutable_range()->mutable_start()->set_col(0);
-      declared->mutable_range()->mutable_end()->set_row(2);
-      declared->mutable_range()->mutable_end()->set_col(5);
-      declared->set_header_row_count(1);
-      for (const auto* name : {"Name", "Score", "Enabled", "When", "Date", "Error"}) {
-        declared->add_columns(name);
-      }
-      auto* format = event.mutable_started()->add_number_formats();
-      format->set_style_id(2);
-      format->set_format_id(2);
-      format->set_code("0.00");
-      format->set_kind(calaminev1::NUMBER_FORMAT_KIND_OTHER);
-    }
-    if (request->sheet().sheet_index() == 1) {
-      // B1:C1 is merged: the ISO date at B1 spans it, C1 is covered.
-      calaminev1::Dimensions* area = event.mutable_started()->add_merged_regions();
-      area->mutable_start()->set_row(0);
-      area->mutable_start()->set_col(1);
-      area->mutable_end()->set_row(0);
-      area->mutable_end()->set_col(2);
-    }
-    writer->Write(event);
-    if (request->sheet().sheet_index() == 0) {
-      event.Clear();
-      calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
-      calaminev1::WorksheetRow* header = batch->add_rows();
-      header->set_row_index(0);
-      header->add_values()->set_string_value("Name");
-      header->add_values()->set_string_value("Score");
-      auto* styled_empty = header->add_values();
-      styled_empty->mutable_empty();
-      styled_empty->set_style_id(2);
-      writer->Write(event);
-      // Row 1 holds nothing: the contract says so with one row_gap event
-      // rather than a blank row, and the fold must not count it as data.
-      event.Clear();
-      calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
-      gap->set_first_row_index(1);
-      gap->set_row_count(1);
-      writer->Write(event);
-      event.Clear();
-      batch = event.mutable_rows();
-      calaminev1::WorksheetRow* data = batch->add_rows();
-      data->set_row_index(2);
-      data->add_values()->set_int_value(7);
-      auto* formula_cell = data->add_values();
-      formula_cell->set_float_value(2.5);
-      formula_cell->set_formula("5/2");
-      formula_cell->set_style_id(2);
-      data->add_values()->set_bool_value(true);
-      // 45943.5 is 2025-10-13 12:00:00 in the 1900 date system (the
-      // contract's own example); 45000 is 2023-03-15 with no time of day.
-      calaminev1::CellData* when = data->add_values();
-      when->mutable_date_time()->set_value(45943.5);
-      calaminev1::CellData* day = data->add_values();
-      day->mutable_date_time()->set_value(45000);
-      data->add_values()->set_error(calaminev1::CELL_ERROR_TYPE_DIV0);
-      data->add_values()->mutable_empty();
-      writer->Write(event);
-    } else {
-      // 45000.999999 rounds up to midnight: 2023-03-16 00:00:00.
-      event.Clear();
-      calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
-      row->set_row_index(0);
-      row->add_values()->mutable_date_time()->set_value(45000.999999);
-      // ODS spells its dates as ISO text; a bare time of day stays text.
-      row->add_values()->set_date_time_iso("2015-04-13");
-      row->add_values()->set_date_time_iso("09:30:00");
-      // An eight-digit reference keeps plain notation.
-      row->add_values()->set_float_value(10412459);
+    for (const auto& event : calamine_sheet_events(request->sheet().sheet_index())) {
       writer->Write(event);
     }
     return grpc::Status::OK;
@@ -2367,9 +2891,12 @@ class FakeCalamineService final : public calaminev1::CalamineService::Service {
   }
 
   int closed() const { return closed_; }
+  size_t bytes_received() const { return bytes_received_; }
 
  private:
+  bool bidi_;
   int closed_ = 0;
+  size_t bytes_received_ = 0;
 };
 
 // Opens the handle, then fails the only sheet's read.
@@ -2409,15 +2936,8 @@ class FailingSheetCalamineService final : public calaminev1::CalamineService::Se
   int closed_ = 0;
 };
 
-void verify_calamine_folds_sheets() {
-  FakeCalamineService service;
-  ServerFixture server(&service);
-  // Large enough to prove multi-chunk uploads reassemble.
-  const std::string bytes(600U * 1024U, 'c');
-  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
-  require(outcome.success, "calamine collection succeeds: " + outcome.error);
-  require(service.closed() == 1, "the workbook handle is closed on success");
-
+// What both wires must fold the fake's workbook into.
+void require_calamine_fold(const grparse::CollectorOutcome& outcome) {
   const docv1::Document& document = outcome.document;
   require(document.groups_size() == 2 && document.tables_size() == 2,
           "each sheet folds into a group holding one table");
@@ -2450,7 +2970,6 @@ void verify_calamine_folds_sheets() {
               && data.columns_size() == 6 && data.columns(1).name() == "Score"
               && data.table_cells(0).column_header(),
           "declared table headers and column names replace inference");
-  require(outcome.warnings.empty(), "declared headers produce no inference warning");
   require(data.num_rows() == 3 && data.num_cols() == 6,
           "the table sizes from the populated cells, gaps included");
   require(data.table_cells_size() == 9, "only unstyled empty cells fold to nothing");
@@ -2511,6 +3030,161 @@ void verify_calamine_folds_sheets() {
               second.table_cells(0).value().datetime().day() == 16 &&
               second.table_cells(0).value().datetime().hour() == 0,
           "a time that rounds up to midnight lands on the next day");
+}
+
+void verify_calamine_folds_sheets() {
+  FakeCalamineService service;
+  ServerFixture server(&service);
+  // Large enough to prove multi-chunk uploads reassemble.
+  const std::string bytes(600U * 1024U, 'c');
+  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
+  require(outcome.success, "calamine collection succeeds: " + outcome.error);
+  require(outcome.protocol == grparse::CollectorProtocol::kCurrent,
+          "a server with ParseWorkbook is read over it");
+  require(service.bytes_received() == bytes.size(),
+          "every chunk of the upload reaches the stream");
+  require(service.closed() == 0, "the stream leaves no handle to close");
+  require(outcome.warnings.empty(), "declared headers produce no inference warning");
+  require_calamine_fold(outcome);
+}
+
+void verify_calamine_falls_back_to_handles_on_unimplemented() {
+  FakeCalamineService service(/*bidi=*/false);
+  ServerFixture server(&service);
+  const std::string bytes(600U * 1024U, 'c');
+  const auto outcome = grparse::collect_calamine_document(server.channel(), bytes);
+  require(outcome.success, "the handle path succeeds: " + outcome.error);
+  require(outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
+          "the fallback is recorded in the outcome's protocol");
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("ParseWorkbook")
+              && outcome.warnings[0].contains("handle path"),
+          "the fallback is announced as a warning, never silent");
+  require(service.closed() == 1, "the workbook handle is closed on success");
+  require_calamine_fold(outcome);
+}
+
+// ParseWorkbook outcomes the fold has to survive, one script per test.
+enum class CalamineScript {
+  kFirstSheetFails,    // sheet 0 terminal in band, sheet 1 has a cell
+  kOnlySheetFails,     // the only sheet terminal in band
+  kNoDoneAfterCells,   // one cell, then the stream ends without done
+  kNoDoneNoCells,      // metadata, then the stream ends without done
+  kExhausted,          // metadata, then RESOURCE_EXHAUSTED
+};
+
+class ScriptedParseWorkbookService final : public calaminev1::CalamineService::Service {
+ public:
+  explicit ScriptedParseWorkbookService(CalamineScript script) : script_(script) {}
+
+  grpc::Status ParseWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<calaminev1::ParseWorkbookResponse,
+                               calaminev1::ParseWorkbookRequest>* stream) override {
+    calaminev1::ParseWorkbookRequest frame;
+    while (stream->Read(&frame)) {
+    }
+    const bool two = script_ == CalamineScript::kFirstSheetFails;
+    calaminev1::ParseWorkbookResponse event;
+    for (const char* name : {"Alpha", "Beta"}) {
+      calaminev1::Sheet* sheet = event.mutable_metadata()->mutable_metadata()->add_sheets();
+      sheet->set_name(name);
+      sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+      if (!two) break;
+    }
+    stream->Write(event);
+    auto range = [&](uint32_t index, auto fill) {
+      event.Clear();
+      event.mutable_range()->set_sheet_index(index);
+      fill(event.mutable_range()->mutable_event());
+      stream->Write(event);
+    };
+    auto fail = [](calaminev1::StreamWorksheetRangeResponse* inner) {
+      inner->mutable_error()->set_terminal(true);
+      inner->mutable_error()->mutable_error()->set_message("cell table corrupt");
+    };
+    auto one_cell = [](calaminev1::StreamWorksheetRangeResponse* inner) {
+      calaminev1::WorksheetRow* row = inner->mutable_rows()->add_rows();
+      row->set_row_index(0);
+      row->add_values()->set_int_value(42);
+    };
+    switch (script_) {
+      case CalamineScript::kFirstSheetFails:
+        range(0, fail);
+        range(1, one_cell);
+        break;
+      case CalamineScript::kOnlySheetFails:
+        range(0, fail);
+        break;
+      case CalamineScript::kNoDoneAfterCells:
+        range(0, one_cell);
+        return grpc::Status::OK;
+      case CalamineScript::kNoDoneNoCells:
+        return grpc::Status::OK;
+      case CalamineScript::kExhausted:
+        return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "dense-cell budget");
+    }
+    event.Clear();
+    event.mutable_done();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status OpenWorkbook(grpc::ServerContext*,
+                            grpc::ServerReader<calaminev1::OpenWorkbookRequest>*,
+                            calaminev1::OpenWorkbookResponse*) override {
+    ++handle_calls_;
+    return grpc::Status(grpc::StatusCode::INTERNAL, "the handle path must not run");
+  }
+
+  int handle_calls() const { return handle_calls_; }
+
+ private:
+  CalamineScript script_;
+  std::atomic<int> handle_calls_{0};
+};
+
+bool has_calamine_warning(const grparse::CollectorOutcome& outcome, const std::string& needle) {
+  for (const auto& warning : outcome.warnings) {
+    if (warning.contains(needle)) return true;
+  }
+  return false;
+}
+
+grparse::CollectorOutcome run_calamine_script(CalamineScript script, int* handle_calls) {
+  ScriptedParseWorkbookService service(script);
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  *handle_calls = service.handle_calls();
+  return outcome;
+}
+
+void verify_calamine_stream_failures() {
+  int handle_calls = 0;
+  auto outcome = run_calamine_script(CalamineScript::kFirstSheetFails, &handle_calls);
+  require(outcome.success && outcome.document.tables_size() == 2
+              && outcome.document.tables(1).data().table_cells_size() == 1,
+          "a sheet after a failed one still folds: " + outcome.error);
+  require(has_calamine_warning(outcome, "Alpha failed: cell table corrupt"),
+          "the failed sheet is a warning naming it");
+
+  outcome = run_calamine_script(CalamineScript::kOnlySheetFails, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT
+              && outcome.error.contains("cell table corrupt"),
+          "a workbook whose every sheet failed is a failed leg: " + outcome.error);
+
+  outcome = run_calamine_script(CalamineScript::kNoDoneAfterCells, &handle_calls);
+  require(outcome.success && has_calamine_warning(outcome, "without its done event"),
+          "a stream cut short after cells is a partial success with a warning");
+
+  outcome = run_calamine_script(CalamineScript::kNoDoneNoCells, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
+          "a stream cut short before any cell fails the leg: " + outcome.error);
+
+  outcome = run_calamine_script(CalamineScript::kExhausted, &handle_calls);
+  require(!outcome.success && outcome.code == grpc::StatusCode::RESOURCE_EXHAUSTED
+              && outcome.protocol == grparse::CollectorProtocol::kCurrent,
+          "the collector's own status class survives: " + outcome.error);
+  require(handle_calls == 0, "only UNIMPLEMENTED falls back to the handle path");
 }
 
 // A terminal in-band sheet error, then a server that keeps the stream open:
@@ -2980,6 +3654,29 @@ void verify_pdf_ocr_recommendation_routing() {
   require(grparse::route_pdf_by_classification(garbled_beside_scan).force_ocr,
           "encoding issues still force recognition on a mixed document that names its pages");
 
+  // What the info event alone settles: a forcing recommendation stays
+  // forcing whatever the pages and the trailer add, and the named-scans
+  // shape is left to the trailer, since its page set can still grow.
+  require(grparse::pdf_info_forces_ocr(newspaper) && grparse::pdf_info_forces_ocr(template_form) &&
+              grparse::pdf_info_forces_ocr(older_inspector) &&
+              grparse::pdf_info_forces_ocr(ocr_layer) &&
+              grparse::pdf_info_forces_ocr(unknown_reason),
+          "an info event recommending OCR beyond the named scans settles the forced route");
+  require(!grparse::pdf_info_forces_ocr(text_beside_scan) && !grparse::pdf_info_forces_ocr(unnamed),
+          "a recommendation about scanned pages alone waits for the trailer");
+  grparse::PdfClassification unrecommended = newspaper;
+  unrecommended.ocr_recommended = false;
+  require(!grparse::pdf_info_forces_ocr(unrecommended),
+          "an info event without a recommendation settles nothing");
+  for (const auto* settled : {&newspaper, &template_form, &older_inspector, &ocr_layer,
+                              &unknown_reason}) {
+    grparse::PdfClassification finished = *settled;
+    finished.pages_needing_ocr.push_back(3);
+    const auto route = grparse::route_pdf_by_classification(finished);
+    require(route.force_ocr && !route.fast_path,
+            "whatever pages the stream adds, an info-settled route stays forced");
+  }
+
   FakePdfService service(pdfv1::PDF_TYPE_TEXT_BASED, {});
   service.set_ocr_recommended(true);
   service.set_ocr_recommendation_reasons({pdfv1::OCR_RECOMMENDATION_REASON_DENSE_LAYOUT});
@@ -3333,12 +4030,15 @@ int main() {
       verify_caller_status_classes_survive,
       verify_inbound_deadline_bounds_a_hanging_collector,
       verify_cancellation_ends_a_hanging_collector,
+      verify_silent_collector_fails_on_keepalive,
       verify_ebcdic_forwards_layout_and_collects,
       verify_ebcdic_without_layout_never_dials,
       verify_epub_collects_document,
       verify_missing_document_event_fails,
       verify_epub_book_folds_chapters_and_images,
       verify_epub_book_stream_has_a_byte_cap,
+      verify_epub_book_dials_chapters_while_the_stream_is_in_flight,
+      verify_epub_book_folds_chapters_in_spine_order,
       verify_epub_book_without_markup_keeps_the_skeleton,
       verify_epub_book_survives_a_failing_chapter,
       verify_markup_forwards_hint_and_collects,
@@ -3359,6 +4059,8 @@ int main() {
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
       verify_calamine_folds_sheets,
+      verify_calamine_falls_back_to_handles_on_unimplemented,
+      verify_calamine_stream_failures,
       verify_calamine_sheet_failure_still_closes,
       verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,

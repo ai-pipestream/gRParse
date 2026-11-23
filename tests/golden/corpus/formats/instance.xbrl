@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<xbrli:xbrl xmlns:xbrli="http://www.xbrl.org/2003/instance"
+            xmlns:link="http://www.xbrl.org/2003/linkbase"
+            xmlns:xlink="http://www.w3.org/1999/xlink"
+            xmlns:iso4217="http://www.xbrl.org/2003/iso4217"
+            xmlns:ex="http://example.com/golden/2026">
+  <link:schemaRef xlink:type="simple" xlink:href="golden-2026.xsd"/>
+  <xbrli:context id="FY2026">
+    <xbrli:entity><xbrli:identifier scheme="http://example.com/id">GOLDEN</xbrli:identifier></xbrli:entity>
+    <xbrli:period><xbrli:startDate>2026-01-01</xbrli:startDate><xbrli:endDate>2026-12-31</xbrli:endDate></xbrli:period>
+  </xbrli:context>
+  <xbrli:unit id="USD"><xbrli:measure>iso4217:USD</xbrli:measure></xbrli:unit>
+  <ex:Revenue contextRef="FY2026" unitRef="USD" decimals="0">1200</ex:Revenue>
+  <ex:Expenses contextRef="FY2026" unitRef="USD" decimals="0">800</ex:Expenses>
+</xbrli:xbrl>

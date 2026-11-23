@@ -52,6 +52,7 @@ assert overlay_path.is_file(), "compose.stack.observability.yaml is missing"
 overlay_text = load_yaml_or_text(overlay_path)
 for needle in (
     'GRPARSE_METRICS_PORT: "9464"',
+    'GRPC_ASR_METRICS_ADDRESS: "0.0.0.0:9464"',
     "prom/prometheus:v",
     "grafana/grafana:",
     "./compose/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml:ro",
@@ -60,7 +61,7 @@ for needle in (
     "host.docker.internal:host-gateway",
     "127.0.0.1:${GRAFANA_PORT:-3000}:3000",
     'GF_AUTH_ANONYMOUS_ENABLED: "true"',
-    'GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"',
+    'GF_AUTH_ANONYMOUS_ORG_ROLE: "Viewer"',
 ):
     assert needle in overlay_text, f"compose.stack.observability.yaml missing {needle!r}"
 
@@ -71,6 +72,8 @@ for needle in (
     "scrape_interval: 5s",
     'job_name: "grparse"',
     "grparse:9464",
+    'job_name: "grpc-asr"',
+    "asr:9464",
     'job_name: "grparse-corpus-eval"',
     "host.docker.internal:9465",
 ):

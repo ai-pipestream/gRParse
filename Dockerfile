@@ -9,13 +9,15 @@
 # The build stage starts from the local deps stage unless CI names a published
 # seed image (see the seed stage below).
 ARG GRPARSE_DEPS_IMAGE=deps
-ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.4.3-runtime-ubuntu26.04
+ARG GRPARSE_RUNTIME_IMAGE=nvidia/cuda:13.5.0-runtime-ubuntu26.04
 
-FROM nvidia/cuda:13.4.3-devel-ubuntu26.04 AS deps
+FROM nvidia/cuda:13.5.0-devel-ubuntu26.04 AS deps
 ARG GRPARSE_BUILD_JOBS=2
 ENV CARGO_BUILD_JOBS=${GRPARSE_BUILD_JOBS}
 
-# Native embedding inference; keep the SDK aligned with this CUDA base.
+# Native TensorRT runs the image models (OCR, layout, table structure, figure
+# classes; src/tensorrt/) and the embeddings; keep the SDK aligned with this
+# CUDA base.
 ARG GRPARSE_TENSORRT_VERSION=11.4.0.106-1+cuda13.4
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvinfer-dev=${GRPARSE_TENSORRT_VERSION} \
@@ -24,6 +26,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libnvinfer11=${GRPARSE_TENSORRT_VERSION} \
     libnvonnxparsers-dev=${GRPARSE_TENSORRT_VERSION} \
     libnvonnxparsers11=${GRPARSE_TENSORRT_VERSION} \
+    && rm -rf /var/lib/apt/lists/*
+# cuDNN rides in the deps stage, and so in the published seed, instead of
+# being downloaded (441 MB) by every build stage (#245). ONNX Runtime
+# dlopens it at run time; the build stage only copies it into the closure.
+RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
     && rm -rf /var/lib/apt/lists/*
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -70,7 +77,7 @@ ARG GRPARSE_BUILD_JOBS=2
 WORKDIR /src
 RUN --mount=type=bind,target=/src,rw \
     cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DGRPARSE_NATIVE_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && sh scripts/prune-seed.sh /build /opt/grparse-seed
 
@@ -107,7 +114,11 @@ ARG GRPARSE_BUILD_CACHE_SCOPE=
 # COPY-ed proto as newer than a cached generated header, so a content stamp
 # decides: any proto change discards the staged and generated trees, which
 # forces regeneration; everything else stays warm.
-RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
+# Which tier labels the in-build ctest may skip (scripts/check-skips.sh,
+# #247). No models, embedding bundle or emulators in this build, so those
+# three; any other skip fails the build.
+ARG GRPARSE_EXPECTED_SKIPS=models,embeddings,emulators
+RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.5-trt11.4-grpc1.84.1-ort1.30.0-cxx23-sessionep2-static1-simdutf9-ocv500-tokcpp1-ocrbackend3-reclimits1${GRPARSE_BUILD_CACHE_SCOPE},sharing=locked,target=/build \
     --mount=type=cache,id=grparse-ccache-cuda-amd64,target=/ccache \
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
@@ -119,17 +130,20 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0
  && sh scripts/stamp-sources.sh /build \
  && ccache --zero-stats \
  && cmake -S . -B /build -G Ninja -DCMAKE_BUILD_TYPE=Release -DBUILD_TESTING=ON \
-      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
+      -DGRPARSE_WERROR=ON -DGRPARSE_EMBED_TENSORRT=ON -DGRPARSE_NATIVE_TENSORRT=ON -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
       -DGRPARSE_COMPILER_LAUNCHER=ccache \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
- && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse \
+ && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
+      --output-junit /build/ctest-junit.xml \
+ && sh scripts/check-skips.sh /build/ctest-junit.xml "${GRPARSE_EXPECTED_SKIPS}" \
  && mkdir -p /out \
  && cp /build/grparse-server /out/grparse-server \
  && cp /build/grparse-stream-client /out/grparse-stream-client \
  && cp /build/grparse-embed-text /out/grparse-embed-text \
  && cp /build/embedding-model-test /out/grparse-embedding-check \
  && cp /build/embedding-reference-test /out/grparse-embedding-reference \
+ && cp /build/tensorrt-model-test /out/grparse-tensorrt-check \
  && cp -a /build/_deps/onnxruntime-src/lib /out/onnxruntime-lib
 
 # Stage the runtime library closure. The runtime base is assumed minimal
@@ -137,16 +151,16 @@ RUN --mount=type=cache,id=grparse-ubuntu26-cuda13.4-trt11.4-grpc1.84.1-ort1.30.0
 # shared library the binaries need ships from this stage, except two families
 # the base must own: glibc (the loader and its libraries are inseparable) and
 # the CUDA runtime math libraries (cublas, cufft, curand), which are the
-# reason the base is a CUDA image at all. cuDNN is installed here only to be
-# copied out; ONNX Runtime dlopens it, so ldd alone would never surface it.
-# The last line holds this image to the invariant the vendored OpenCV
-# exists for: no poppler in the staged closure.
-RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-13 \
-    && rm -rf /var/lib/apt/lists/* \
+# reason the base is a CUDA image at all. cuDNN comes from the deps stage
+# only to be copied out here; ONNX Runtime dlopens it, so ldd alone would
+# never surface it. The last line holds this image to the invariant the
+# vendored OpenCV exists for: no poppler in the staged closure.
+RUN ls /usr/lib/x86_64-linux-gnu/libcudnn.so.9* >/dev/null \
     && mkdir -p /out/runtime-libs \
     && cp -a /usr/lib/x86_64-linux-gnu/libcudnn* /out/runtime-libs/ \
     && cp -a /usr/lib/x86_64-linux-gnu/libnvinfer*.so* /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so* /out/runtime-libs/ \
     && for f in /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference \
+                /out/grparse-tensorrt-check \
                 /out/onnxruntime-lib/*.so* /usr/lib/x86_64-linux-gnu/libcudnn*.so* \
                 /usr/lib/x86_64-linux-gnu/libnvinfer*.so* \
                 /usr/lib/x86_64-linux-gnu/libnvonnxparser*.so*; do \
@@ -157,6 +171,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends libcudnn9-cuda-
        | grep -v -E '/(libc|libm|libdl|libpthread|librt|libresolv|libnsl|libutil|libanl)\.so' \
        | while read -r lib; do cp -L "$lib" /out/runtime-libs/; done \
     && ls /out/runtime-libs | wc -l \
+    && mkdir -p /out/tensorrt-cache \
     && test "$(ls /out/runtime-libs | grep -c '^libpoppler')" = 0
 
 # LD_LIBRARY_PATH stands in for ldconfig, and the numeric USER works with or
@@ -176,11 +191,20 @@ ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/onnxruntime-lib/ /usr/local/lib/
+# An empty engine cache directory owned by the container user. The cache is
+# off unless GRPARSE_TENSORRT_CACHE_DIR names a directory; a named volume
+# mounted here comes up writable by 65532 (Docker initializes a fresh named
+# volume from the image's directory, owner included). A bind mount does not
+# inherit anything: chown it to 65532 on the host.
+COPY --from=build --chown=65532:65532 /out/tensorrt-cache /var/cache/tensorrt
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
 COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
 COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
+# Every model file as a TensorRT engine against the ONNX Runtime CPU
+# reference; the GPU suite runs it (scripts/test/gpu-placement-cuda-test.sh).
+COPY --from=build /out/grparse-tensorrt-check /usr/local/bin/grparse-tensorrt-check
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

@@ -22,7 +22,24 @@ const LayoutRegion* region_for_line(const OcrPage& page, const OcrLine& line) {
       best = &region;
     }
   }
-  return best;
+  if (best == nullptr || best->label != "picture") return best;
+  // Inside a picture, a panel's own caption takes its line, and otherwise
+  // the innermost picture does, so a panel's labels hang off the panel.
+  const auto contains_center = [&center](const LayoutRegion& region) {
+    return center.x >= region.left && center.x <= region.right && center.y >= region.top &&
+           center.y <= region.bottom;
+  };
+  const auto box_area = [](const LayoutRegion& region) {
+    return static_cast<double>(std::max(0, region.right - region.left)) *
+           std::max(0, region.bottom - region.top);
+  };
+  const LayoutRegion* picture = best;
+  for (const auto& region : page.regions) {
+    if (&region == best || !contains_center(region) || !region_nested_in(region, *best)) continue;
+    if (region.label == "caption") return &region;
+    if (region.label == "picture" && box_area(region) < box_area(*picture)) picture = &region;
+  }
+  return picture;
 }
 
 namespace {
@@ -73,6 +90,22 @@ bool holds_a_line(const LayoutRegion& region, const std::vector<OcrLine>& lines)
   });
 }
 
+// Lines inside the region that open a figure or table caption. Two of them
+// mean the region boxes several captioned figures, not one figure.
+size_t captions_opened_in(const LayoutRegion& region, const std::vector<OcrLine>& lines) {
+  return static_cast<size_t>(std::ranges::count_if(lines, [&region](const OcrLine& line) {
+    if (line.polygon.empty()) return false;
+    const std::string_view text = line.text;
+    if (!text.starts_with("Fig") && !text.starts_with("FIG") && !text.starts_with("Table") &&
+        !text.starts_with("TABLE")) {
+      return false;
+    }
+    const cv::Point center = bounding_box(line).center();
+    return center.x >= region.left && center.x <= region.right && center.y >= region.top &&
+           center.y <= region.bottom;
+  }));
+}
+
 // Labels the reference never nests inside a table: the floats and wrappers.
 bool nests_in_tables(std::string_view label) {
   return label != "table" && label != "picture" && label != "form" &&
@@ -103,6 +136,33 @@ size_t kept_table(const std::vector<LayoutRegion>& regions, const std::vector<si
 }
 
 }  // namespace
+
+bool opens_panel_caption(std::string_view text, bool numbers) {
+  if (text.size() < 4 || text[0] != '(') return false;
+  size_t close = 1;
+  while (close < text.size() && close <= 3 &&
+         std::isalnum(static_cast<unsigned char>(text[close])) != 0) {
+    ++close;
+  }
+  if (close == 1 || close >= text.size() || text[close] != ')') return false;
+  const std::string_view mark = text.substr(1, close - 1);
+  const bool letter = mark.size() == 1 && std::isalpha(static_cast<unsigned char>(mark[0])) != 0;
+  const bool number = numbers && std::ranges::all_of(mark, [](char c) {
+    return std::isdigit(static_cast<unsigned char>(c)) != 0;
+  });
+  if (!letter && !number) return false;
+  // A word follows, not math ("(a) \u03b10") or nothing.
+  size_t word = close + 1;
+  while (word < text.size() && text[word] == ' ') ++word;
+  if (word >= text.size() || std::isalpha(static_cast<unsigned char>(text[word])) == 0) return false;
+  const std::string_view rest = text.substr(word);
+  return rest.find("Figure ") == std::string_view::npos && rest.find("Fig. ") == std::string_view::npos &&
+         rest.find("Table ") == std::string_view::npos;
+}
+
+bool region_nested_in(const LayoutRegion& inner, const LayoutRegion& outer) {
+  return inside_share(inner, outer) > kNestedShare;
+}
 
 void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vector<OcrLine>& lines,
                              int page_width, int page_height) {
@@ -150,6 +210,56 @@ void resolve_region_overlaps(std::vector<LayoutRegion>& regions, const std::vect
     for (const size_t table : tables) {
       if (!dropped[table] && inside_share(regions[index], regions[table]) > kNestedShare) {
         dropped[index] = true;
+        break;
+      }
+    }
+  }
+
+  // Pictures: a box around two or more detected pictures is a figure made
+  // of panels, (a) to (d) under one caption. Both stay: the assembler hangs
+  // the panels off the figure. When that box holds two or more captions of
+  // its own ("Figure 13", "Figure 14"), it is several figures boxed again as
+  // one and goes. A picture inside another that holds no second picture is
+  // the same figure detected twice, and the smaller goes.
+  std::vector<size_t> pictures;
+  for (size_t index = 0; index < regions.size(); ++index) {
+    if (!dropped[index] && regions[index].label == "picture") pictures.push_back(index);
+  }
+  std::vector<bool> has_panels(regions.size(), false);
+  for (const size_t outer : pictures) {
+    size_t inside = 0;
+    for (const size_t inner : pictures) {
+      if (inner != outer && inside_share(regions[inner], regions[outer]) > kNestedShare) ++inside;
+    }
+    if (inside < 2) continue;
+    if (captions_opened_in(regions[outer], lines) >= 2) {
+      dropped[outer] = true;
+    } else {
+      has_panels[outer] = true;
+    }
+  }
+  // A box around some of a figure's panels, inside the figure and with no
+  // caption of its own, is a grouping the detector drew (a column of two
+  // panels): it goes, and its panels hang off the figure itself.
+  for (const size_t inner : pictures) {
+    if (dropped[inner] || !has_panels[inner]) continue;
+    for (const size_t outer : pictures) {
+      if (outer == inner || dropped[outer] || !has_panels[outer]) continue;
+      if (inside_share(regions[inner], regions[outer]) > kNestedShare &&
+          area(regions[inner]) < area(regions[outer]) &&
+          captions_opened_in(regions[inner], lines) == 0) {
+        dropped[inner] = true;
+        break;
+      }
+    }
+  }
+  for (const size_t inner : pictures) {
+    if (dropped[inner]) continue;
+    for (const size_t outer : pictures) {
+      if (outer == inner || dropped[outer] || has_panels[outer]) continue;
+      if (inside_share(regions[inner], regions[outer]) > kNestedShare &&
+          area(regions[inner]) < area(regions[outer])) {
+        dropped[inner] = true;
         break;
       }
     }

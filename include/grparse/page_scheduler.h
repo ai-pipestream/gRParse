@@ -10,6 +10,7 @@
 #include <memory>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <unordered_set>
 #include <utility>
 
@@ -60,6 +61,10 @@ class PageScheduler final {
     // Forces rasterization of full-digital pages (like layout does).  Off by
     // default: previews add bytes to every page event.
     bool capture_page_images = false;
+    // DPI the image rectangles of a text-layer page are OCRed at
+    // (ocr_rect_render.h); the page raster and layout stay at the render DPI.
+    // At or below the render DPI the rectangles are read from the page raster.
+    double ocr_image_dpi = 0.0;
     // Decode barcode/QR payloads from figure crops in the inference stage.
     BarcodeMode barcode_mode = BarcodeMode::kOff;
     // Orientation recovery for recognized pages (orientation_recovery.h):
@@ -135,6 +140,11 @@ class PageScheduler final {
     // The call's candidate passwords for an encrypted PDF, handed to the
     // document's source before its opening backend call. Empty means none.
     DocumentPasswords passwords;
+    // The lowercase hex SHA-256 of the submitted bytes when the caller
+    // already computed it, handed to the source factory so the PDF source
+    // does not read the whole document again to address its backend.
+    // Empty means the source hashes the bytes itself.
+    std::string sha256_hex;
   };
 
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };

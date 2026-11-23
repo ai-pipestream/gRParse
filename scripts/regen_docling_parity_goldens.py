@@ -26,7 +26,9 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 GOLDEN = ROOT / "tests" / "golden" / "docling_parity"
 CORPUS = ROOT / "tests" / "golden" / "corpus"
-DEFAULT_FIXTURES = [CORPUS / "hello-text.pdf"]
+# table-picture.pdf (tests/golden/build_format_fixtures.py) is pending: its
+# goldens are not recorded yet (tests/golden/docling_parity/DEVIATIONS.md).
+DEFAULT_FIXTURES = [CORPUS / "hello-text.pdf", CORPUS / "formats" / "table-picture.pdf"]
 EVAL = ROOT / "eval"
 
 

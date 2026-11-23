@@ -25,15 +25,15 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
-#include <google/protobuf/util/json_util.h>
+#include <google/protobuf/unknown_field_set.h>
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
-#include "google/rpc/status.pb.h"
 #include "storage/connectors.h"
 #include "grparse/ocr_preset_policy.h"
 
 #include "grparse/base64.h"
 #include "grparse/chart_derender.h"
+#include "grparse/code_formula_crops.h"
 #include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
 #include "grparse/data_totals.h"
@@ -43,6 +43,7 @@
 #include "grparse/document_passwords.h"
 #include "grparse/heading_hierarchy.h"
 #include "grparse/input_format.h"
+#include "grparse/lighton_ocr.h"
 #include "grparse/page_previews.h"
 #include "grparse/pdf_form_widgets.h"
 #include "grparse/prometheus_metrics.h"
@@ -51,6 +52,7 @@
 #include "grparse/vlm_convert.h"
 #include "parse_support.h"
 #include "structure_validation.h"
+#include "vlm_custom_options.h"
 #include "targets/sha256.h"
 
 namespace fs = std::filesystem;
@@ -153,9 +155,7 @@ bool implemented_option(std::string_view name) {
       "to_formats",
       "collectors",
       "ebcdic_layout",
-      "ebcdic_layout_json",
       "lol_html_options",
-      "lol_html_options_json",
       "do_ocr",
       "force_ocr",
       "render_scale",
@@ -163,6 +163,7 @@ bool implemented_option(std::string_view name) {
       "include_page_images",
       "md_page_break_placeholder",
       "md_compact_tables",
+      "formatting_fallback_mode",
       "do_pdf_heading_hierarchy",
       "pdf_heading_hierarchy_options",
       "chunking_preset",
@@ -559,9 +560,7 @@ grpc::Status validate_response_format(const Message& message, const std::string&
     return option_rejected(typed ? path + ".response_format" : path + ".response_format_raw",
                            parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED, name,
                            surface + ": " + path + " response format '" + name +
-                               "' is not one the VLM convert collector maps (it maps every "
-                               "docling format except mineru2, whose two-pass protocol "
-                               "it does not drive)");
+                               "' is not one the VLM convert collector maps");
   }
   return grpc::Status::OK;
 }
@@ -684,6 +683,11 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
                           surface + ": " + std::string(name) +
                               ".model_spec requires name and default_repo_id");
     }
+    if (const auto dtype = validate_engine_overrides(spec, std::string(name) + ".model_spec",
+                                                    surface);
+        !dtype.ok()) {
+      return dtype;
+    }
     // Only the VLM pipeline's spec format reaches a collector that reads
     // it; the enrich legs' specs are checked for a known, agreeing value.
     return validate_response_format(spec, std::string(name) + ".model_spec", surface,
@@ -716,8 +720,15 @@ grpc::Status validate_custom_configs(const pipestream::parse::v1::ConvertDocumen
       }
       return grpc::Status::OK;
     };
+    if (cfg.has_nemotron_parse()) {
+      const std::string path = "vlm_pipeline_custom_config.nemotron_parse";
+      if (auto s = validate_nemotron_parse(cfg.nemotron_parse(), path, surface); !s.ok()) {
+        return s;
+      }
+    }
     if (auto s = require_supported_fields(cfg, "vlm_pipeline_custom_config",
-                                         {"engine_options", "model_spec", "scale"}); !s.ok()) {
+                                         {"engine_options", "model_spec", "scale",
+                                          "nemotron_parse"}); !s.ok()) {
       return s;
     }
     if (auto s = require_supported_fields(cfg.model_spec(), "vlm_pipeline_custom_config.model_spec",
@@ -923,41 +934,16 @@ grpc::Status validate_heading_options(
   return grpc::Status::OK;
 }
 
-// The per-collector rules in each collector's typed form. The typed fields
-// are the contract; the deprecated JSON fields still work alone (the ebcdic
-// layout JSON is the collector's own layout_json input, forwarded as is;
-// the lol-html JSON is read here into the typed message), and a request
-// that sets both forms of one is refused rather than guessed at.
+// The per-collector rules in each collector's typed form, forwarded as is.
+// The typed fields are the only form: the JSON spellings that once sat at
+// tags 45 and 46 are retired and refused up front (retired_option_status).
 grpc::Status resolve_collector_rules(const pipestream::parse::v1::ConvertDocumentOptions& options,
-                                     const std::string& surface, CollectorRules* rules) {
-  if (options.has_ebcdic_layout() && options.has_ebcdic_layout_json()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": ebcdic_layout and the deprecated ebcdic_layout_json are "
-                                  "mutually exclusive");
-  }
-  if (options.has_lol_html_options() && options.has_lol_html_options_json()) {
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                        surface + ": lol_html_options and the deprecated lol_html_options_json "
-                                  "are mutually exclusive");
-  }
+                                     const std::string& /*surface*/, CollectorRules* rules) {
   if (options.has_ebcdic_layout()) {
     *rules->ebcdic.mutable_layout() = options.ebcdic_layout();
-  } else if (!options.ebcdic_layout_json().empty()) {
-    rules->ebcdic.set_layout_json(options.ebcdic_layout_json());
   }
   if (options.has_lol_html_options()) {
     rules->lol_html = options.lol_html_options();
-  } else if (!options.lol_html_options_json().empty()) {
-    lolhtml::v1::ExtractOptions parsed;
-    const auto status =
-        google::protobuf::util::JsonStringToMessage(options.lol_html_options_json(), &parsed);
-    if (!status.ok()) {
-      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
-                          surface + ": lol_html_options_json does not parse as "
-                                    "lolhtml.v1.ExtractOptions: " +
-                              std::string(status.message()));
-    }
-    rules->lol_html = std::move(parsed);
   }
   if (options.has_asr_options()) {
     rules->asr_options = options.asr_options();
@@ -1051,24 +1037,6 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
 
 bool s3_source_verify_ssl(const pipestream::parse::v1::S3Source& source) {
   return !source.has_verify_ssl() || source.verify_ssl();
-}
-
-grpc::Status option_rejected(const std::string& option_path,
-                             pipestream::parse::v1::OptionRejectionReason reason,
-                             const std::string& rejected_value_raw, const std::string& message) {
-  pipestream::parse::v1::OptionRejection rejection;
-  rejection.set_option_path(option_path);
-  rejection.set_reason(reason);
-  rejection.set_rejected_value_raw(rejected_value_raw);
-  google::rpc::Status status;
-  status.set_code(static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT));
-  status.set_message(message);
-  if (!status.add_details()->PackFrom(rejection)) {
-    // Packing a generated message cannot fail; if it ever does the people
-    // message still stands, without the typed detail.
-    return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message);
-  }
-  return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, message, status.SerializeAsString());
 }
 
 std::expected<std::vector<pipestream::parse::v1::HeadingNumberingScheme>, grpc::Status>
@@ -1165,6 +1133,39 @@ uint64_t decoded_file_bytes(const pipestream::parse::v1::FileSource& file) {
   return file.base64_string().size() / 4 * 3 + 3;
 }
 
+// The ConvertDocumentOptions tags that were retired in favour of a typed
+// twin, with the field to send instead. The schema reserves them, so a
+// request that still carries one parses with the tag in the unknown-field
+// set; it is refused by name rather than silently dropped, since dropping
+// the rules would run the collector without them.
+struct RetiredOption {
+  int tag;
+  std::string_view name;
+  std::string_view replacement;
+};
+constexpr RetiredOption kRetiredOptions[] = {
+    {45, "ebcdic_layout_json", "ebcdic_layout"},
+    {46, "lol_html_options_json", "lol_html_options"},
+};
+
+grpc::Status retired_option_status(const pipestream::parse::v1::ConvertDocumentOptions& options,
+                                   const std::string& surface) {
+  const google::protobuf::UnknownFieldSet& unknown =
+      options.GetReflection()->GetUnknownFields(options);
+  for (int index = 0; index < unknown.field_count(); ++index) {
+    const int tag = unknown.field(index).number();
+    for (const RetiredOption& retired : kRetiredOptions) {
+      if (retired.tag != tag) continue;
+      return option_rejected(
+          std::string(retired.name), pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "",
+          std::format("{}: option '{}' (tag {}) is retired; send the typed {} instead", surface,
+                      retired.name, retired.tag, retired.replacement));
+    }
+  }
+  return grpc::Status::OK;
+}
+
 }  // namespace
 
 uint64_t decoded_source_bytes(
@@ -1180,6 +1181,8 @@ uint64_t decoded_source_bytes(
 // conversion surfaces turned its request down.
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface) {
+  const grpc::Status retired_status = retired_option_status(options, surface);
+  if (!retired_status.ok()) return retired_status;
   std::vector<const google::protobuf::FieldDescriptor*> populated;
   options.GetReflection()->ListFields(options, &populated);
   for (const auto* field : populated) {
@@ -1222,6 +1225,15 @@ grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOption
   if (!vlm_selection_status.ok()) return vlm_selection_status;
   const grpc::Status custom_config_status = validate_custom_configs(options, surface);
   if (!custom_config_status.ok()) return custom_config_status;
+  if (options.has_formatting_fallback_mode() &&
+      !pipestream::parse::v1::FormattingFallbackMode_IsValid(
+          options.formatting_fallback_mode())) {
+    return option_rejected(
+        "formatting_fallback_mode",
+        pipestream::parse::v1::OPTION_REJECTION_REASON_UNKNOWN_VALUE,
+        std::to_string(static_cast<int>(options.formatting_fallback_mode())),
+        surface + ": formatting_fallback_mode is not a known value");
+  }
   const grpc::Status heading_status = validate_heading_options(options, surface);
   if (!heading_status.ok()) return heading_status;
   if (auto preset = resolve_code_formula_preset(options, surface); !preset.has_value()) {
@@ -1528,23 +1540,34 @@ using CvConfidence = std::shared_ptr<std::optional<pipestream::parse::v1::Confid
 // page set applied.
 class CvCollector {
  public:
-  CvCollector(grpc::CallbackServerContext* context, PageScheduler& scheduler,
+  CvCollector(const ParseCall& call, PageScheduler& scheduler,
               std::shared_ptr<const std::string> bytes, bool pdf, CvOffsets offsets,
               CvConfidence confidence, HeadingOptions heading_options,
               CollectorDeadline deadline)
-      : context_(context),
+      : call_(call),
         scheduler_(scheduler),
         bytes_(std::move(bytes)),
         pdf_(pdf),
         offsets_(std::move(offsets)),
         confidence_(std::move(confidence)),
         heading_options_(std::move(heading_options)),
-        deadline_(deadline) {}
+        deadline_(deadline),
+        sha256_(std::make_shared<RequestDigest>()) {}
 
   CollectorOutcome operator()(const PageScheduler::OcrTuning& tuning) const {
     try {
       PageSet pages;
-      if (std::optional<CollectorOutcome> failure = collect_pages(tuning, &pages)) {
+      // A PDF's source addresses its backend by the document's SHA-256,
+      // computed here once per request (the routing leg can run the
+      // collector twice) and handed through the tuning, so no source hashes
+      // the upload itself.
+      PageScheduler::OcrTuning hashed = tuning;
+      if (pdf_ && hashed.sha256_hex.empty() && bytes_ != nullptr) {
+        std::lock_guard<std::mutex> lock(sha256_->mutex);
+        if (sha256_->hex.empty()) sha256_->hex = targets::sha256_hex(*bytes_);
+        hashed.sha256_hex = sha256_->hex;
+      }
+      if (std::optional<CollectorOutcome> failure = collect_pages(hashed, &pages)) {
         return std::move(*failure);
       }
       return assemble(pages);
@@ -1553,7 +1576,21 @@ class CvCollector {
     }
   }
 
+  // The request's SHA-256 if a CV run already computed it, else empty, so
+  // a later backend call on the same bytes can reuse it.
+  std::string computed_sha256() const {
+    std::lock_guard<std::mutex> lock(sha256_->mutex);
+    return sha256_->hex;
+  }
+
  private:
+  // The request's SHA-256, shared by every copy of this collector; empty
+  // until a CV run needed it.
+  struct RequestDigest {
+    std::mutex mutex;
+    std::string hex;
+  };
+
   // Every page one submission produced, in page order.
   struct PageSet {
     std::map<int, std::shared_ptr<const OcrPage>> pages;
@@ -1578,7 +1615,7 @@ class CvCollector {
   std::optional<CollectorOutcome> collect_pages(const PageScheduler::OcrTuning& tuning,
                                                 PageSet* collected) const {
     Run state;
-    auto* context = context_;
+    const ParseCall call = call_;
     const auto ticket = scheduler_.submit(
         bytes_, pdf_, tuning,
         PageScheduler::Callbacks{
@@ -1587,8 +1624,8 @@ class CvCollector {
               state.total_pages = total_pages;
               state.changed.notify_all();
             },
-            [&state, context](int page_number, std::shared_ptr<const OcrPage> page) {
-              if (context->IsCancelled()) return PageScheduler::DeliveryResult::kCancelled;
+            [&state, call](int page_number, std::shared_ptr<const OcrPage> page) {
+              if (call.cancelled()) return PageScheduler::DeliveryResult::kCancelled;
               std::lock_guard<std::mutex> lock(state.mutex);
               state.pages.emplace(page_number, std::move(page));
               return PageScheduler::DeliveryResult::kAcceptedAndRelease;
@@ -1605,9 +1642,9 @@ class CvCollector {
     while (!state.finished) {
       state.changed.wait_for(lock, std::chrono::milliseconds(25));
       if (!expired && std::chrono::system_clock::now() >= deadline_) expired = true;
-      if (context_->IsCancelled() || expired) ticket.cancel();
+      if (call_.cancelled() || expired) ticket.cancel();
     }
-    if (context_->IsCancelled()) return cancelled_outcome();
+    if (call_.cancelled()) return cancelled_outcome();
     if (expired) {
       CollectorOutcome outcome;
       outcome.error = "document deadline exceeded before every page was read";
@@ -1665,7 +1702,7 @@ class CvCollector {
     return outcome;
   }
 
-  grpc::CallbackServerContext* context_;
+  ParseCall call_;
   PageScheduler& scheduler_;
   std::shared_ptr<const std::string> bytes_;
   bool pdf_;
@@ -1673,13 +1710,14 @@ class CvCollector {
   CvConfidence confidence_;
   HeadingOptions heading_options_;
   CollectorDeadline deadline_;
+  std::shared_ptr<RequestDigest> sha256_;
 };
 
 // Everything one parse's collector legs read: the request's bytes and
 // identity, the endpoints they dial, and the ceilings they run under. Copied
 // into each leg, which is why every member is a value or a shared handle.
 struct ParseInputs {
-  grpc::CallbackServerContext* context = nullptr;
+  ParseCall call;
   std::shared_ptr<CollectorEndpoints> endpoints;
   std::shared_ptr<const std::string> bytes;
   std::shared_ptr<const CollectorRules> collector_rules;
@@ -1834,7 +1872,7 @@ HeadingOptions heading_options_from(const pipestream::parse::v1::ConvertDocument
 // One parse's inputs, read off the request once. The mimetype is the
 // origin's own resolved type, so the routing and every dialed collector see
 // what the bytes were decided to be.
-ParseInputs parse_inputs(grpc::CallbackServerContext* context,
+ParseInputs parse_inputs(const ParseCall& call,
                          const pipestream::parse::v1::ConvertDocumentRequest& request,
                          const PageScheduler& scheduler,
                          const std::shared_ptr<CollectorEndpoints>& collectors,
@@ -1845,7 +1883,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
                          const DocumentPasswords& passwords) {
   const auto& options = request.options();
   ParseInputs inputs;
-  inputs.context = context;
+  inputs.call = call;
   inputs.endpoints = collectors;
   inputs.bytes = std::move(bytes);
   // validate_options already refused rules that do not resolve.
@@ -1980,7 +2018,7 @@ ParseInputs parse_inputs(grpc::CallbackServerContext* context,
   // its own static cap exactly as before. document_timeout (seconds) further
   // caps that ceiling when set — parity with Docling Convert options.
   inputs.inbound_deadline = deadline_with_document_timeout(
-      context->deadline(), options.has_document_timeout(), options.document_timeout());
+      call.deadline(), options.has_document_timeout(), options.document_timeout());
   inputs.tuning.deadline = inputs.inbound_deadline;
   inputs.tuning.passwords = passwords;
   // A collector-folded PDF never rasterized; when previews are on, it gets
@@ -2049,7 +2087,7 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
   if (inputs.previews) {
     attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
                          [&inputs] {
-                           return inputs.context->IsCancelled() ||
+                           return inputs.call.cancelled() ||
                                   std::chrono::system_clock::now() >= inputs.inbound_deadline;
                          },
                          inputs.inbound_deadline);
@@ -2078,11 +2116,11 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
 CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run_cv) {
   // Same pre-dial cancellation check as the plain collector legs: a call
   // that died after the dequeue check must not dial the inspector either.
-  if (inputs.context->IsCancelled()) return cancelled_outcome();
+  if (inputs.call.cancelled()) return cancelled_outcome();
   const PdfParseResult parsed =
       collect_pdf(inputs.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
                   *inputs.bytes, inputs.inbound_deadline, inputs.tuning.page_range,
-                  [context = inputs.context] { return context->IsCancelled(); });
+                  [call = inputs.call] { return call.cancelled(); });
   const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
   if (parsed.outcome.success && (route.fast_path || inputs.native_pipeline)) {
     return take_inspector_extraction(inputs, parsed, route);
@@ -2200,14 +2238,14 @@ std::vector<PlannedCollector> build_plan(
         // The dequeue check answered "still listening" before this parse
         // started; a cancel can land any time after. Ask again before
         // dialing so a dead call costs no collector leg.
-        if (inputs.context->IsCancelled()) return cancelled_outcome();
+        if (inputs.call.cancelled()) return cancelled_outcome();
         // The leg's own call ends with this one: a client that cancels
         // mid-leg leaves no collector working for nobody.
         return run_remote_collector(id, inputs.endpoints, inputs.document_id,
                                     inputs.filename.string(), inputs.content_type,
                                     *inputs.bytes, *inputs.collector_rules,
                                     inputs.inbound_deadline,
-                                    [context = inputs.context] { return context->IsCancelled(); });
+                                    [call = inputs.call] { return call.cancelled(); });
       };
     }
     plan.push_back(std::move(collector));
@@ -2233,10 +2271,10 @@ grpc::Status all_failed_status(const CoordinatorResult& result) {
 // Advisory and bounded: it edits picture annotations only, never the text or
 // the arenas, and its failures are warnings.
 void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& collectors,
-                                   grpc::CallbackServerContext* context,
+                                   const ParseCall& call,
                                    CollectorDeadline inbound_deadline,
                                    const ParseInputs& inputs, CoordinatorResult* result) {
-  if (collectors == nullptr || !collectors->has_derender() || context->IsCancelled()) return;
+  if (collectors == nullptr || !collectors->has_derender() || call.cancelled()) return;
   ChartDerenderOptions enrich = collectors->derender();
   // Explicit false on the request turns chart extraction off even when enrich
   // is wired. Unset keeps the historical env opt-in (do_chart_extraction true
@@ -2267,9 +2305,15 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_deny = inputs.picture_description_deny;
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
+  std::vector<ChartCandidate> item_crops = enrich_item_crops(
+      enrich, inputs.bytes, result->document,
+      [call, inbound_deadline] {
+        return call.cancelled() || std::chrono::system_clock::now() >= inbound_deadline;
+      },
+      inbound_deadline);
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
-                      [context] { return context->IsCancelled(); });
+                      [call] { return call.cancelled(); }, std::move(item_crops));
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
@@ -2288,7 +2332,13 @@ void stamp_collector_warnings(CoordinatorResult* result) {
 
 }  // namespace
 
-grpc::Status parse_source(grpc::CallbackServerContext* context,
+grpc::Status ParseCall::read_passwords(DocumentPasswords* passwords) const {
+  if (context_ != nullptr) return read_document_passwords(*context_, passwords);
+  *passwords = passwords_;
+  return grpc::Status::OK;
+}
+
+grpc::Status parse_source(const ParseCall& call,
                           const pipestream::parse::v1::ConvertDocumentRequest& request,
                           PageScheduler& scheduler,
                           const std::shared_ptr<CollectorEndpoints>& collectors,
@@ -2342,7 +2392,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
   // Candidate passwords for an encrypted document come from the call's
   // metadata only; see document_passwords.h.
   DocumentPasswords passwords;
-  if (const grpc::Status read = read_document_passwords(*context, &passwords); !read.ok()) {
+  if (const grpc::Status read = call.read_passwords(&passwords); !read.ok()) {
     return grpc::Status(read.error_code(), surface + ": " + read.error_message());
   }
   // A storage or plugin source resolves to the one document it names; a
@@ -2364,7 +2414,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // the fetched copy is charged.
     RemoteFetchSlots::Slot slot;
     if (remote_source && admission.fetch_slots != nullptr) {
-      slot = admission.fetch_slots->acquire([context] { return context->IsCancelled(); });
+      slot = admission.fetch_slots->acquire([&call] { return call.cancelled(); });
       if (!slot.held()) {
         return grpc::Status(grpc::StatusCode::CANCELLED,
                             surface + ": request cancelled while waiting for a remote fetch "
@@ -2427,9 +2477,14 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     // collector merge alike), so no path can return a document without it.
     *base.mutable_parse() = parse_identity(request.options());
 
+    const auto detected = input_format_for(base.origin().mimetype(), requested_name);
+    if (detected == pipestream::parse::v1::INPUT_FORMAT_CALENDAR) {
+      return option_rejected(
+          "sources[0]", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+          "INPUT_FORMAT_CALENDAR",
+          surface + ": INPUT_FORMAT_CALENDAR has no collector");
+    }
     if (!request.options().from_formats().empty()) {
-      const auto detected =
-          input_format_for(base.origin().mimetype(), requested_name);
       if (!detected.has_value()) {
         return grpc::Status(
             grpc::StatusCode::INVALID_ARGUMENT,
@@ -2445,7 +2500,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     }
 
     const ParseInputs inputs =
-        parse_inputs(context, request, scheduler, collectors, bytes, requested_name,
+        parse_inputs(call, request, scheduler, collectors, bytes, requested_name,
                      base.origin().mimetype(), std::move(*chart_extraction),
                      std::move(*picture_description), passwords);
 
@@ -2467,13 +2522,21 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                        "AcroForm widgets (GRPARSE_PDF_BACKEND names none)");
     }
     if (inputs.vlm_pipeline) {
-      if (collectors == nullptr || !collectors->has_vlm()) {
+      // A request that names the LightOnOCR model goes to grpc-lighton-ocr
+      // when GRPARSE_LIGHTON_TARGET is set, and to grpc-vlm-convert's
+      // LightOnOCR preset otherwise; every other selection goes to
+      // grpc-vlm-convert. Once grpc-lighton-ocr is chosen its failure is the
+      // parse's: there is no second try on the other peer.
+      VlmConvertOptions vlm = collectors == nullptr ? VlmConvertOptions{} : collectors->vlm();
+      apply_vlm_convert_options(request.options(), &vlm);
+      const VlmBodyEngine engine = choose_vlm_body_engine(
+          vlm, collectors != nullptr && collectors->has_lighton());
+      if (engine == VlmBodyEngine::kVlmConvert &&
+          (collectors == nullptr || !collectors->has_vlm())) {
         return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
                             surface + ": pipeline VLM needs grpc-vlm-convert "
                                       "(GRPARSE_VLM_CONVERT_TARGET)");
       }
-      VlmConvertOptions vlm = collectors->vlm();
-      apply_vlm_convert_options(request.options(), &vlm);
       if (inputs.tuning.render_dpi > 0.0 && vlm.render_dpi <= 0.0) {
         vlm.render_dpi = inputs.tuning.render_dpi;
       }
@@ -2483,11 +2546,26 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       CoordinatorResult result;
       result.document = std::move(base);
       parsed->collectors_ran = true;
+      const auto request_cancelled = [&call] { return call.cancelled(); };
       const VlmConvertReport report =
-          convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
-                            inputs.inbound_deadline, [context] { return context->IsCancelled(); });
-      for (const std::string& warning : report.warnings) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
+          engine == VlmBodyEngine::kLightonOcr
+              ? convert_lighton_pages(collectors->lighton_channel(), collectors->lighton(), vlm,
+                                      bytes, pdf, &result.document, inputs.inbound_deadline,
+                                      request_cancelled)
+              : convert_vlm_pages(collectors->vlm_channel(), vlm, bytes, pdf, &result.document,
+                                  inputs.inbound_deadline, request_cancelled);
+      // grpc-lighton-ocr has no Collector value of its own: its warnings
+      // name it directly, the way its items' CollectorSource does.
+      if (report.engine == VlmBodyEngine::kLightonOcr) {
+        for (const std::string& warning : report.warnings) {
+          auto* stamped = result.document.add_warnings();
+          stamped->mutable_source()->set_collector(kLightonCollectorName);
+          stamped->set_message(warning);
+        }
+      } else {
+        for (const std::string& warning : report.warnings) {
+          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
+        }
       }
       if (!report.success) {
         return grpc::Status(report.code, report.error.empty()
@@ -2495,18 +2573,18 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                              : report.error);
       }
       result.succeeded = 1;
-      if (context->IsCancelled()) {
+      if (call.cancelled()) {
         return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
       }
       const bool repaired_text =
           repair.has_value() &&
           run_repair_pass(&result.document, *repair).changed_text_or_arenas();
       (void)repaired_text;
-      derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs,
+      derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs,
                                     &result);
       // The VLM body gets AcroForm widgets only when the request asks:
       // unset keeps this path's output as it was.
-      if (pdf && form_fields_requested && !context->IsCancelled()) {
+      if (pdf && form_fields_requested && !call.cancelled()) {
         if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
                                                               &result.document)) {
           result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
@@ -2528,7 +2606,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
       parsed->result = std::move(result);
       return grpc::Status::OK;
     }
-    const CvCollector run_cv(context, scheduler, bytes, pdf, cv_offsets, cv_confidence,
+    const CvCollector run_cv(call, scheduler, bytes, pdf, cv_offsets, cv_confidence,
                              inputs.heading, inputs.inbound_deadline);
 
     const RoutedPlan routed = route_plan(request.options().collectors(), pdf, inputs);
@@ -2548,7 +2626,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     CoordinatorResult result = run_collectors(
         build_plan(routed.ids, routed.pdf_routing, routed.office_fanout, inputs, run_cv),
         std::move(base));
-    if (context->IsCancelled()) {
+    if (call.cancelled()) {
       return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
     }
     if (result.succeeded == 0) return all_failed_status(result);
@@ -2560,7 +2638,7 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
     const bool repaired_text =
         repair.has_value() &&
         run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-    derender_charts_if_configured(collectors, context, inputs.inbound_deadline, inputs, &result);
+    derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs, &result);
     // AcroForm widgets join the finished body as field items, whichever
     // path produced it; the backend that owns the PDF layer supplies them
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
@@ -2571,9 +2649,10 @@ grpc::Status parse_source(grpc::CallbackServerContext* context,
                                    "AcroForm widgets to read");
       record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
     }
-    if (pdf && !form_fields_off && !context->IsCancelled()) {
+    if (pdf && !form_fields_off && !call.cancelled()) {
       if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                            &result.document)) {
+                                                            &result.document,
+                                                            run_cv.computed_sha256())) {
         result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                                      std::move(*warning));
         record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
@@ -2630,6 +2709,8 @@ constexpr std::string_view kIdentitySettings[] = {
     "GRPARSE_LAYOUT",
     "GRPARSE_LAYOUT_MODEL",
     "GRPARSE_LIBREOFFICE_TARGET",
+    "GRPARSE_LIGHTON_MODEL",
+    "GRPARSE_LIGHTON_TARGET",
     "GRPARSE_LOL_HTML_TARGET",
     "GRPARSE_MARKUP_TARGET",
     "GRPARSE_MAX_IMAGE_PIXELS",
@@ -2638,6 +2719,8 @@ constexpr std::string_view kIdentitySettings[] = {
     "GRPARSE_OCR_BOX_THRESH",
     "GRPARSE_OCR_MAX_SIDE",
     "GRPARSE_OCR_PADDING",
+    "GRPARSE_OCR_RESCUE_BOX_SCORE",
+    "GRPARSE_OCR_RESCUE_CONFIDENCE",
     "GRPARSE_OCR_ROTATION",
     "GRPARSE_OCR_UNCLIP",
     "GRPARSE_OPENVINO_DEVICE",
@@ -2676,6 +2759,10 @@ std::string read_settings_digest() {
   for (const std::string_view name : kIdentitySettings) {
     const char* value = std::getenv(std::string(name).c_str());
     if (value == nullptr) continue;
+    // An empty target is an unconfigured collector, the same as an unset
+    // one, so a compose file that passes one through empty by default
+    // (GRPARSE_LIGHTON_TARGET) leaves the digest where it was.
+    if (*value == '\0' && name.ends_with("_TARGET")) continue;
     manifest += std::format("{}={}\n", name, value);
   }
   manifest += std::format("models/MANIFEST={}\n", models_manifest_digest());
@@ -2689,6 +2776,7 @@ std::string options_digest(const pipestream::parse::v1::ConvertDocumentOptions& 
   decisive.clear_image_export_mode();
   decisive.clear_md_page_break_placeholder();
   decisive.clear_md_compact_tables();
+  decisive.clear_formatting_fallback_mode();
   decisive.clear_doclang_include_namespace();
   decisive.clear_document_timeout();
   decisive.clear_abort_on_error();
@@ -2732,7 +2820,7 @@ ai::pipestream::document::v1::ParseIdentity parse_identity(
   identity.set_producer(std::string(kServiceVersion));
   identity.set_options_digest(options_digest(options));
   identity.set_settings_digest(settings_digest());
-  identity.set_build(std::string(kSourceDigest));
+  identity.set_build(std::string(source_digest()));
   return identity;
 }
 

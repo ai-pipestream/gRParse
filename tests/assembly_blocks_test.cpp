@@ -213,6 +213,28 @@ void verify_marker_reaches_across_its_hanging_indent() {
           "marker's reach ends at two line heights");
 }
 
+// A layout model's list_item region is one item: a bibliography entry
+// wrapped over three lines is one entry (its "(2025)." tail included), and
+// a region that swallowed the next entry splits where a new line opens with
+// a marker like the entry's own.
+void verify_list_item_region_joins_its_wrapped_lines() {
+  grparse::OcrPage page{1000, 1000,
+                        {line_at("[1]", 50, 100, 14), line_at("A.", 70, 100, 10),
+                         line_at("Author.", 84, 100, 40), line_at("Title", 128, 100, 30),
+                         line_at("of", 162, 100, 10), line_at("the", 176, 100, 16),
+                         line_at("paper.", 70, 115, 36), line_at("In", 110, 115, 10),
+                         line_at("Proc.", 124, 115, 28), line_at("(2025).", 70, 130, 40),
+                         line_at("[2]", 50, 150, 14), line_at("B.", 70, 150, 10),
+                         line_at("Other.", 84, 150, 36), line_at("[3]", 50, 180, 14),
+                         line_at("C.", 70, 180, 10)}};
+  page.regions = {{"list_item", 0.9F, 40, 90, 400, 165}, {"list_item", 0.9F, 40, 175, 400, 195}};
+  const std::vector<std::vector<size_t>> expected = {
+      {0, 1, 2, 3, 4, 5, 6, 7, 8, 9}, {10, 11, 12}, {13, 14}};
+  require(sorted_block_lines(page) == expected,
+          "a list_item region's wrapped lines are one item; a sibling marker opening a new line "
+          "inside it starts the next item");
+}
+
 }  // namespace
 
 int main() {
@@ -229,5 +251,6 @@ int main() {
       verify_list_words_on_one_line_make_one_item,
       verify_inline_list_markers_split_items,
       verify_marker_reaches_across_its_hanging_indent,
+      verify_list_item_region_joins_its_wrapped_lines,
   });
 }

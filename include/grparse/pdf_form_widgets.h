@@ -92,8 +92,11 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // setting counts as configured: the fold then names the failure.
 bool pdf_form_widget_backend_configured();
 
+// `precomputed_sha256`, when non-empty, is the hex SHA-256 of `bytes` a
+// caller already has (the CV leg's), used in place of hashing them again.
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
-    ai::pipestream::document::v1::Document* document);
+    ai::pipestream::document::v1::Document* document,
+    const std::string& precomputed_sha256 = {});
 
 }  // namespace grparse

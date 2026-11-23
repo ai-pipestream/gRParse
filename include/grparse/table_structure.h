@@ -34,4 +34,35 @@ struct TableGrid {
 // for fixed input.  Returns an empty grid when no text binds to the table.
 TableGrid build_table_grid(const OcrPage& page, const LayoutRegion& table);
 
+// How the lines bound to a table region land in its structure model's cells.
+// `structured` is false when the region has no model cells; the table then
+// reads through build_table_grid. When structured, a bound line takes the
+// first cell whose box holds its center, else the cell its box overlaps
+// most, else the nearest cell of its own row band (vertical gap at most the
+// line's height, then the smallest horizontal gap): the model's boxes come
+// out small and offset on a wide table of small numbers, and a word they
+// miss belongs to its row's cell, not to the body after the table. A line
+// further than that from every cell gets none and stays body text.
+struct TableLineAssignment {
+  bool structured = false;
+  // Indexed like page.lines: the structured cell's index in
+  // region.structured_cells, or -1 for a line not bound to this table or
+  // too far from every cell.
+  std::vector<int> cell_of_line = {};
+};
+TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& table);
+
+// The structure model stops at a fixed number of decode steps, so on a
+// large table it ends partway down and the words under its last row would
+// fall out as body text. Rows past that point are built from the page's own
+// lines instead: lines inside the table and under the model's cells group
+// into rows by vertical overlap, and each word takes the model's column
+// whose x-interval holds its centre, or the nearest; the intervals come from
+// the words the model's rows put in each column. When the row-label column
+// or over a quarter of the model's body columns get no word below the cut,
+// the columns are off, and each row past the cut becomes one cell across
+// the table instead. Cells are in page space, like `lines`. Does nothing
+// when the table has no model cells.
+void extend_truncated_table(LayoutRegion& table, const std::vector<OcrLine>& lines);
+
 }  // namespace grparse

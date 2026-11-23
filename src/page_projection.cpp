@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <set>
 #include <string>
@@ -69,8 +70,8 @@ TextView text_view(const docv1::BaseTextItem& item) {
 class Projector {
  public:
   Projector(const docv1::Document& document, parsev1::TextSource text_source,
-            uint64_t utf_offset)
-      : document_(document), text_source_(text_source), utf_cursor_(utf_offset) {
+            const std::function<parsev1::PageData*(int)>& page_at, uint64_t utf_offset)
+      : document_(document), text_source_(text_source), page_at_(page_at), utf_cursor_(utf_offset) {
     for (int i = 0; i < document.texts_size(); ++i) {
       slots_.emplace(text_view(document.texts(i)).self_ref, Slot{Arena::kText, i});
     }
@@ -87,8 +88,8 @@ class Projector {
 
   uint64_t utf_cursor() const { return utf_cursor_; }
 
-  std::vector<parsev1::PageData> run() {
-    if (!names_a_page()) return {};
+  void run() {
+    if (!names_a_page()) return;
     walk(document_.body().children(), /*body=*/true);
     walk(document_.furniture().children(), /*body=*/false);
     // Arena items no tree reaches still belong to their page; they follow
@@ -122,21 +123,14 @@ class Projector {
     for (const auto& [page_no, _] : document_.pages()) {
       if (page_no > 0) named.insert(page_no);
     }
-    std::vector<parsev1::PageData> result;
-    result.reserve(named.size());
     for (const int page_no : named) {
-      parsev1::PageData page;
-      if (const auto it = pages_.find(page_no); it != pages_.end()) {
-        page = std::move(it->second);
-      }
+      auto& page = page_numbered(page_no);
       page.set_page_number(page_no);
       if (const auto meta = document_.pages().find(page_no); meta != document_.pages().end()) {
         *page.mutable_page_meta() = meta->second;
       }
       page.mutable_page_meta()->set_page_no(page_no);
-      result.push_back(std::move(page));
     }
-    return result;
   }
 
  private:
@@ -182,16 +176,23 @@ class Projector {
     return current_page_;
   }
 
-  // The page an item lands on, carrying the groups opened since the last
-  // item placed.
-  parsev1::PageData& page_for(int page) {
-    flush_groups(page);
-    return pages_[page];
+  // The page numbered `page_no`, asked of the caller the first time.
+  parsev1::PageData& page_numbered(int page_no) {
+    auto& slot = pages_[page_no];
+    if (slot == nullptr) slot = page_at_(page_no);
+    return *slot;
   }
 
-  void flush_groups(int page) {
+  // The page an item lands on, carrying the groups opened since the last
+  // item placed.
+  parsev1::PageData& page_for(int page_no) {
+    flush_groups(page_no);
+    return page_numbered(page_no);
+  }
+
+  void flush_groups(int page_no) {
     if (pending_groups_.empty()) return;
-    auto& target = pages_[page];
+    auto& target = page_numbered(page_no);
     for (const int index : pending_groups_) *target.add_groups() = document_.groups(index);
     pending_groups_.clear();
   }
@@ -229,9 +230,11 @@ class Projector {
 
   const docv1::Document& document_;
   const parsev1::TextSource text_source_;
+  const std::function<parsev1::PageData*(int)>& page_at_;
   std::unordered_map<std::string, Slot> slots_;
   std::unordered_set<std::string> visited_;
-  std::map<int, parsev1::PageData> pages_;
+  // Where each page the projection has touched is being built.
+  std::map<int, parsev1::PageData*> pages_;
   std::vector<int> pending_groups_;
   int current_page_ = 1;
   uint64_t utf_cursor_;
@@ -239,13 +242,26 @@ class Projector {
 
 }  // namespace
 
+void project_page_data_into(const docv1::Document& document, parsev1::TextSource text_source,
+                            const std::function<parsev1::PageData*(int)>& page_at,
+                            uint64_t* utf_offset) {
+  Projector projector(document, text_source, page_at, utf_offset == nullptr ? 0 : *utf_offset);
+  projector.run();
+  if (utf_offset != nullptr) *utf_offset = projector.utf_cursor();
+}
+
 std::vector<parsev1::PageData> project_page_data(const docv1::Document& document,
                                                  parsev1::TextSource text_source,
                                                  uint64_t* utf_offset) {
-  Projector projector(document, text_source, utf_offset == nullptr ? 0 : *utf_offset);
-  auto pages = projector.run();
-  if (utf_offset != nullptr) *utf_offset = projector.utf_cursor();
-  return pages;
+  // std::map nodes stay put, so each page's address holds while the rest
+  // are added, and iteration hands them back in page order.
+  std::map<int, parsev1::PageData> pages;
+  project_page_data_into(
+      document, text_source, [&pages](int page_no) { return &pages[page_no]; }, utf_offset);
+  std::vector<parsev1::PageData> result;
+  result.reserve(pages.size());
+  for (auto& [_, page] : pages) result.push_back(std::move(page));
+  return result;
 }
 
 }  // namespace grparse

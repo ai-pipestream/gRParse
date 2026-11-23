@@ -139,6 +139,37 @@ void verify_render_counters_and_gauges() {
   require_contains(text, "# TYPE grparse_page_latency_seconds histogram\n", "histogram type");
 }
 
+void verify_render_ort_session_placements() {
+  const std::vector<grparse::OrtPlacement> placements{
+      {.model = "layout", .requested = grparse::OrtEp::kOpenVino,
+       .actual = grparse::OrtEp::kOpenVino, .device = "GPU", .pin_reason = "", .sessions = 1},
+      {.model = "table structure", .requested = grparse::OrtEp::kOpenVino,
+       .actual = grparse::OrtEp::kCpu, .device = "", .pin_reason = "say \"why\"",
+       .sessions = 2},
+      {.model = "OCR detection", .requested = grparse::OrtEp::kCuda,
+       .actual = grparse::OrtEp::kTensorRt, .device = "0", .pin_reason = "", .sessions = 2},
+  };
+  const std::string text = grparse::render_ort_session_placements(placements);
+  require_contains(text, "# TYPE grparse_ort_sessions gauge\n", "placement type line");
+  require_contains(text,
+                   "grparse_ort_sessions{model=\"layout\",requested=\"OpenVINO\","
+                   "actual=\"OpenVINO\",device=\"GPU\",pin=\"\"} 1\n",
+                   "a GPU placement");
+  require_contains(text,
+                   "grparse_ort_sessions{model=\"table structure\",requested=\"OpenVINO\","
+                   "actual=\"CPU\",device=\"\",pin=\"say \\\"why\\\"\"} 2\n",
+                   "a pinned CPU placement, label value escaped");
+  require_contains(text,
+                   "grparse_ort_sessions{model=\"OCR detection\",requested=\"CUDA\","
+                   "actual=\"TensorRT\",device=\"0\",pin=\"\"} 2\n",
+                   "a model native TensorRT runs under a CUDA selection");
+  const std::string live = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{});
+  require_contains(live, "# TYPE grparse_ort_sessions gauge\n",
+                   "the live exposition carries the placement gauge");
+}
+
 void verify_render_ep_fallback_counter() {
   const std::string text = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
@@ -577,6 +608,7 @@ int main() {
       verify_render_rotation_repair_and_office_cv_families,
       verify_render_histogram_is_cumulative,
       verify_render_ep_fallback_counter,
+      verify_render_ort_session_placements,
       verify_render_doctype_and_collector_families,
       verify_doctype_classification_and_collector_status_mapping,
       verify_live_pipeline_telemetry_and_run_collectors,

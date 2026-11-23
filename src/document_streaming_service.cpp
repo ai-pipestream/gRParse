@@ -1,11 +1,15 @@
 #include "grparse/document_parser_service.h"
 
 #include <algorithm>
+#include <atomic>
+#include <cctype>
 #include <chrono>
+#include <condition_variable>
 #include <cstdint>
 #include <deque>
 #include <exception>
 #include <filesystem>
+#include <functional>
 #include <iterator>
 #include <limits>
 #include <map>
@@ -14,13 +18,12 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
-#include <system_error>
-#include <thread>
+#include <string_view>
 #include <utility>
 #include <vector>
 
-#include <google/protobuf/arena.h>
-
+#include "grparse/call_executor.h"
+#include "grparse/collector_cancel.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/confidence.h"
 #include "grparse/content_sniff.h"
@@ -35,7 +38,10 @@
 #include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
+#include "source_parse.h"
 #include "structure_validation.h"
+#include "targets/sha256.h"
+#include "targets/target_step.h"
 
 namespace fs = std::filesystem;
 namespace pipestream = ai::pipestream;
@@ -48,6 +54,21 @@ namespace {
 constexpr size_t kMaximumDocumentBytes = 500U * 1024U * 1024U;
 // The surface the structural option rejections name.
 constexpr const char* kStreamSurface = "StreamProcessDocument";
+
+// Whether an upload whose first data is `prefix` may turn out to be a PDF,
+// judged the cheap way: the declared type, the name, or the header readers
+// accept anywhere in the first kilobyte. Only such an upload is worth the
+// SHA-256 its PDF source would otherwise compute; a wrong guess either way
+// costs time, never correctness (an unhashed PDF's source hashes itself).
+bool upload_may_be_pdf(std::string_view prefix, const fs::path& filename,
+                       const std::string& content_type) {
+  if (content_type == "application/pdf") return true;
+  if (prefix.substr(0, 1024 + 4).find("%PDF-") != std::string_view::npos) return true;
+  std::string extension = filename.extension().string();
+  std::ranges::transform(extension, extension.begin(),
+                         [](unsigned char c) { return std::tolower(c); });
+  return extension == ".pdf";
+}
 
 bool is_stream_rejection_code(grpc::StatusCode code) {
   switch (code) {
@@ -62,17 +83,29 @@ bool is_stream_rejection_code(grpc::StatusCode code) {
   }
 }
 
-class ArenaEvent final {
- public:
-  ArenaEvent() : message(google::protobuf::Arena::Create<pipestream::parse::v1::DocumentStreamEvent>(&arena)) {}
-
-  google::protobuf::Arena arena;
-  pipestream::parse::v1::DocumentStreamEvent* message;
+// One queued write. The message lives on the heap, as the Documents and
+// pages moved into it do: a message on an arena of its own would turn each
+// of those moves into a deep copy, a second Document held until the write.
+struct Event {
+  pipestream::parse::v1::DocumentStreamEvent message;
   // True for a CV page the scheduler delivered against a window credit:
   // writing it is what hands that credit back. Collector-projected page
   // events never took one.
   bool scheduler_credit = false;
 };
+
+// The page events one projection builds, keyed by page number so they go
+// out in page order whatever order the projection touched them in.
+using PageEvents = std::map<int, std::unique_ptr<Event>>;
+
+// Where project_page_data_into builds each page: in its own event.
+std::function<pipestream::parse::v1::PageData*(int)> page_in(PageEvents* events) {
+  return [events](int page_number) {
+    auto& event = (*events)[page_number];
+    if (event == nullptr) event = std::make_unique<Event>();
+    return event->message.mutable_page();
+  };
+}
 
 class DocumentStreamReactor final
     : public grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk,
@@ -81,9 +114,14 @@ class DocumentStreamReactor final
   DocumentStreamReactor(grpc::CallbackServerContext* context, PageScheduler& scheduler,
                         std::shared_ptr<CollectorEndpoints> endpoints,
                         std::optional<RepairOptions> repair,
-                        std::shared_ptr<InflightBytes> inflight)
+                        std::shared_ptr<InflightBytes> inflight,
+                        std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
+                        std::shared_ptr<std::atomic<uint64_t>> folded_pages,
+                        CallExecutor& executor, std::shared_ptr<std::atomic<size_t>> active_streams,
+                        size_t max_active_streams)
       : context_(context),
         scheduler_(scheduler),
+        executor_(executor),
         endpoints_(std::move(endpoints)),
         server_repair_(std::move(repair)),
         repair_(server_repair_),
@@ -93,8 +131,25 @@ class DocumentStreamReactor final
         // clients with RESOURCE_EXHAUSTED under a raised GRPARSE_PAGE_WINDOW.
         maximum_buffered_pages_(scheduler.page_window()),
         callback_gate_(std::make_shared<CallbackGate>()),
-        inflight_(std::move(inflight)) {
+        inflight_(std::move(inflight)),
+        transfer_observer_(std::move(transfer_observer)),
+        folded_pages_(std::move(folded_pages)) {
     callback_gate_->reactor = this;
+    callback_gate_->cancel = cancel_registry_;
+    // Admission comes before the first read: a stream past the cap never
+    // buffers a chunk. It is a rejection like any refused request, and it
+    // holds no slot, so its teardown returns none.
+    if (!admit(std::move(active_streams), max_active_streams)) {
+      finish_requested_ = true;
+      finish_started_ = true;
+      finish_status_ = grpc::Status(
+          grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "StreamProcessDocument: " + std::to_string(max_active_streams) +
+              " streams are already open, the GRPARSE_MAX_ACTIVE_STREAMS cap");
+      record_stream_completion_locked();
+      Finish(finish_status_);
+      return;
+    }
     StartRead(&incoming_);
   }
 
@@ -103,6 +158,7 @@ class DocumentStreamReactor final
   ~DocumentStreamReactor() override {
     record_stream_completion_locked();
     if (inflight_ != nullptr) inflight_->release(charged_bytes_);
+    if (active_streams_ != nullptr) active_streams_->fetch_sub(1, std::memory_order_acq_rel);
   }
 
   void OnReadDone(bool ok) override {
@@ -126,6 +182,7 @@ class DocumentStreamReactor final
     write_in_flight_ = false;
     if (!ok) {
       client_cancelled_ = true;
+      cancel_registry_->cancel();
       events_.clear();
       buffered_pages_ = 0;
       request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "client stopped reading"));
@@ -138,6 +195,9 @@ class DocumentStreamReactor final
   void OnCancel() override {
     std::lock_guard<std::mutex> lock(mutex_);
     client_cancelled_ = true;
+    // Pushed, not polled: every outbound call a leg has open is cancelled
+    // here, on the thread that learned of the cancel.
+    cancel_registry_->cancel();
     request_finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled"));
   }
 
@@ -151,6 +211,8 @@ class DocumentStreamReactor final
       std::lock_guard<std::mutex> lock(gate->mutex);
       gate->reactor = nullptr;
     }
+    // A leg still running has nobody left to deliver to.
+    cancel_registry_->cancel();
     delete this;
   }
 
@@ -158,7 +220,22 @@ class DocumentStreamReactor final
   struct CallbackGate {
     std::mutex mutex;
     DocumentStreamReactor* reactor = nullptr;
+    // The stream's cancel registry, set before any leg starts and never
+    // changed, so a leg reads it without the mutex.
+    std::weak_ptr<CancelRegistry> cancel;
   };
+
+  // Takes one of the server's stream slots, or answers false at the cap.
+  bool admit(std::shared_ptr<std::atomic<size_t>> active_streams, size_t max_active_streams) {
+    if (active_streams == nullptr) return true;
+    size_t current = active_streams->load(std::memory_order_acquire);
+    do {
+      if (current >= max_active_streams) return false;
+    } while (!active_streams->compare_exchange_weak(current, current + 1,
+                                                    std::memory_order_acq_rel));
+    active_streams_ = std::move(active_streams);
+    return true;
+  }
 
   // The client half-closed. True when the stream ended with a document to
   // parse; a cancelled or truncated stream finishes the call instead.
@@ -177,8 +254,10 @@ class DocumentStreamReactor final
   }
 
   // One chunk of the upload: identity and options resolve from the first
-  // chunk that carries them, the payload accumulates behind the size limit,
-  // and the next read starts. Anything a chunk contradicts finishes the call.
+  // chunk that carries them, the payload accumulates behind the size limit
+  // (or inside the declared total_bytes, which was charged up front), both
+  // digests take the chunk as it lands, and the next read starts. Anything
+  // a chunk contradicts finishes the call.
   void accept_chunk_locked() {
     if (finish_requested_) return;
     if (complete_seen_) {
@@ -188,24 +267,93 @@ class DocumentStreamReactor final
     }
     if (!resolve_identity_locked()) return;
     resolve_options_locked();
-    if (incoming_.data().size() > kMaximumDocumentBytes - bytes_.size()) {
-      request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
-                                         "document exceeds 500 MiB streaming limit"));
-      return;
-    }
-    if (inflight_ != nullptr) {
-      if (!inflight_->try_acquire(incoming_.data().size())) {
+    if (!resolve_total_bytes_locked()) return;
+    const std::string& data = incoming_.data();
+    if (total_bytes_.has_value()) {
+      if (data.size() > *total_bytes_ - bytes_.size()) {
         request_finish_locked(grpc::Status(
-            grpc::StatusCode::RESOURCE_EXHAUSTED,
-            "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+            grpc::StatusCode::INVALID_ARGUMENT,
+            "document exceeds its declared total_bytes of " + std::to_string(*total_bytes_)));
         return;
       }
-      charged_bytes_ += incoming_.data().size();
+    } else {
+      if (data.size() > kMaximumDocumentBytes - bytes_.size()) {
+        request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                                           "document exceeds 500 MiB streaming limit"));
+        return;
+      }
+      if (inflight_ != nullptr) {
+        if (!inflight_->try_acquire(data.size())) {
+          request_finish_locked(grpc::Status(
+              grpc::StatusCode::RESOURCE_EXHAUSTED,
+              "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+          return;
+        }
+        charged_bytes_ += data.size();
+      }
     }
-    bytes_.append(incoming_.data());
+    if (bytes_.empty() && !data.empty() && upload_may_be_pdf(data, filename_, content_type_)) {
+      upload_sha256_.emplace();
+    }
+    upload_hash_.update(data);
+    if (upload_sha256_.has_value()) upload_sha256_->update(data);
+    bytes_.append(data);
     complete_seen_ = incoming_.complete();
+    if (complete_seen_ && total_bytes_.has_value() && bytes_.size() != *total_bytes_) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::INVALID_ARGUMENT,
+          "stream completed after " + std::to_string(bytes_.size()) + " of the " +
+              std::to_string(*total_bytes_) + " bytes its total_bytes declared"));
+      return;
+    }
     incoming_.Clear();
     StartRead(&incoming_);
+  }
+
+  // The upload's declared size: taken from the first chunk that sets it,
+  // which must come before any data, and repeated unchanged if at all. It
+  // is checked against the size limit and the in-flight budget before a
+  // byte is accepted, charged once, and reserved once, so the buffer never
+  // regrows. False when the call was finished over it.
+  bool resolve_total_bytes_locked() {
+    if (!incoming_.has_total_bytes()) return true;
+    const uint64_t declared = incoming_.total_bytes();
+    if (total_bytes_.has_value()) {
+      if (declared == *total_bytes_) return true;
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes changed between chunks"));
+      return false;
+    }
+    if (!bytes_.empty()) {
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes must arrive before the first data"));
+      return false;
+    }
+    if (declared == 0) {
+      request_finish_locked(grpc::Status(grpc::StatusCode::INVALID_ARGUMENT,
+                                         "total_bytes must be positive when set"));
+      return false;
+    }
+    if (declared > kMaximumDocumentBytes) {
+      request_finish_locked(grpc::Status(
+          grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "document exceeds 500 MiB streaming limit (total_bytes " + std::to_string(declared) +
+              ")"));
+      return false;
+    }
+    if (inflight_ != nullptr) {
+      if (!inflight_->try_acquire(declared)) {
+        request_finish_locked(grpc::Status(
+            grpc::StatusCode::RESOURCE_EXHAUSTED,
+            "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES (total_bytes " +
+                std::to_string(declared) + ")"));
+        return false;
+      }
+      charged_bytes_ += declared;
+    }
+    bytes_.reserve(static_cast<size_t>(declared));
+    total_bytes_ = declared;
+    return true;
   }
 
   // The document's identity: the first chunk names it and every later chunk
@@ -267,6 +415,9 @@ class DocumentStreamReactor final
     if (!slim_collector_documents_.has_value() && incoming_.has_slim_collector_documents()) {
       slim_collector_documents_ = incoming_.slim_collector_documents();
     }
+    if (!repair_delta_.has_value() && incoming_.has_repair_delta()) {
+      repair_delta_ = incoming_.repair_delta();
+    }
   }
 
   // The plan one stream resolves to: the legs that will run and what the CV
@@ -274,6 +425,8 @@ class DocumentStreamReactor final
   // either by an invalid tuning or by a plan with no runnable leg in it.
   struct StreamPlan {
     std::shared_ptr<const std::string> bytes;
+    // The upload's FNV-1a, finished from the per-chunk state.
+    uint64_t content_hash = 0;
     PageScheduler::OcrTuning tuning;
     std::vector<pipestream::parse::v1::Collector> remotes;
     std::vector<pipestream::parse::v1::Collector> locals;
@@ -290,21 +443,29 @@ class DocumentStreamReactor final
     MimetypeResolution mimetype;
   };
 
-  // The processing thread resolves the plan, hashes and sniffs the whole
-  // upload (up to 500 MiB) and spawns the legs, which is not work a gRPC
-  // event-manager thread may be handed: every call multiplexed on it,
-  // Health included, would stall behind it. It reaches the reactor through
-  // the gate like every other off-reactor callback.
+  // A stream worker resolves the plan, sniffs the upload (up to 500 MiB;
+  // its digests were fed chunk by chunk) and spawns the legs, which is not
+  // work a gRPC event-manager thread may be handed: every call multiplexed
+  // on it, Health included, would stall behind it. It reaches the reactor
+  // through the gate like every other off-reactor callback. A full pool
+  // refuses the stream instead of growing a thread for it.
   void start_processing() {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    bool queued = false;
     try {
-      std::thread([weak_gate] { process_guarded(weak_gate); }).detach();
-    } catch (const std::system_error& error) {
+      queued = executor_.submit([weak_gate] { process_guarded(weak_gate); });
+    } catch (const std::exception& error) {
       std::lock_guard<std::mutex> lock(mutex_);
       request_finish_locked(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
                                          std::string("could not start the parse: ") +
                                              error.what()));
+      return;
     }
+    if (queued) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    request_finish_locked(grpc::Status(
+        grpc::StatusCode::RESOURCE_EXHAUSTED,
+        "StreamProcessDocument: the stream worker queue is full (GRPARSE_STREAM_QUEUE)"));
   }
 
   // Calls `fn` on the reactor under the gate, unless it is already gone.
@@ -343,7 +504,8 @@ class DocumentStreamReactor final
       filename = reactor.filename_;
     });
     if (!plan.has_value() || !plan->started) return;
-    const DocumentOrigin origin = read_origin(*plan->bytes, content_type, filename);
+    const DocumentOrigin origin =
+        read_origin(plan->content_hash, *plan->bytes, content_type, filename);
     with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
       reactor.launch(*plan, origin);
     });
@@ -420,11 +582,18 @@ class DocumentStreamReactor final
                              render_scale_.value_or(0.0));
     plan.tuning.deadline = context_->deadline();
     plan.tuning.passwords = passwords_;
+    plan.content_hash = upload_hash_.value();
     plan.bytes = take_bytes_locked();
     doctype_ = classify_doctype(pipestream::parse::v1::INPUT_FORMAT_UNSPECIFIED,
                                 filename_.string(), content_type_, *plan.bytes);
     plan.pdf = content_type_ == "application/pdf" || is_pdf(*plan.bytes, filename_);
     pdf_ = plan.pdf;
+    // The SHA-256 the chunks fed rides the tuning to the PDF source, which
+    // then addresses its backend without hashing the upload again.
+    if (plan.pdf && upload_sha256_.has_value()) {
+      plan.tuning.sha256_hex = upload_sha256_->hex_digest();
+    }
+    upload_sha256_.reset();
     // The selection validates like the unary options: a value outside the
     // enum is the caller's mistake, not a collector that failed.
     for (const auto id : requested_collectors_) {
@@ -509,14 +678,14 @@ class DocumentStreamReactor final
     }
   }
 
-  // Reads the request's hash and sniffed mimetype once, before the legs
-  // start and outside every lock: the hash is a linear pass over up to
-  // 500 MiB, and the bytes are gone by the time the completion event is
-  // built.
-  static DocumentOrigin read_origin(const std::string& bytes, const std::string& content_type,
+  // Stamps the request's hash, which the chunks already fed, and sniffs the
+  // mimetype once, before the legs start and outside every lock: the bytes
+  // are gone by the time the completion event is built.
+  static DocumentOrigin read_origin(uint64_t hash, const std::string& bytes,
+                                    const std::string& content_type,
                                     const fs::path& filename) {
     DocumentOrigin origin;
-    origin.hash = content_hash(bytes);
+    origin.hash = hash;
     origin.mimetype = resolve_mimetype(content_type, bytes, filename);
     if (origin.mimetype.evidence == "magic") {
       data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
@@ -605,36 +774,53 @@ class DocumentStreamReactor final
         });
   }
 
-  // Starts one leg on its own detached thread. A throw inside the leg (an
+  // Queues one leg on the stream pool. A throw inside the leg (an
   // allocation, a thread the leg itself could not start) becomes the leg's
   // failure through the same gate path as any failed outcome, never
-  // std::terminate; a thread that cannot start fails its leg on the spot.
-  // Called with the gate held, so the reactor is alive.
+  // std::terminate. A leg the full queue refuses fails that collector on the
+  // spot with RESOURCE_EXHAUSTED (a capacity failure on the complete event),
+  // and the parse degrades as it does for any failed leg. Called with the
+  // gate held, so the reactor is alive.
   template <typename Body>
   void start_leg(pipestream::parse::v1::Collector id, Body body) {
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    bool queued = false;
     try {
-      std::thread([weak_gate, id, body = std::move(body)]() mutable {
-        try {
-          body(weak_gate);
-        } catch (...) {
-          deliver(weak_gate, id, outcome_from_exception(std::current_exception()));
-        }
-      }).detach();
+      queued = executor_.submit(
+          [weak_gate, id, body = std::make_shared<Body>(std::move(body))]() mutable {
+            try {
+              (*body)(weak_gate);
+            } catch (...) {
+              deliver(weak_gate, id, outcome_from_exception(std::current_exception()));
+            }
+          });
     } catch (...) {
       on_collector_done(id, outcome_from_exception(std::current_exception()));
+      return;
     }
+    if (queued) return;
+    CollectorOutcome refused;
+    refused.code = grpc::StatusCode::RESOURCE_EXHAUSTED;
+    refused.error = std::string(collector_name(id)) +
+                    " collector: not started, the stream worker queue is full "
+                    "(GRPARSE_STREAM_QUEUE)";
+    on_collector_done(id, std::move(refused));
   }
 
-  // The poll a leg's own call makes to learn the client is gone: a cancel,
-  // a client that stopped reading, or a torn-down reactor.
+  // How a leg's own calls learn the client is gone: a cancel, a client
+  // that stopped reading, a failing finish, or a torn-down reactor. Pushed
+  // through the stream's registry, so each outbound ClientContext is
+  // cancelled the moment the reactor is; the gate check stays as the answer
+  // for code that asks between calls.
   static CollectorCancelled leg_cancelled(std::weak_ptr<CallbackGate> weak_gate) {
-    return [weak_gate = std::move(weak_gate)] {
+    std::weak_ptr<CancelRegistry> registry;
+    if (const auto gate = weak_gate.lock()) registry = gate->cancel;
+    return CollectorCancelled(std::move(registry), [weak_gate = std::move(weak_gate)] {
       const auto gate = weak_gate.lock();
       if (gate == nullptr) return true;
       std::lock_guard<std::mutex> lock(gate->mutex);
       return gate->reactor == nullptr || gate->reactor->client_gone();
-    };
+    });
   }
 
   // What the pdf routing leg runs with, copied off the reactor.
@@ -651,7 +837,7 @@ class DocumentStreamReactor final
   // parse is the collector's own fast-path Document (text-based) or the
   // in-process CV pipeline restricted to the pages the inspector named as
   // needing OCR. A failed classification degrades to the unrouted CV path,
-  // never to a failed parse. Runs on its own thread for the same reason
+  // never to a failed parse. Runs on a stream worker for the same reason
   // spawn_remote_collector does: the collector call is a blocking client,
   // cancelled like the other remote legs once the client is gone.
   //
@@ -680,12 +866,13 @@ class DocumentStreamReactor final
     if (leg.previews) {
       CollectorCancelled gone = leg_cancelled(weak_gate);
       const CollectorDeadline deadline = leg.deadline;
+      std::shared_ptr<CancelRegistry> registry = gone.registry();
       preview_session.emplace(
           leg.bytes,
           [gone = std::move(gone), deadline] {
             return std::chrono::system_clock::now() >= deadline || gone();
           },
-          deadline, leg.tuning.passwords);
+          deadline, leg.tuning.passwords, std::move(registry));
     }
     std::map<int, pipestream::document::v1::PageItem> previews;
     const auto stream_page = [&weak_gate, &preview_session, &previews](PdfPageSlice slice) {
@@ -703,16 +890,48 @@ class DocumentStreamReactor final
       });
       return accepted;
     };
+    // An info event that already forces recognition on every page settles
+    // the route before the inspector has read a page: the CV run starts
+    // right there, beside the inspector's drain, instead of after its
+    // trailer. Its tuning is the one the trailer would have produced (kForce
+    // and kOff ignore the OCR page set the trailer could still widen).
+    bool submitted_early = false;
+    const auto submit_on_info = [&weak_gate, &leg, &submitted_early](const PdfClassification& info) {
+      if (!pdf_info_forces_ocr(info)) return;
+      PageScheduler::OcrTuning tuning = leg.tuning;
+      if (tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
+        tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+      }
+      with_reactor(weak_gate, [&](DocumentStreamReactor& reactor) {
+        submitted_early = true;
+        reactor.hold_for_inspector();
+        reactor.submit_cv(leg.bytes, leg.pdf, std::move(tuning));
+      });
+    };
     const auto pdf_started = std::chrono::steady_clock::now();
     PdfParseResult parsed = collect_pdf(
         leg.endpoints == nullptr
             ? nullptr
             : leg.endpoints->channel(pipestream::parse::v1::COLLECTOR_PDF),
-        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page);
+        *leg.bytes, leg.deadline, leg.tuning.page_range, leg_cancelled(weak_gate), stream_page,
+        submit_on_info);
     const auto pdf_elapsed_ns = static_cast<uint64_t>(
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - pdf_started)
             .count());
+    if (submitted_early) {
+      // The CV run owns the result; the drained inspector settles the hold
+      // it kept on the terminal event, adding its failure if it failed.
+      preview_session.reset();
+      record_collector_call(
+          pipestream::parse::v1::COLLECTOR_PDF,
+          collector_call_status_for(parsed.outcome.success, parsed.outcome.code),
+          pdf_elapsed_ns, parsed.outcome.warnings.size());
+      with_reactor(weak_gate, [&parsed](DocumentStreamReactor& reactor) {
+        reactor.release_inspector_hold(parsed.outcome);
+      });
+      return;
+    }
     const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
     const bool streamed = parsed.streamed_pages > 0;
     if (parsed.outcome.success && route.fast_path) {
@@ -797,6 +1016,27 @@ class DocumentStreamReactor final
         std::to_string(first_left) + " onward went through the CV path");
   }
 
+  // The CV run started on the info event while the inspector still
+  // streams: the terminal event waits for the inspector as one more part,
+  // so a failure it ends with still rides the complete event.
+  void hold_for_inspector() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    ++pending_parts_;
+  }
+
+  void release_inspector_hold(const CollectorOutcome& outcome) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (!outcome.success) {
+      record_part_failure_locked(
+          pipestream::parse::v1::COLLECTOR_PDF,
+          grpc::Status(outcome.code, outcome.error +
+                                         "; the CV path was already reading the document on "
+                                         "the inspector's OCR recommendation"));
+    }
+    part_done_locked();
+    pump_locked();
+  }
+
   void note_pdf_fallback(const CollectorOutcome& outcome) {
     std::lock_guard<std::mutex> lock(mutex_);
     record_part_failure_locked(
@@ -804,7 +1044,7 @@ class DocumentStreamReactor final
         grpc::Status(outcome.code, outcome.error + "; fell back to the in-process CV path"));
   }
 
-  // An in-process collector runs on its own thread for the same reason a
+  // An in-process collector runs on a stream worker for the same reason a
   // remote one does: the fold is straight-line work on the request bytes,
   // not a gRPC reaction, and the gate keeps its completion safe against
   // reactor teardown.
@@ -827,13 +1067,13 @@ class DocumentStreamReactor final
     return client_cancelled_ || context_->IsCancelled();
   }
 
-  // A remote collector runs on its own thread: it is a blocking client
+  // A remote collector runs on a stream worker: it is a blocking client
   // stream, not a gRPC reaction. The gate keeps its completion safe against
   // reactor teardown exactly like the scheduler callbacks. A client cancel
-  // abandons the result and cancels the leg's own call (polled through the
-  // gate, so a torn-down reactor reads as gone); the leg's deadline, the
-  // sooner of this call's own and the collector's cap, still bounds it. The
-  // streaming wire carries no ebcdic layout and no lol-html rules, so
+  // abandons the result and cancels the leg's own call (pushed through the
+  // stream's cancel registry, and a torn-down reactor reads as gone); the
+  // leg's deadline, the sooner of this call's own and the collector's cap,
+  // still bounds it. The streaming wire carries no ebcdic layout and no lol-html rules, so
   // selecting either collector here degrades to that collector's own
   // INVALID_ARGUMENT.
   void spawn_remote_collector(pipestream::parse::v1::Collector id,
@@ -880,8 +1120,9 @@ class DocumentStreamReactor final
     std::lock_guard<std::mutex> lock(mutex_);
     if (client_cancelled_ || finish_requested_) return false;
     total_pages_ = std::max({total_pages_, slice.page_count, slice.page_no});
-    auto pages = project_page_data(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
-                                   &assembly_cursor_.utf_offset);
+    PageEvents pages;
+    project_page_data_into(slice.document, pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF,
+                           page_in(&pages), &assembly_cursor_.utf_offset);
     assembly_cursor_.text_index += static_cast<uint64_t>(slice.document.texts_size());
     assembly_cursor_.table_index += static_cast<uint64_t>(slice.document.tables_size());
     assembly_cursor_.picture_index += static_cast<uint64_t>(slice.document.pictures_size());
@@ -889,17 +1130,14 @@ class DocumentStreamReactor final
     // A slice names its own page; a page with nothing on it still goes out
     // as an empty page, so the client sees every page number once.
     if (pages.empty()) {
-      pipestream::parse::v1::PageData empty;
-      empty.set_page_number(slice.page_no);
-      empty.mutable_page_meta()->set_page_no(slice.page_no);
-      pages.push_back(std::move(empty));
+      auto* empty = page_in(&pages)(slice.page_no);
+      empty->set_page_number(slice.page_no);
+      empty->mutable_page_meta()->set_page_no(slice.page_no);
     }
-    for (auto& page : pages) {
-      stream_fold_.fold(page);
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      *event->message->mutable_page() = std::move(page);
+    for (auto& [_, event] : pages) {
+      fold_locked(event->message.page());
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
       events_.push_back(std::move(event));
     }
     next_page_ = slice.page_no + 1;
@@ -929,17 +1167,17 @@ class DocumentStreamReactor final
     while (true) {
       auto page_it = completed_pages_.find(next_page_);
       if (page_it == completed_pages_.end()) break;
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message->mutable_page(),
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message.mutable_page(),
                        &assembly_warnings_);
       page_scores_.push_back(page_confidence(*page_it->second, next_page_));
-      stream_fold_.fold(event->message->page());
+      fold_locked(event->message.page());
       fold_has_cv_ = true;
       // Heading depth needs every page's heights; the terminal event ships
       // the clustered result for the level-0 headers streamed here.
-      collect_header_heights(event->message->page(), &header_heights_);
+      collect_header_heights(event->message.page(), &header_heights_);
       completed_pages_.erase(page_it);
       event->scheduler_credit = true;
       events_.push_back(std::move(event));
@@ -1013,52 +1251,63 @@ class DocumentStreamReactor final
       // as the collector-document event for consumers that want it intact.
       // The pdf collector's text is the document's own text layer; other
       // collectors' text has no OCR-or-digital story to tell.
-      auto pages = pages_streamed
-                       ? std::vector<pipestream::parse::v1::PageData>{}
-                       : project_page_data(outcome.document,
-                                           collector == pipestream::parse::v1::COLLECTOR_PDF
-                                               ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
-                                               : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED);
+      PageEvents pages;
+      if (!pages_streamed) {
+        project_page_data_into(outcome.document,
+                               collector == pipestream::parse::v1::COLLECTOR_PDF
+                                   ? pipestream::parse::v1::TEXT_SOURCE_DIGITAL_PDF
+                                   : pipestream::parse::v1::TEXT_SOURCE_UNSPECIFIED,
+                               page_in(&pages));
+      }
       // What a client folding these pages still lacks to hold the
       // collector's Document: the repair pass's changes for pages that
       // streamed before it ran, and the tree the projection flattened for
-      // pages projected from the finished Document.
+      // pages projected from the finished Document. A client that opted
+      // out of the repair event folds no pages, so the stream builds no
+      // fold to diff against.
       std::optional<pipestream::parse::v1::DocumentRepairDelta> delta;
-      if (pages_streamed) {
+      if (!repair_delta_wanted()) {
+        // No delta.
+      } else if (pages_streamed) {
         if (!fold_has_cv_ && !fold_settled_) {
           fold_settled_ = true;
           delta = repair_delta(stream_fold_.document(), outcome.document, renamed, collector);
         }
       } else if (!pages.empty()) {
         PageFold fold;
-        for (const auto& page : pages) fold.fold(page);
+        for (const auto& [_, event] : pages) fold.fold(event->message.page());
+        count_folded_pages(pages.size());
         delta = repair_delta(fold.document(), outcome.document, {}, collector);
       }
       const bool paged = pages_streamed || !pages.empty();
       if (!pages.empty()) {
         total_pages_ = std::max(total_pages_, static_cast<int>(pages.size()));
-        for (auto& page : pages) {
-          auto page_event = std::make_unique<ArenaEvent>();
-          page_event->message->set_document_id(document_id_);
-          page_event->message->set_total_pages(total_pages_);
-          *page_event->message->mutable_page() = std::move(page);
+        for (auto& [_, page_event] : pages) {
+          page_event->message.set_document_id(document_id_);
+          page_event->message.set_total_pages(total_pages_);
           events_.push_back(std::move(page_event));
         }
       }
       if (delta.has_value()) {
-        auto delta_event = std::make_unique<ArenaEvent>();
-        delta_event->message->set_document_id(document_id_);
-        delta_event->message->set_total_pages(total_pages_);
-        *delta_event->message->mutable_repair() = std::move(*delta);
+        auto delta_event = std::make_unique<Event>();
+        delta_event->message.set_document_id(document_id_);
+        delta_event->message.set_total_pages(total_pages_);
+        *delta_event->message.mutable_repair() = std::move(*delta);
         events_.push_back(std::move(delta_event));
       }
       if (paged && slim_collector_documents_.value_or(false)) slim(&outcome.document);
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      auto* collector_document = event->message->mutable_collector_document();
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      auto* collector_document = event->message.mutable_collector_document();
       collector_document->set_collector(collector);
+      if (transfer_observer_ && transfer_observer_->before_transfer) {
+        transfer_observer_->before_transfer();
+      }
       *collector_document->mutable_document() = std::move(outcome.document);
+      if (transfer_observer_ && transfer_observer_->after_transfer) {
+        transfer_observer_->after_transfer();
+      }
       for (auto& warning : outcome.warnings) {
         collector_document->add_warnings(std::move(warning));
       }
@@ -1099,10 +1348,10 @@ class DocumentStreamReactor final
     std::map<std::string, int32_t> levels;
     if (!header_heights_.empty()) levels = section_header_levels(std::move(header_heights_));
     emit_fold_delta_locked(levels);
-    auto event = std::make_unique<ArenaEvent>();
-    event->message->set_document_id(document_id_);
-    event->message->set_total_pages(total_pages_);
-    auto* complete = event->message->mutable_complete();
+    auto event = std::make_unique<Event>();
+    event->message.set_document_id(document_id_);
+    event->message.set_total_pages(total_pages_);
+    auto* complete = event->message.mutable_complete();
     auto* origin = complete->mutable_origin();
     origin->set_filename(filename_.string());
     origin->set_mimetype(origin_mimetype_.mimetype);
@@ -1110,6 +1359,7 @@ class DocumentStreamReactor final
     origin->set_binary_hash(document_bytes_hash_);
     *complete->mutable_collector_failures() = collector_failures_;
     complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
+    if (!repair_delta_wanted()) complete->set_repair_delta_omitted(true);
     for (std::string& warning : assembly_warnings_) {
       complete->add_warnings(std::move(warning));
     }
@@ -1154,15 +1404,31 @@ class DocumentStreamReactor final
                                 fold_has_cv_ ? pipestream::parse::v1::COLLECTOR_GRPARSE_CV
                                              : pipestream::parse::v1::COLLECTOR_PDF);
       if (!delta.has_value()) return;
-      auto event = std::make_unique<ArenaEvent>();
-      event->message->set_document_id(document_id_);
-      event->message->set_total_pages(total_pages_);
-      *event->message->mutable_repair() = std::move(*delta);
+      auto event = std::make_unique<Event>();
+      event->message.set_document_id(document_id_);
+      event->message.set_total_pages(total_pages_);
+      *event->message.mutable_repair() = std::move(*delta);
       events_.push_back(std::move(event));
     } catch (const std::exception& error) {
       assembly_warnings_.push_back(std::string("the streamed pages' repair event was skipped: ") +
                                    error.what());
     }
+  }
+
+  // DocumentChunk.repair_delta: unset or true keeps the repair events.
+  bool repair_delta_wanted() const { return repair_delta_.value_or(true); }
+
+  // Folds one streamed page event into stream_fold_, unless the client
+  // opted out of the repair event: then the stream keeps no second copy of
+  // the pages it sent, and emit_fold_delta_locked finds the fold empty.
+  void fold_locked(const pipestream::parse::v1::PageData& page) {
+    if (!repair_delta_wanted()) return;
+    stream_fold_.fold(page);
+    count_folded_pages(1);
+  }
+
+  void count_folded_pages(size_t pages) const {
+    if (folded_pages_ != nullptr) folded_pages_->fetch_add(pages, std::memory_order_relaxed);
   }
 
   // What slim_collector_documents drops from a collector Document whose
@@ -1201,13 +1467,17 @@ class DocumentStreamReactor final
       if (finish_status_.ok() && !status.ok()) {
         finish_status_ = std::move(status);
         cancel_ticket_locked();
+        cancel_registry_->cancel();
       }
       pump_locked();
       return;
     }
     finish_requested_ = true;
     finish_status_ = std::move(status);
-    if (!finish_status_.ok()) cancel_ticket_locked();
+    if (!finish_status_.ok()) {
+      cancel_ticket_locked();
+      cancel_registry_->cancel();
+    }
     pump_locked();
   }
 
@@ -1220,7 +1490,7 @@ class DocumentStreamReactor final
   void pump_locked() {
     if (!write_in_flight_ && !events_.empty()) {
       write_in_flight_ = true;
-      StartWrite(events_.front()->message);
+      StartWrite(&events_.front()->message);
       return;
     }
     if (finish_requested_ && !write_in_flight_ && events_.empty() && !finish_started_) {
@@ -1232,6 +1502,14 @@ class DocumentStreamReactor final
 
   grpc::CallbackServerContext* context_;
   PageScheduler& scheduler_;
+  // The service's stream pool: the plan and every leg run there.
+  CallExecutor& executor_;
+  // Every outbound call this stream's legs have open, cancelled at once
+  // when the stream ends early. Legs hold it weakly through the gate.
+  const std::shared_ptr<CancelRegistry> cancel_registry_ = std::make_shared<CancelRegistry>();
+  // The server's stream count this call holds a slot of; null when it was
+  // refused at the cap.
+  std::shared_ptr<std::atomic<size_t>> active_streams_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   // The server's repair pass, and the one this stream runs once its
   // structural options resolve (fixed before any collector starts).
@@ -1246,6 +1524,7 @@ class DocumentStreamReactor final
   const size_t maximum_buffered_pages_;
   std::shared_ptr<CallbackGate> callback_gate_;
   std::shared_ptr<InflightBytes> inflight_;
+  std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer_;
   // What this stream's chunks charged to inflight_ and still owns: moved
   // onto the shared buffer when the legs take the bytes, else returned on
   // teardown.
@@ -1259,13 +1538,21 @@ class DocumentStreamReactor final
   fs::path filename_;
   std::string content_type_;
   std::string bytes_;
+  // The payload size the first chunk declared (DocumentChunk.total_bytes),
+  // already charged and reserved; unset when no chunk declared one.
+  std::optional<uint64_t> total_bytes_;
+  // The upload's digests, fed chunk by chunk as the payload lands: the
+  // origin's FNV-1a, and the SHA-256 a PDF source addresses its backend
+  // by, kept only for an upload that may be a PDF.
+  ContentHash upload_hash_;
+  std::optional<targets::Sha256> upload_sha256_;
   uint64_t document_bytes_hash_ = 0;
   // The origin mimetype and its evidence, resolved while the bytes were
   // still in hand.
   MimetypeResolution origin_mimetype_;
   PageScheduler::Ticket ticket_;
   std::map<int, std::shared_ptr<const OcrPage>> completed_pages_;
-  std::deque<std::unique_ptr<ArenaEvent>> events_;
+  std::deque<std::unique_ptr<Event>> events_;
   AssemblyCursor assembly_cursor_;
   // Level-less section headers streamed so far, clustered into depths for
   // the terminal event.
@@ -1278,6 +1565,13 @@ class DocumentStreamReactor final
   bool fold_has_cv_ = false;
   bool fold_settled_ = false;
   std::optional<bool> slim_collector_documents_;
+  // DocumentChunk.repair_delta, resolved from the first chunk that sets it
+  // and fixed before any page streams (the plan starts on the complete
+  // chunk).
+  std::optional<bool> repair_delta_;
+  // The service's count of page events folded for repair events, shared
+  // by every stream it serves (DocumentStreamingService::folded_page_events).
+  std::shared_ptr<std::atomic<uint64_t>> folded_pages_;
   // Each streamed CV page's read quality, folded into the terminal event.
   std::vector<PageConfidence> page_scores_;
   // What the page assembly had to approximate rather than map, shipped with
@@ -1311,20 +1605,392 @@ class DocumentStreamReactor final
   bool cv_recorded_ = false;
 };
 
+// The surface StreamDocument's rejections name.
+constexpr const char* kSourceStreamSurface = "StreamDocument";
+
+// The stable class of a source's failure on the envelope feed.
+pipestream::parse::v1::StreamErrorCode stream_error_code(grpc::StatusCode code) {
+  switch (code) {
+    case grpc::StatusCode::INVALID_ARGUMENT:
+    case grpc::StatusCode::PERMISSION_DENIED:
+    case grpc::StatusCode::UNIMPLEMENTED:
+    case grpc::StatusCode::OUT_OF_RANGE:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_INVALID_ARGUMENT;
+    case grpc::StatusCode::NOT_FOUND:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_NOT_FOUND;
+    case grpc::StatusCode::RESOURCE_EXHAUSTED:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_RESOURCE_EXHAUSTED;
+    case grpc::StatusCode::INTERNAL:
+    case grpc::StatusCode::UNKNOWN:
+    case grpc::StatusCode::DATA_LOSS:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_INTERNAL;
+    default:
+      return pipestream::parse::v1::STREAM_ERROR_CODE_CONVERT_FAILED;
+  }
+}
+
+// StreamDocument's reactor. Each source of the request is parsed in turn by
+// parse_source, the fetch (behind the remote fetch slots and the in-flight
+// budget), plan, collector legs, merge and repair ConvertSource runs, on an
+// executor worker; the reaction threads only write. The feed is:
+//
+//   status QUEUED                      once the call is admitted
+//   status STARTED                     when a worker picks it up
+//   per source, in request order:
+//     status PROCESSING                source_index set
+//     final_document, source_result    the merged Document, then success
+//   or error, source_result            a failed source; the next one runs
+//   status COMPLETED                   at least one source converted
+//   or status FAILED                   none did
+//
+// and the call then finishes OK. A request refused before any work (no
+// source, a target to deliver to, invalid options, no room in the budget
+// or the executor) finishes with that status and no envelope; a client
+// that goes away ends the call CANCELLED.
+//
+// The worker waits for each source's envelopes to be written before it
+// parses the next, so at most one source's Document is held beyond the one
+// being parsed, and a remote source's fetched copy stays charged until its
+// Document is on the wire.
+class SourceStreamReactor final
+    : public grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse> {
+ public:
+  using Envelope = pipestream::parse::v1::StreamDocumentResponse;
+  using Phase = pipestream::parse::v1::StreamStatus::Phase;
+
+  // A call refused before any work: finished at once with `status`.
+  explicit SourceStreamReactor(grpc::Status status) { Finish(std::move(status)); }
+
+  SourceStreamReactor(grpc::CallbackServerContext* context,
+                      const pipestream::parse::v1::StreamDocumentRequest* request,
+                      PageScheduler& scheduler, std::shared_ptr<CollectorEndpoints> endpoints,
+                      std::optional<RepairOptions> repair, SourceAdmission admission,
+                      CallExecutor& executor)
+      : context_(context),
+        request_(request),
+        scheduler_(&scheduler),
+        endpoints_(std::move(endpoints)),
+        repair_(std::move(repair)),
+        admission_(std::move(admission)) {
+    const auto& sources = request_->request().sources();
+    // The wire message, the per-source request each parse copies its source
+    // into, and the copies base64 sources decode to; a remote source's
+    // fetched copy is charged after its fetch (parse_source).
+    uint64_t charge = request_->ByteSizeLong() + decoded_source_bytes(sources);
+    for (const auto& source : sources) charge += source.ByteSizeLong();
+    if (admission_.inflight != nullptr && !admission_.inflight->try_acquire(charge)) {
+      record_document_completion("other", DocumentCompletionStatus::kRejected, 0);
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "in-flight document bytes would exceed GRPARSE_MAX_INFLIGHT_BYTES"));
+      return;
+    }
+    charge_ = charge;
+    // Queued, not yet written: a refused submit must finish a call that
+    // wrote nothing. The reactor is bound only once the handler returns, so
+    // nothing the worker starts can complete, nor the call end, before then.
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_QUEUED, std::nullopt);
+    }
+    if (!executor.submit([this] { run(); })) {
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        envelopes_.clear();
+      }
+      record_document_completion("other", DocumentCompletionStatus::kRejected, 0);
+      Finish(grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                          "StreamDocument executor is saturated"));
+      return;
+    }
+    std::lock_guard<std::mutex> lock(mutex_);
+    pump_locked();
+  }
+
+  void OnWriteDone(bool ok) override {
+    std::lock_guard<std::mutex> lock(mutex_);
+    write_in_flight_ = false;
+    if (!envelopes_.empty()) envelopes_.pop_front();
+    if (!ok) {
+      // The client stopped reading: nothing more is written, and the worker
+      // ends the call at its next check.
+      broken_ = true;
+      envelopes_.clear();
+    }
+    pump_locked();
+    drained_.notify_all();
+  }
+
+  void OnDone() override {
+    if (admission_.inflight != nullptr) admission_.inflight->release(charge_);
+    delete this;
+  }
+
+ private:
+  // The worker's whole share of the call; its last statement finishes it,
+  // after which the reactor may already be gone.
+  void run() {
+    const auto& convert = request_->request();
+    const int total = convert.sources_size();
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_STARTED, std::nullopt);
+      pump_locked();
+    }
+    for (int index = 0; index < total && !stopped(); ++index) {
+      const auto source_index = static_cast<uint32_t>(index);
+      {
+        std::lock_guard<std::mutex> lock(mutex_);
+        queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_PROCESSING, source_index);
+        pump_locked();
+      }
+      // parse_source converts one source; each gets the request's options.
+      pipestream::parse::v1::ConvertDocumentRequest single;
+      *single.add_sources() = convert.sources(index);
+      *single.mutable_options() = convert.options();
+      const auto started = std::chrono::steady_clock::now();
+      SourceParse parsed;
+      grpc::Status status;
+      try {
+        status = parse_source(ParseCall(context_), single, *scheduler_, endpoints_, repair_,
+                              admission_, kSourceStreamSurface, &parsed);
+      } catch (...) {
+        status = status_from_exception(std::current_exception());
+      }
+      auto final_document = std::make_unique<Envelope>();
+      if (status.ok()) {
+        *final_document->mutable_final_document() = std::move(parsed.result.document);
+        // The write limit is the transport's; a Document past it is this
+        // source's failure, not the stream's.
+        if (final_document->ByteSizeLong() > static_cast<uint64_t>(kMaxMessageBytes)) {
+          status = grpc::Status(
+              grpc::StatusCode::RESOURCE_EXHAUSTED,
+              std::string(kSourceStreamSurface) + ": the Document of sources[" +
+                  std::to_string(index) + "] is " +
+                  std::to_string(final_document->ByteSizeLong()) + " bytes, over the " +
+                  std::to_string(kMaxMessageBytes) +
+                  " byte message limit; StreamProcessDocument delivers the same conversion "
+                  "page by page");
+        }
+      }
+      if (stopped()) {
+        record_source_completion(parsed, grpc::Status(grpc::StatusCode::CANCELLED, ""), started);
+        break;
+      }
+      record_source_completion(parsed, status, started);
+      pipestream::parse::v1::StreamSourceResult result;
+      result.set_source_index(source_index);
+      // A source that failed before it was named keeps the name it was sent
+      // with.
+      result.set_filename(!parsed.filename.empty() || !single.sources(0).has_file()
+                              ? parsed.filename.string()
+                              : single.sources(0).file().filename());
+      result.set_success(status.ok());
+      std::unique_lock<std::mutex> lock(mutex_);
+      ++processed_;
+      if (status.ok()) {
+        ++(parsed.result.failures.empty() ? succeeded_ : partially_succeeded_);
+        result.set_document_name(final_document->final_document().name());
+        // A partial success names the collectors that could not contribute.
+        std::string failures;
+        for (const auto& failure : parsed.result.failures) {
+          if (!failures.empty()) failures += "; ";
+          failures += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
+        }
+        if (!failures.empty()) result.set_error_message(failures);
+        final_document->set_source_index(source_index);
+        queue_locked(std::move(final_document));
+      } else {
+        ++failed_;
+        result.set_error_message(status.error_message());
+        auto error = std::make_unique<Envelope>();
+        error->set_source_index(source_index);
+        auto* stream_error = error->mutable_error();
+        stream_error->set_message(status.error_message());
+        stream_error->set_code(stream_error_code(status.error_code()));
+        *stream_error->mutable_failure() = public_failure(
+            status, parsed.collectors_ran ? pipestream::parse::v1::FAILURE_PHASE_EXECUTION
+                                          : pipestream::parse::v1::FAILURE_PHASE_ADMISSION);
+        queue_locked(std::move(error));
+      }
+      auto closing = std::make_unique<Envelope>();
+      closing->set_source_index(source_index);
+      *closing->mutable_source_result() = std::move(result);
+      queue_locked(std::move(closing));
+      pump_locked();
+      // Backpressure: this source's Document, and the fetched copy charged
+      // for it, are held until the client has read them.
+      wait_drained(lock);
+    }
+    bool cancelled = false;
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      cancelled = broken_ || context_->IsCancelled();
+      if (!cancelled) {
+        queue_status_locked(succeeded_ + partially_succeeded_ > 0
+                                ? pipestream::parse::v1::StreamStatus::PHASE_COMPLETED
+                                : pipestream::parse::v1::StreamStatus::PHASE_FAILED,
+                            std::nullopt);
+        pump_locked();
+      }
+      wait_drained(lock);
+      cancelled = cancelled || broken_;
+    }
+    Finish(cancelled ? grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled")
+                     : grpc::Status::OK);
+  }
+
+  bool stopped() {
+    if (context_->IsCancelled()) return true;
+    std::lock_guard<std::mutex> lock(mutex_);
+    return broken_;
+  }
+
+  // Waits until every queued envelope is written or the stream broke. A
+  // cancelled call's write in flight still completes (with ok false), so
+  // the wait always ends.
+  void wait_drained(std::unique_lock<std::mutex>& lock) {
+    drained_.wait(lock, [this] { return envelopes_.empty() && !write_in_flight_; });
+  }
+
+  void record_source_completion(const SourceParse& parsed, const grpc::Status& status,
+                                std::chrono::steady_clock::time_point started) {
+    const auto elapsed_ns = static_cast<uint64_t>(
+        std::chrono::duration_cast<std::chrono::nanoseconds>(
+            std::chrono::steady_clock::now() - started)
+            .count());
+    DocumentCompletionStatus completion = DocumentCompletionStatus::kSuccess;
+    if (!status.ok()) {
+      completion = (!parsed.collectors_ran && is_stream_rejection_code(status.error_code()))
+                       ? DocumentCompletionStatus::kRejected
+                       : DocumentCompletionStatus::kFailure;
+    } else if (!parsed.result.failures.empty()) {
+      completion = DocumentCompletionStatus::kPartialSuccess;
+    }
+    record_document_completion(parsed.doctype, completion, elapsed_ns);
+  }
+
+  void queue_status_locked(Phase phase, std::optional<uint32_t> source_index) {
+    auto envelope = std::make_unique<Envelope>();
+    if (source_index.has_value()) envelope->set_source_index(*source_index);
+    auto* status = envelope->mutable_status();
+    status->set_phase(phase);
+    const auto total = static_cast<uint32_t>(request_->request().sources_size());
+    status->set_num_docs(total);
+    status->set_num_processed(processed_);
+    status->set_num_succeeded(succeeded_);
+    status->set_num_failed(failed_);
+    status->set_num_partially_succeeded(partially_succeeded_);
+    if (total > 0) {
+      status->set_progress_percentage(static_cast<float>(processed_) /
+                                      static_cast<float>(total));
+    }
+    switch (phase) {
+      case pipestream::parse::v1::StreamStatus::PHASE_QUEUED:
+        status->set_message("admitted; waiting for a worker");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_STARTED:
+        status->set_message("converting " + std::to_string(total) + " source(s)");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_PROCESSING:
+        status->set_message("converting sources[" + std::to_string(*source_index) + "]");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_COMPLETED:
+        status->set_message("every source processed");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_FAILED:
+        status->set_message("no source converted");
+        break;
+      default:
+        break;
+    }
+    queue_locked(std::move(envelope));
+  }
+
+  // Stamps the envelope with the call's request_id, the next sequence
+  // number and the time, and queues it behind the others.
+  void queue_locked(std::unique_ptr<Envelope> envelope) {
+    if (broken_) return;
+    if (request_->has_request_id()) envelope->set_request_id(request_->request_id());
+    envelope->set_sequence_number(++sequence_);
+    envelope->set_timestamp_ms(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                   std::chrono::system_clock::now().time_since_epoch())
+                                   .count());
+    envelopes_.push_back(std::move(envelope));
+  }
+
+  void pump_locked() {
+    if (write_in_flight_ || envelopes_.empty() || broken_) return;
+    write_in_flight_ = true;
+    StartWrite(envelopes_.front().get());
+  }
+
+  grpc::CallbackServerContext* context_ = nullptr;
+  const pipestream::parse::v1::StreamDocumentRequest* request_ = nullptr;
+  PageScheduler* scheduler_ = nullptr;
+  std::shared_ptr<CollectorEndpoints> endpoints_;
+  std::optional<RepairOptions> repair_;
+  SourceAdmission admission_;
+  uint64_t charge_ = 0;
+
+  std::mutex mutex_;
+  std::condition_variable drained_;
+  // Written front first; the front is the write in flight, if any.
+  std::deque<std::unique_ptr<Envelope>> envelopes_;
+  bool write_in_flight_ = false;
+  // A write failed: the client is gone and nothing more is queued.
+  bool broken_ = false;
+  uint64_t sequence_ = 0;
+  uint32_t processed_ = 0;
+  uint32_t succeeded_ = 0;
+  uint32_t partially_succeeded_ = 0;
+  uint32_t failed_ = 0;
+};
+
 }  // namespace
 
 DocumentStreamingService::DocumentStreamingService(PageScheduler& scheduler,
                                                    std::shared_ptr<CollectorEndpoints> endpoints,
                                                    std::optional<RepairOptions> repair,
-                                                   std::shared_ptr<InflightBytes> inflight)
+                                                   std::shared_ptr<InflightBytes> inflight,
+                                                   std::shared_ptr<const CollectorDocumentTransferObserver> transfer_observer,
+                                                   StreamingLimits limits)
     : scheduler_(scheduler),
       endpoints_(std::move(endpoints)),
       repair_(std::move(repair)),
-      inflight_(std::move(inflight)) {}
+      inflight_(std::move(inflight)),
+      transfer_observer_(std::move(transfer_observer)),
+      max_active_streams_(std::max<size_t>(1, limits.max_active_streams)),
+      executor_(limits.executor) {}
+
+grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse>*
+DocumentStreamingService::StreamDocument(
+    grpc::CallbackServerContext* context,
+    const pipestream::parse::v1::StreamDocumentRequest* request) {
+  // What can be refused without a worker is refused here, before any
+  // envelope: the request as a whole, not one of its sources, is wrong.
+  const auto& convert = request->request();
+  if (convert.sources().empty()) {
+    return new SourceStreamReactor(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT, "StreamDocument needs at least one source"));
+  }
+  if (targets::needs_delivery(convert.target())) {
+    return new SourceStreamReactor(grpc::Status(
+        grpc::StatusCode::INVALID_ARGUMENT,
+        "StreamDocument does not deliver to a target; its documents return on the stream only"));
+  }
+  if (grpc::Status options = validate_options(convert.options(), kSourceStreamSurface);
+      !options.ok()) {
+    return new SourceStreamReactor(std::move(options));
+  }
+  return new SourceStreamReactor(context, request, scheduler_, endpoints_, repair_,
+                                 SourceAdmission{inflight_, fetch_slots_}, executor_);
+}
 
 grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk, pipestream::parse::v1::DocumentStreamEvent>*
 DocumentStreamingService::StreamProcessDocument(grpc::CallbackServerContext* context) {
-  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_);
+  return new DocumentStreamReactor(context, scheduler_, endpoints_, repair_, inflight_,
+                                   transfer_observer_, folded_pages_, executor_, active_streams_,
+                                   max_active_streams_);
 }
 
 }  // namespace grparse

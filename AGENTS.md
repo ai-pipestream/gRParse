@@ -68,7 +68,8 @@ file under `collectors/` copied byte-identical from the sister repo.
 | `grpc-lol-html` | `master` | Rust (Cargo, buf) | 50057 | `lolhtml_types.proto`, `lolhtml_service.proto` | never by format; explicit `lol_html_options` only |
 | `grpc-asr` | `main` | C++ (CMake, buf, whisper.cpp) | 50055 | `asr_service.proto` | audio and video (request-level ASR model or preset, with `GRPARSE_ASR_MODEL` as an optional fallback; unsupported selectors fail explicitly) |
 | `fastwarc-grpc` | `main` | Docker packaging of the crates.io `fastwarc-grpc` crate (pinned 2.0.1) | 50060 | `warc.proto`, `warc_service.proto` (the pinned crate's protos) | `.warc`, `.warc.gz/.zst/.lz4`, `application/warc`; the shell also keeps a native tab on it. See "fastwarc and the crate" below |
-| `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side through the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
+| `grpc-lighton-ocr` | `main` | C++ (CMake, buf, native LightOnOCR-3 engine) | 50074 | `lighton_ocr.proto` | never by format; the VLM pipeline's LightOnOCR model when `GRPARSE_LIGHTON_TARGET` is set, in place of grpc-vlm-convert's preset (`src/collectors/lighton_collector.cpp`; experimental `lighton` compose profile, target exported by hand) |
+| `grpc-calamine` | `main` on GitHub (`development` was the working branch; check) | Rust (Cargo, buf) | 50062 | `calamine_types.proto`, `calamine_service.proto` (package `calamine.v1`; vendored from GitHub `main`, which carries the fleet port, the UiInfo block, and the `row_gap` event that `development` lacks) | never routed by itself; a routed workbook plan (never CSV) fans a calamine leg out beside libreoffice when configured, folded client-side from one bidi `ParseWorkbook` stream, falling back to the OpenWorkbook/StreamWorksheetRange/CloseWorkbook handle lifecycle (with a warning) only when the server answers UNIMPLEMENTED (`src/collectors/calamine_collector.cpp`). Meant to be hosted by an external project, so nothing in that repo may mention gRParse or the shell |
 
 Two collectors are compiled in and have no repo: the CV path
 (`COLLECTOR_GRPARSE_CV`) and the wiki storage XHTML handler
@@ -247,6 +248,13 @@ The container is the supported build environment (Ubuntu with CUDA, ONNX
 Runtime GPU, gRPC; see README "Development"). Three images exist:
 `Dockerfile` (CUDA, tag `latest`), `Dockerfile.cpu` (multi-arch,
 `latest-cpu`), `Dockerfile.openvino` (Intel GPUs, `latest-openvino`).
+The CUDA image runs every image model on native TensorRT (`src/tensorrt/`,
+README "NVIDIA GPUs (TensorRT)"); ONNX Runtime is the last resort on this
+project, never a fallback behind a native runtime. It has no GPU test in
+CI: `scripts/test/gpu-placement-cuda-test.sh <image> <models-dir>` on krick
+(RTX 4080, `--gpus all`) is its receipt, and a first start without
+`GRPARSE_TENSORRT_CACHE_DIR` builds the engines for several minutes before
+it listens.
 
 ```bash
 GRPARSE_REVISION=$(scripts/revision.sh) docker compose build   # CUDA image + tests, commit labelled

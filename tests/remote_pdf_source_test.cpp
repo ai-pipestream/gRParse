@@ -21,6 +21,7 @@
 #include "grparse/in_memory_document.h"
 #include "grparse/remote_page_source.h"
 #include "support/check.h"
+#include "support/fake_pdf_backend.h"
 
 namespace {
 
@@ -891,6 +892,107 @@ int main() {
       plain_server->Shutdown();
     }
     locked_server->Shutdown();
+  }
+
+  // --- ParseStream ---------------------------------------------------------
+  // A backend that serves ParseStream gets one stream per document: the
+  // bytes go up once, in chunks, and every page's text and raster is asked
+  // for on that stream; no Probe, Parse or Render call is made.
+  {
+    grparse_test::FakePdfBackend streaming;
+    streaming.enable_parse_stream();
+    const std::string big(600 * 1024, ' ');  // spans three upload chunks
+    const std::string streamed_bytes = "%PDF-streamed" + big;
+    streaming.add_document(streamed_bytes, {grparse_test::text_page({"first page line"}),
+                                            grparse_test::text_page({"second page line"})});
+    std::unique_ptr<grpc::Server> streaming_server;
+    const std::string streaming_target = serve(streaming, streaming_server);
+    const auto streamed = std::make_shared<const std::string>(streamed_bytes);
+
+    const auto source = grparse::open_remote_pdf_document(streamed, streaming_target, dpi);
+    require(source->page_count() == 2, "the stream's header counts the pages");
+    require(grparse::pdf_backend_protocol(*source) == grparse::PdfBackendProtocol::kCurrent,
+            "the source reports the ParseStream wire");
+    require(source->backend_name() == "fake-pdf-backend", "backend name from the stream header");
+    require(streaming.probe_calls() == 0, "no Probe when the backend serves ParseStream");
+    require(streaming.stream_opens() == 1 && streaming.stream_bytes() == streamed_bytes.size(),
+            "one stream carries every byte, once");
+
+    const auto first = source->extract_digital_page(1);
+    const auto second = source->extract_digital_page(2);
+    require(first.has_value() && first->lines.size() == 1 &&
+                first->lines.front().text == "first page line",
+            "page one's text arrives over the stream");
+    require(second.has_value() && second->lines.size() == 1 &&
+                second->lines.front().text == "second page line",
+            "page two's text arrives over the stream");
+    require(streaming.stream_parse_requests() == 2, "each page is one ParsePages");
+
+    // Renders from two threads at once share the stream.
+    cv::Mat page1;
+    cv::Mat page2;
+    std::thread other([&] { page2 = source->render_page(2); });
+    page1 = source->render_page(1);
+    other.join();
+    require(page1.cols == 1224 && page1.rows == 1584 && page2.cols == 1224,
+            "rasters arrive over the stream at the requested DPI");
+    require(streaming.render_calls() == 2 && streaming.stream_opens() == 1,
+            "both renders rode the one stream; nothing was uploaded again");
+
+    // cancel() aborts a render in flight on the stream.
+    streaming.stall_renders(std::chrono::seconds(20));
+    const auto cancelled = grparse::open_remote_pdf_document(streamed, streaming_target, dpi);
+    const int renders_before = streaming.render_calls();
+    std::thread canceller([&] {
+      const auto give_up = std::chrono::steady_clock::now() + std::chrono::seconds(10);
+      while (streaming.render_calls() == renders_before &&
+             std::chrono::steady_clock::now() < give_up) {
+        std::this_thread::sleep_for(std::chrono::milliseconds(5));
+      }
+      cancelled->cancel();
+    });
+    const auto started = std::chrono::steady_clock::now();
+    bool aborted = false;
+    try {
+      static_cast<void>(cancelled->render_page(1));
+    } catch (const grparse::PdfBackendUnavailable& error) {
+      aborted = error.reason() == grparse::PdfBackendFailure::kCancelled;
+    }
+    canceller.join();
+    require(aborted && std::chrono::steady_clock::now() - started < std::chrono::seconds(10),
+            "cancel aborts a render on the stream");
+    streaming.stall_renders(std::chrono::milliseconds(0));
+
+    // GRPARSE_PDF_BACKEND_STREAM=off keeps the unary calls, and says so.
+    setenv("GRPARSE_PDF_BACKEND_STREAM", "off", 1);
+    const auto pinned = grparse::open_remote_pdf_document(streamed, streaming_target, dpi);
+    require(grparse::pdf_backend_protocol(*pinned) == grparse::PdfBackendProtocol::kLegacyByConfig &&
+                streaming.probe_calls() > 0 && pinned->extract_digital_page(1).has_value(),
+            "the stream switch off pins Probe/Parse/Render");
+    unsetenv("GRPARSE_PDF_BACKEND_STREAM");
+    // The sources above still hold their streams open; a bounded shutdown
+    // cancels them instead of waiting for their half-close.
+    streaming_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
+  }
+
+  // A backend that predates ParseStream answers UNIMPLEMENTED: the source
+  // falls back to Probe/Parse/Render and records it, typed.
+  {
+    grparse_test::FakePdfBackend unary_only;
+    unary_only.add_document(*doc, {grparse_test::text_page({"unary line"})});
+    std::unique_ptr<grpc::Server> unary_server;
+    const std::string unary_target = serve(unary_only, unary_server);
+    const auto source = grparse::open_remote_pdf_document(doc, unary_target, dpi);
+    require(grparse::pdf_backend_protocol(*source) == grparse::PdfBackendProtocol::kLegacyFallback,
+            "an UNIMPLEMENTED ParseStream is recorded as the legacy fallback");
+    require(source->page_count() == 1 && unary_only.probe_calls() == 2,
+            "the fallback opens with the hash-only Probe and its one upload");
+    const auto page = source->extract_digital_page(1);
+    require(page.has_value() && page->lines.front().text == "unary line",
+            "the fallback parses through Parse");
+    require(!source->render_page(1).empty() && unary_only.render_calls() == 1,
+            "the fallback renders through Render");
+    unary_server->Shutdown();
   }
 
   // --- Target configuration edge cases ------------------------------------

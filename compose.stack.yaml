@@ -13,8 +13,10 @@
 #              grpc-asr or point ASR models elsewhere), enrich and
 #              vlm-convert (need ENRICH_VLM_URL / VLM_ENDPOINT).
 #   lighton  - experimental LightOnOCR-3 service on 50074. Build locally
-#              with verified CPU 0.8B GGUF weights. No coordinator route
-#              or shell tab is enabled; publication is a separate gate.
+#              with verified CPU 0.8B GGUF weights. gRParse routes a VLM
+#              request naming the LightOnOCR model to it only when
+#              GRPARSE_LIGHTON_TARGET=lighton-ocr:50074 is exported beside
+#              the profile; no shell tab. Publication is a separate gate.
 #              See compose/README.md for startup and readiness checks.
 #   calamine - existing opt-in, unchanged.
 #   pdf-backends - grpc-qparse, a second Apache-2.0 PDF backend for the
@@ -75,8 +77,13 @@ services:
       - "9464"   # Prometheus /metrics
     volumes:
       - ./models:/models:ro
+      - tensorrt-cache:/var/cache/tensorrt
     environment:
       CUDA_CACHE_DISABLE: "1"
+      # The image models run on native TensorRT. Their engines are built on
+      # the first start (a few minutes) and kept in this volume, so a later
+      # start loads them; without the variable every start builds them.
+      GRPARSE_TENSORRT_CACHE_DIR: /var/cache/tensorrt
       GRPARSE_METRICS_PORT: "9464"
       GRPARSE_PAGE_IMAGES: "on"   # page previews for the demo's box overlay
       # Collectors by service name on this network; the shell gives them tabs.
@@ -135,6 +142,13 @@ services:
       # PROCESSING_PIPELINE_VLM dials grpc-vlm-convert with full-page PNGs.
       GRPARSE_VLM_CONVERT_TARGET: "vlm-convert:50058"
       GRPARSE_VLM_CONVERT_TIMEOUT_MS: "120000"
+      # A VLM request naming the LightOnOCR model goes to grpc-lighton-ocr
+      # instead of vlm-convert's LightOnOCR preset when this names it. Unlike
+      # the targets above it is empty unless exported, because once set a
+      # down service fails those requests rather than leaving them on the
+      # preset: export GRPARSE_LIGHTON_TARGET=lighton-ocr:50074 together with
+      # --profile lighton.
+      GRPARSE_LIGHTON_TARGET: "${GRPARSE_LIGHTON_TARGET:-}"
     # Start order only: the backend is dialed per document, so a PDF that
     # arrives before pdfium's worker pool is up fails UNAVAILABLE and the
     # next one goes through.
@@ -330,8 +344,15 @@ services:
       dockerfile: Dockerfile.cpu
     expose:
       - "50055"
+    environment:
+      # Empty disables outbound RemoteTranscriptionOptions (#19) and the
+      # Prometheus /metrics HTTP listener (#17) until explicitly set or
+      # layered via compose.stack.observability.yaml.
+      GRPC_ASR_REMOTE_ALLOWED_HOSTS: "${GRPC_ASR_REMOTE_ALLOWED_HOSTS:-}"
+      GRPC_ASR_METRICS_ADDRESS: "${GRPC_ASR_METRICS_ADDRESS:-}"
     # ggml weights; drop whisper models into grpc-asr/models (see that
-    # repo's README for download pointers). The CUDA image is a manual
+    # repo's README for download pointers). compose.stack.openvino.yaml
+    # swaps this to the OpenVINO encoder image; the CUDA image is a manual
     # swap: image pipestreamai/grpc-asr:latest plus a gpus: all stanza.
     volumes:
       - ../grpc-asr/models:/models:ro
@@ -606,3 +627,8 @@ services:
       - NET_BIND_SERVICE
     security_opt:
       - no-new-privileges:true
+
+volumes:
+  # Built TensorRT engines (GRPARSE_TENSORRT_CACHE_DIR): keyed by model hash,
+  # TensorRT version and GPU, so a new image or card builds its own.
+  tensorrt-cache:

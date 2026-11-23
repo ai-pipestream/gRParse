@@ -10,6 +10,9 @@
 #include <system_error>
 #include <utility>
 
+#include <google/protobuf/descriptor.h>
+#include <google/protobuf/unknown_field_set.h>
+
 #include "../src/parse_support.h"
 #include "../src/source_parse.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
@@ -236,9 +239,37 @@ void verify_unread_options_are_rejected_unless_default() {
   }
 }
 
-// The per-collector rules travel typed; the deprecated JSON forms still work
-// alone, a request that sets both forms of one is refused, and lol-html JSON
-// that does not parse is refused up front instead of failing the leg.
+// A request built against an older contract that still carries one of the
+// retired JSON tags: the bytes a client stub of that contract would put on
+// the wire, parsed by today's schema, where the tag is reserved and lands in
+// the unknown-field set.
+parsev1::ConvertDocumentOptions options_with_retired_tag(int tag, const std::string& payload) {
+  google::protobuf::UnknownFieldSet old_contract;
+  old_contract.AddLengthDelimited(tag, payload);
+  std::string wire;
+  require(old_contract.SerializeToString(&wire), "the old-contract bytes serialize");
+  parsev1::ConvertDocumentOptions options;
+  require(options.ParseFromString(wire), "the retired tag still parses as an unknown field");
+  return options;
+}
+
+void require_retired(const grpc::Status& status, const std::string& retired,
+                     const std::string& typed) {
+  require_invalid(status, retired);
+  require(status.error_message().contains("send the typed " + typed + " instead"),
+          "the rejection names the typed field: " + status.error_message());
+  google::rpc::Status detail;
+  require(detail.ParseFromString(status.error_details()) && detail.details_size() == 1,
+          "the rejection carries one typed detail");
+  parsev1::OptionRejection rejection;
+  require(detail.details(0).UnpackTo(&rejection), "the detail is an OptionRejection");
+  require_equal(rejection.option_path(), retired, "the detail names the retired option");
+}
+
+// The per-collector rules travel typed and only typed: the JSON spellings
+// at tags 45 and 46 are reserved, and a request that still sends either is
+// refused by name, pointing at the typed field, rather than having its rules
+// silently dropped.
 void verify_collector_rules_are_typed() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -248,31 +279,71 @@ void verify_collector_rules_are_typed() {
     require(status.ok(), "the typed rules pass: " + status.error_message());
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.set_ebcdic_layout_json(R"({"records": []})");
-    options.set_lol_html_options_json(R"({"rules":[{"id":"links","selector":"a"}]})");
-    const grpc::Status status = grparse::validate_options(options, kSurface);
-    require(status.ok(), "the deprecated JSON forms still pass alone: " + status.error_message());
+    const auto* descriptor = parsev1::ConvertDocumentOptions::descriptor();
+    require(descriptor->FindFieldByNumber(45) == nullptr &&
+                descriptor->FindFieldByNumber(46) == nullptr,
+            "tags 45 and 46 are no longer fields");
+    require(descriptor->IsReservedNumber(45) && descriptor->IsReservedNumber(46),
+            "tags 45 and 46 are reserved, never reused");
+    require(descriptor->IsReservedName("ebcdic_layout_json") &&
+                descriptor->IsReservedName("lol_html_options_json"),
+            "the retired names are reserved");
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
-    options.set_ebcdic_layout_json(R"({"records": []})");
-    require_invalid(grparse::validate_options(options, kSurface),
-                    "ebcdic_layout and the deprecated ebcdic_layout_json");
+    const auto options = options_with_retired_tag(45, R"({"records": []})");
+    require(options.GetReflection()->GetUnknownFields(options).field_count() == 1,
+            "tag 45 survives the parse as an unknown field");
+    require_retired(grparse::validate_options(options, kSurface), "ebcdic_layout_json",
+                    "ebcdic_layout");
   }
   {
-    parsev1::ConvertDocumentOptions options;
+    const auto options =
+        options_with_retired_tag(46, R"({"rules":[{"id":"links","selector":"a"}]})");
+    require_retired(grparse::validate_options(options, kSurface), "lol_html_options_json",
+                    "lol_html_options");
+  }
+  {
+    // The typed twin beside the retired tag does not excuse it: the old
+    // bytes would otherwise vanish without a word.
+    auto options = options_with_retired_tag(46, "not json");
     options.mutable_lol_html_options()->add_rules()->set_id("links");
-    options.set_lol_html_options_json(R"({"rules":[]})");
-    require_invalid(grparse::validate_options(options, kSurface),
-                    "lol_html_options and the deprecated lol_html_options_json");
+    require_retired(grparse::validate_options(options, kSurface), "lol_html_options_json",
+                    "lol_html_options");
   }
   {
-    parsev1::ConvertDocumentOptions options;
-    options.set_lol_html_options_json("not json");
-    require_invalid(grparse::validate_options(options, kSurface), "lolhtml.v1.ExtractOptions");
+    auto options = options_with_retired_tag(45, "");
+    options.mutable_ebcdic_layout()->add_records()->set_name("CUSTOMER");
+    require_retired(grparse::validate_options(options, kSurface), "ebcdic_layout_json",
+                    "ebcdic_layout");
   }
+  {
+    // An unknown tag that was never one of these is not mistaken for one.
+    parsev1::ConvertDocumentOptions options;
+    options.GetReflection()->MutableUnknownFields(&options)->AddVarint(999, 1);
+    const grpc::Status status = grparse::validate_options(options, kSurface);
+    require(status.ok(), "an unrelated unknown tag is not a retired option: " +
+                             status.error_message());
+  }
+}
+
+// The open bags beside typed twins are retired additively: the failure
+// detail map is reserved (number and name), and the stringified chunk
+// metadata keeps its tag but is marked deprecated while typed_metadata and
+// text_source carry its content.
+void verify_retired_bags_stay_reserved() {
+  const auto* failure = parsev1::PublicFailureInfo::descriptor();
+  require(failure->FindFieldByNumber(5) == nullptr && failure->IsReservedNumber(5) &&
+              failure->IsReservedName("details"),
+          "PublicFailureInfo.details is reserved, number and name");
+  const auto* chunk = parsev1::Chunk::descriptor();
+  const auto* metadata = chunk->FindFieldByNumber(10);
+  require(metadata != nullptr && metadata->name() == "metadata" &&
+              metadata->options().deprecated(),
+          "Chunk.metadata keeps its tag for existing readers, deprecated");
+  const auto* text_source = chunk->FindFieldByName("text_source");
+  require(text_source != nullptr && text_source->number() == 18 &&
+              text_source->enum_type() == parsev1::ChunkTextSource_descriptor(),
+          "Chunk.text_source is the typed enum at a new tag");
 }
 
 // The PDF signature outranks the name: a header in the first kilobyte is a
@@ -670,6 +741,11 @@ void verify_settings_digest_follows_settings_and_models() {
   ::setenv("GRPARSE_REPAIR", "off", 1);
   require(grparse::read_settings_digest() != swapped, "the repair setting enters the digest");
   ::unsetenv("GRPARSE_REPAIR");
+  ::setenv("GRPARSE_LIGHTON_TARGET", "", 1);
+  require(grparse::read_settings_digest() == swapped, "an empty collector target is an unset one");
+  ::setenv("GRPARSE_LIGHTON_TARGET", "lighton-ocr:50074", 1);
+  require(grparse::read_settings_digest() != swapped, "a configured LightOnOCR target enters the digest");
+  ::unsetenv("GRPARSE_LIGHTON_TARGET");
   ::unsetenv("GRPARSE_UNARY_WORKERS");
   ::unsetenv("GRPARSE_MODELS_DIR");
   fs::remove_all(models);
@@ -947,12 +1023,12 @@ void verify_vlm_response_formats_are_typed() {
            {std::pair{&typed, std::string("vlm_pipeline_model_api.response_format")},
             std::pair{&raw, std::string("vlm_pipeline_model_local.response_format_raw")}}) {
         const grpc::Status status = grparse::validate_options(*options, kSurface);
-        if (format == parsev1::RESPONSE_FORMAT_MINERU2) {
+        if (!grparse::vlm_collector_response_format(format).has_value()) {
           const auto rejection = rejection_of(status);
           require(rejection.option_path() == path &&
                       rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
-                      rejection.rejected_value_raw() == "mineru2",
-                  "mineru2 is a typed NOT_IMPLEMENTED at " + path);
+                      rejection.rejected_value_raw() == name,
+                  name + " is a typed NOT_IMPLEMENTED at " + path);
         } else {
           require(status.ok(), "the VLM pipeline accepts " + name + " at " + path + ": " +
                                    status.error_message());
@@ -1215,6 +1291,48 @@ void verify_unimplemented_nested_ocr_options() {
   }
 }
 
+void verify_formatting_fallback_mode_is_a_closed_set() {
+  parsev1::ConvertDocumentOptions none;
+  none.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_NONE);
+  require(grparse::validate_options(none, kSurface).ok(), "NONE is accepted");
+  parsev1::ConvertDocumentOptions html;
+  html.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_HTML);
+  require(grparse::validate_options(html, kSurface).ok(), "HTML is accepted");
+  parsev1::ConvertDocumentOptions unset;
+  require(grparse::validate_options(unset, kSurface).ok(), "unset matches the renderer default");
+}
+
+void verify_from_formats_may_name_calendar() {
+  parsev1::ConvertDocumentOptions options;
+  options.add_from_formats(parsev1::INPUT_FORMAT_PDF);
+  options.add_from_formats(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::validate_options(options, kSurface).ok(),
+          "from_formats may include INPUT_FORMAT_CALENDAR");
+}
+
+// Pins the merge with main: FormattingFallbackMode stays field 76, and it
+// validates beside INPUT_FORMAT_CALENDAR (enum 37 on InputFormat, a
+// different message).
+void verify_formatting_fallback_stays_field_76_beside_calendar() {
+  const auto* options = parsev1::ConvertDocumentOptions::descriptor();
+  const auto* fallback = options->FindFieldByName("formatting_fallback_mode");
+  const auto* asr = options->FindFieldByName("asr_options");
+  require(fallback != nullptr && fallback->number() == 76 &&
+              fallback->type() == google::protobuf::FieldDescriptor::TYPE_ENUM &&
+              std::string(fallback->enum_type()->name()) == "FormattingFallbackMode",
+          "formatting_fallback_mode is the FormattingFallbackMode enum on field 76");
+  require(asr != nullptr && asr->number() == 75,
+          "asr_options keeps field 75, so 76 is not reused");
+  require(parsev1::FORMATTING_FALLBACK_MODE_HTML == 2 &&
+              parsev1::INPUT_FORMAT_CALENDAR == 37,
+          "HTML is 2 and calendar is InputFormat 37");
+  parsev1::ConvertDocumentOptions both;
+  both.set_formatting_fallback_mode(parsev1::FORMATTING_FALLBACK_MODE_HTML);
+  both.add_from_formats(parsev1::INPUT_FORMAT_CALENDAR);
+  require(grparse::validate_options(both, kSurface).ok(),
+          "field 76 and INPUT_FORMAT_CALENDAR validate on one request");
+}
+
 void verify_replace_broken_and_rapidocr_orientation_options() {
   {
     parsev1::ConvertDocumentOptions options;
@@ -1280,6 +1398,9 @@ int main() {
   return grparse_test::run_test_main("convert-options-test", "ok", {
       verify_unsupported_vlm_custom_fields,
       verify_unimplemented_nested_ocr_options,
+      verify_formatting_fallback_mode_is_a_closed_set,
+      verify_from_formats_may_name_calendar,
+      verify_formatting_fallback_stays_field_76_beside_calendar,
       verify_replace_broken_and_rapidocr_orientation_options,
       verify_picture_description_custom_config_is_wired,
       verify_typed_rejections_and_heading_options,
@@ -1290,6 +1411,7 @@ int main() {
       verify_hybrid_chunking_is_validated,
       verify_unread_options_are_rejected_unless_default,
       verify_collector_rules_are_typed,
+      verify_retired_bags_stay_reserved,
       verify_is_pdf_prefers_the_signature,
       verify_status_from_exception_covers_every_throw,
       verify_outcome_from_exception_is_a_failure,

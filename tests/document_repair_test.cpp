@@ -559,6 +559,11 @@ void verify_continuation_merged_across_pages() {
   auto* tail_base = document.mutable_texts(2)->mutable_text()->mutable_base();
   tail_base->add_source()->mutable_collector()->set_collector("pdf");
   (*tail_base->mutable_meta()->mutable_custom_fields())["font"].set_string_value("serif");
+  auto* head_span = document.mutable_texts(1)->mutable_text()->mutable_base()->mutable_prov(0)->mutable_charspan();
+  head_span->set_start(0);
+  head_span->set_end(30);
+  tail_base->mutable_prov(0)->mutable_charspan()->set_start(0);
+  tail_base->mutable_prov(0)->mutable_charspan()->set_end(25);
 
   const int merged = grparse::merge_continuations(&document, {});
   require(merged == 1, "one continuation merges");
@@ -569,6 +574,9 @@ void verify_continuation_merged_across_pages() {
   require(merged_base.prov_size() == 2 && merged_base.prov(0).page_no() == 1 &&
               merged_base.prov(1).page_no() == 2,
           "the tail's provenance appends to the head's");
+  require(merged_base.prov(0).charspan().end() == 30 && merged_base.prov(1).charspan().start() == 31 &&
+              merged_base.prov(1).charspan().end() == 56,
+          "the tail's charspan counts from the joined item's start");
   require(merged_base.source_size() == 1 && merged_base.source(0).collector().collector() == "pdf",
           "the tail's source carries over");
   require(merged_base.meta().custom_fields().at("font").string_value() == "serif",

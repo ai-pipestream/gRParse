@@ -76,8 +76,8 @@ std::map<std::string, ChartExtractionPreset> chart_extraction_presets_from_regis
 
 // Reads the five GRPARSE_*CHART_EXTRACTION* variables through `lookup`
 // (std::getenv in the server, a map in tests) and builds the policy. Lists
-// accept a JSON array or a comma-separated string, as docling-serve does;
-// an empty value counts as unset. Throws std::invalid_argument naming the
+// are comma-separated or a ServerSettingNameList in protobuf text format (a
+// leading '[' is refused); an empty value counts as unset. Throws std::invalid_argument naming the
 // variable on any unusable value.
 ChartExtractionPolicy chart_extraction_policy_from_env(
     const std::function<const char*(const char*)>& lookup);

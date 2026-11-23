@@ -495,7 +495,7 @@ bool pdf_form_widget_backend_configured() {
 
 std::optional<std::string> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
-    docv1::Document* document) {
+    docv1::Document* document, const std::string& precomputed_sha256) {
   std::optional<std::string> configured;
   try {
     configured = remote_pdf_backend_target();
@@ -508,7 +508,9 @@ std::optional<std::string> fold_pdf_form_widgets_from_backend(
   const char* handshake_env = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
   const bool handshake =
       handshake_env == nullptr || std::string_view(handshake_env) != "off";
-  const std::string sha256 = handshake ? targets::sha256_hex(bytes) : std::string();
+  const std::string sha256 =
+      handshake ? (precomputed_sha256.empty() ? targets::sha256_hex(bytes) : precomputed_sha256)
+                : std::string();
   std::vector<std::string> failures;
   for (const std::string& target : targets) {
     PdfWidgetFetch fetch =

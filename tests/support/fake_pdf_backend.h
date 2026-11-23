@@ -5,6 +5,10 @@
 // server. Rasters come back as blank white pages of the rendered size.
 // Header only, and test-only: nothing under src/ or include/ may include it.
 //
+// ParseStream is off unless a test calls enable_parse_stream(); until then
+// the fake answers it UNIMPLEMENTED, like a backend released before the RPC,
+// so gRParse sources fall back to Probe/Parse/Render against it.
+//
 // The fake speaks the content-addressed handshake the way a real backend
 // does: a hash-only request for bytes it has not seen is a cache miss
 // (LOAD_STATUS_BYTES_REQUIRED), and bytes it does not know are CORRUPT.
@@ -20,6 +24,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstdlib>
+#include <functional>
 #include <map>
 #include <set>
 #include <memory>
@@ -98,6 +103,17 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     return probe_calls_;
   }
 
+  // Probes that carried the document's bytes (the handshake's one upload),
+  // and the sha256 each of them carried beside the bytes, in arrival order.
+  int probes_with_bytes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return static_cast<int>(probe_upload_hashes_.size());
+  }
+  std::vector<std::string> probe_upload_hashes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return probe_upload_hashes_;
+  }
+
   // Holds every Render this long before answering, unless the client
   // cancels the call first: a backend stuck on a page.
   void stall_renders(std::chrono::milliseconds stall) {
@@ -138,6 +154,9 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     {
       std::unique_lock<std::mutex> lock(mutex_);
       ++probe_calls_;
+      if (!request->document().data().empty()) {
+        probe_upload_hashes_.push_back(request->document().sha256());
+      }
       if (blocked_.contains(request->document().data())) {
         ++held_probes_;
         while (blocked_.contains(request->document().data()) && !context->IsCancelled()) {
@@ -158,13 +177,190 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
 
   grpc::Status Parse(grpc::ServerContext*, const pdfv1::ParseRequest* request,
                      grpc::ServerWriter<pdfv1::ParseResponse>* writer) override {
+    return parse_to(*request, [writer](const pdfv1::ParseResponse& m) { return writer->Write(m); });
+  }
+
+  grpc::Status Render(grpc::ServerContext* context, const pdfv1::RenderRequest* request,
+                      grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
+    return render_to(context, *request,
+                     [writer](const pdfv1::RenderResponse& m) { return writer->Write(m); });
+  }
+
+  // ParseStream the way a real backend serves it, in miniature: the open,
+  // the chunked upload, then the open's parse (request 0) and every
+  // ParsePages and RenderPages answered like Parse and Render on the
+  // uploaded bytes, each closed by a RequestDone, and a ParseStreamDone at
+  // the end. Requests are served one at a time on the handler thread, in
+  // the order they arrive; those sent mid-upload wait for the last chunk.
+  // Off by default (enable_parse_stream()): the fake then answers
+  // UNIMPLEMENTED like a backend that predates the RPC, which is what the
+  // tests built on Probe counts and blocked probes expect.
+  grpc::Status ParseStream(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<pdfv1::ParseStreamResponse, pdfv1::ParseStreamRequest>* stream)
+      override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      if (!serve_stream_) {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "fake backend predates ParseStream");
+      }
+      ++stream_opens_;
+    }
+    pdfv1::ParseStreamRequest message;
+    if (!stream->Read(&message) || !message.has_open()) {
+      return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "the first message must be the open");
+    }
+    const pdfv1::ParseStreamOpen open = message.open();
+    std::string bytes;
+    bool complete = false;
+    bool loaded = false;
+    std::vector<pdfv1::ParseStreamRequest> waiting;
+    std::set<uint32_t> cancelled;
+    const auto document = [&] {
+      pdfv1::PdfDocument out;
+      out.set_data(bytes);
+      if (open.has_sha256()) out.set_sha256(open.sha256());
+      if (open.has_password()) out.set_password(open.password());
+      return out;
+    };
+    const auto request_done = [&](uint32_t id, pdfv1::RequestOutcome outcome) {
+      pdfv1::ParseStreamResponse out;
+      out.set_request_id(id);
+      out.mutable_request_done()->set_outcome(outcome);
+      stream->Write(out);
+    };
+    const auto serve = [&](const pdfv1::ParseStreamRequest& request) {
+      const uint32_t id =
+          request.has_parse() ? request.parse().request_id() : request.render().request_id();
+      if (cancelled.contains(id)) {
+        request_done(id, pdfv1::REQUEST_OUTCOME_CANCELLED);
+        return;
+      }
+      if (!loaded) {
+        request_done(id, pdfv1::REQUEST_OUTCOME_NOT_LOADED);
+        return;
+      }
+      grpc::Status status;
+      if (request.has_parse()) {
+        {
+          const std::lock_guard<std::mutex> lock(mutex_);
+          ++stream_parse_requests_;
+        }
+        pdfv1::ParseRequest parse;
+        *parse.mutable_document() = document();
+        *parse.mutable_families() = request.parse().families();
+        if (request.parse().has_pages()) *parse.mutable_pages() = request.parse().pages();
+        status = parse_to(parse, [&](const pdfv1::ParseResponse& m) {
+          pdfv1::ParseStreamResponse out;
+          out.set_request_id(id);
+          *out.mutable_parse() = m;
+          return stream->Write(out);
+        });
+      } else {
+        pdfv1::RenderRequest render;
+        *render.mutable_document() = document();
+        if (request.render().has_pages()) *render.mutable_pages() = request.render().pages();
+        render.set_dpi(request.render().dpi());
+        render.set_pixel_format(request.render().pixel_format());
+        status = render_to(context, render, [&](const pdfv1::RenderResponse& m) {
+          pdfv1::ParseStreamResponse out;
+          out.set_request_id(id);
+          *out.mutable_render() = m;
+          return stream->Write(out);
+        });
+      }
+      request_done(id, status.ok() ? pdfv1::REQUEST_OUTCOME_OK
+                                   : status.error_code() == grpc::StatusCode::CANCELLED
+                                         ? pdfv1::REQUEST_OUTCOME_CANCELLED
+                                         : pdfv1::REQUEST_OUTCOME_ENGINE_ERROR);
+    };
+    while (stream->Read(&message)) {
+      if (message.has_chunk()) {
+        if (complete || message.chunk().offset() != bytes.size()) {
+          return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, "chunk out of order");
+        }
+        bytes += message.chunk().data();
+        if (!message.chunk().last()) continue;
+        complete = true;
+        {
+          const std::lock_guard<std::mutex> lock(mutex_);
+          stream_bytes_ += bytes.size();
+        }
+        // The open's own parse: the header alone when header_only.
+        pdfv1::ParseRequest parse;
+        *parse.mutable_document() = document();
+        if (open.header_only()) {
+          parse.add_families(pdfv1::PDF_FAMILY_PAGE_INVENTORY);
+          parse.mutable_pages()->set_begin(0xFFFFFFFEu);
+          parse.mutable_pages()->set_end(0xFFFFFFFFu);
+        } else {
+          *parse.mutable_families() = open.families();
+          if (open.has_pages()) *parse.mutable_pages() = open.pages();
+        }
+        parse_to(parse, [&](const pdfv1::ParseResponse& m) {
+          if (m.has_header()) {
+            loaded = m.header().capabilities().load_status() == pdfv1::LOAD_STATUS_OK;
+          } else if (open.header_only()) {
+            return true;
+          }
+          pdfv1::ParseStreamResponse out;
+          out.set_request_id(0);
+          *out.mutable_parse() = m;
+          return stream->Write(out);
+        });
+        request_done(0, pdfv1::REQUEST_OUTCOME_OK);
+        for (const auto& request : waiting) serve(request);
+        waiting.clear();
+      } else if (message.has_parse() || message.has_render()) {
+        if (complete) {
+          serve(message);
+        } else {
+          waiting.push_back(message);
+        }
+      } else if (message.has_cancel()) {
+        if (!message.cancel().has_request_id()) break;
+        cancelled.insert(message.cancel().request_id());
+      }
+    }
+    if (context->IsCancelled()) return grpc::Status::CANCELLED;
+    pdfv1::ParseStreamResponse done;
+    done.mutable_done()->set_bytes_received(bytes.size());
+    stream->Write(done);
+    return grpc::Status::OK;
+  }
+
+  // Serves ParseStream instead of answering UNIMPLEMENTED.
+  void enable_parse_stream() {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    serve_stream_ = true;
+  }
+
+  // ParseStream calls, the document bytes their uploads carried in all, and
+  // the ParsePages requests they served.
+  int stream_opens() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return stream_opens_;
+  }
+  size_t stream_bytes() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return stream_bytes_;
+  }
+  int stream_parse_requests() const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return stream_parse_requests_;
+  }
+
+ private:
+  grpc::Status parse_to(const pdfv1::ParseRequest& request_ref,
+                        const std::function<bool(const pdfv1::ParseResponse&)>& emit) {
+    const pdfv1::ParseRequest* request = &request_ref;
     const auto [status, pages] = load(request->document());
     pdfv1::ParseResponse header;
     auto* caps = header.mutable_header()->mutable_capabilities();
     caps->set_backend_name("fake-pdf-backend");
     caps->set_load_status(status);
     if (status != pdfv1::LOAD_STATUS_OK) {
-      writer->Write(header);
+      emit(header);
       return grpc::Status::OK;
     }
     caps->set_page_count(static_cast<uint32_t>(pages.size()));
@@ -207,7 +403,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
         *info->mutable_crop_box() = *media;
       }
     }
-    writer->Write(header);
+    emit(header);
 
     const uint32_t begin = request->has_pages() ? request->pages().begin() : 0;
     const uint32_t end = request->has_pages() ? request->pages().end()
@@ -231,7 +427,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
           auto* ref = table.mutable_fonts()->add_fonts();
           ref->set_font_id(font->second);
           ref->set_base_name(source.font);
-          writer->Write(table);
+          emit(table);
         }
         auto* cell = chunk.mutable_page()->add_text_cells();
         cell->set_text(source.text);
@@ -243,16 +439,17 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
         cell->set_font_id(font->second);
         cell->set_font_size(source.font_size);
       }
-      writer->Write(chunk);
+      emit(chunk);
     }
     pdfv1::ParseResponse trailer;
     trailer.mutable_trailer();
-    writer->Write(trailer);
+    emit(trailer);
     return grpc::Status::OK;
   }
 
-  grpc::Status Render(grpc::ServerContext* context, const pdfv1::RenderRequest* request,
-                      grpc::ServerWriter<pdfv1::RenderResponse>* writer) override {
+  grpc::Status render_to(grpc::ServerContext* context, const pdfv1::RenderRequest& request_ref,
+                         const std::function<bool(const pdfv1::RenderResponse&)>& emit) {
+    const pdfv1::RenderRequest* request = &request_ref;
     const auto [status, pages] = load(request->document());
     std::chrono::milliseconds stall{0};
     {
@@ -268,7 +465,7 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     if (status != pdfv1::LOAD_STATUS_OK) {
       pdfv1::RenderResponse head;
       head.mutable_head()->set_load_status(status);
-      writer->Write(head);
+      emit(head);
       return grpc::Status::OK;
     }
     const uint32_t begin = request->has_pages() ? request->pages().begin() : 0;
@@ -290,12 +487,11 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
       raster->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
       raster->set_dpi(request->dpi());
       raster->set_pixels(std::string(static_cast<size_t>(width) * height * 3, '\xFF'));
-      writer->Write(message);
+      emit(message);
     }
     return grpc::Status::OK;
   }
 
- private:
   pdfv1::PageSpace page_space() const {
     const std::lock_guard<std::mutex> lock(mutex_);
     return page_space_;
@@ -329,11 +525,16 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
   std::map<std::string, std::vector<FakePdfPage>> by_hash_;
   int render_calls_ = 0;
   int probe_calls_ = 0;
+  std::vector<std::string> probe_upload_hashes_;
   std::chrono::milliseconds render_stall_{0};
   pdfv1::PageSpace page_space_ = pdfv1::PAGE_SPACE_UNSPECIFIED;
   std::set<std::string> blocked_;
   int held_probes_ = 0;
   std::condition_variable probe_changed_;
+  bool serve_stream_ = false;
+  int stream_opens_ = 0;
+  size_t stream_bytes_ = 0;
+  int stream_parse_requests_ = 0;
 };
 
 // Serves a FakePdfBackend on a loopback port and points GRPARSE_PDF_BACKEND

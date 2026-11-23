@@ -28,10 +28,12 @@ std::string fold_word(const std::string& word);
 // that loaded, so target order states raster priority. `opening` says
 // whether the legs' Probes run before this returns or on first use. When
 // every leg fails, a cancel fails as cancelled and a backend outage as
-// PdfBackendUnavailable, not as a bad document.
+// PdfBackendUnavailable, not as a bad document. `precomputed_sha256`, when
+// non-empty, is the hex SHA-256 of `*bytes`, shared by every leg in place of
+// hashing the document here.
 std::shared_ptr<PageSource> open_consensus_pdf_document(
     std::shared_ptr<const std::string> bytes,
     const std::vector<std::string>& targets, double render_dpi,
-    SourceOpening opening = SourceOpening::kNow);
+    SourceOpening opening = SourceOpening::kNow, std::string precomputed_sha256 = {});
 
 }  // namespace grparse

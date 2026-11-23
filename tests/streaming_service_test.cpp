@@ -1,4 +1,5 @@
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <chrono>
 #include <cmath>
@@ -8,12 +9,15 @@
 #include <cstdio>
 #include <cstdlib>
 #include <format>
+#include <fstream>
 #include <functional>
 #include <memory>
 #include <mutex>
 #include <print>
 #include <stdexcept>
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -21,11 +25,22 @@
 #include <utility>
 #include <vector>
 
+#include <malloc.h>
+
+#if defined(__SANITIZE_ADDRESS__)
+// From the sanitizer runtime's allocator interface; declared here because
+// the image toolchain ships the runtime without its headers.
+extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
+#endif
+
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
+#include "../src/parse_support.h"
 #include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
+#include "../src/task_registry.h"
+#include "../src/targets/sha256.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
@@ -34,6 +49,8 @@
 #include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/document_render.h"
+#include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/service_version.h"
 #include "grparse/stream_delta.h"
@@ -115,7 +132,7 @@ class TestServer final {
                       bool remote_services = false)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
-                   [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi) {
+                   [this, digital](std::shared_ptr<const std::string>, bool, double render_dpi, const std::string&) {
                      last_render_dpi_.store(render_dpi);
                      return std::make_shared<FakeSource>(digital);
                    }),
@@ -203,7 +220,7 @@ void verify_wide_page_window_streams_completely() {
 
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
-                                   [pages = kPages](std::shared_ptr<const std::string>, bool, double) {
+                                   [pages = kPages](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::DocumentStreamingService streaming_service(
@@ -377,6 +394,198 @@ void verify_unary_uses_scheduler_and_shared_assembly(TestServer* server) {
           "profiling sample matches the timings total");
 }
 
+// One StreamDocument call, read to the end.
+struct EnvelopeRun {
+  std::vector<pipestream::parse::v1::StreamDocumentResponse> envelopes;
+  grpc::Status status;
+};
+
+EnvelopeRun run_stream_document(pipestream::parse::v1::ParseStreamingService::Stub* client,
+                                const pipestream::parse::v1::StreamDocumentRequest& request,
+                                std::chrono::milliseconds deadline = 20s) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + deadline);
+  auto reader = client->StreamDocument(&context, request);
+  EnvelopeRun run;
+  pipestream::parse::v1::StreamDocumentResponse envelope;
+  while (reader->Read(&envelope)) run.envelopes.push_back(envelope);
+  run.status = reader->Finish();
+  return run;
+}
+
+pipestream::parse::v1::StreamDocumentRequest stream_document_request(
+    const pipestream::parse::v1::ConvertSourceRequest& convert) {
+  pipestream::parse::v1::StreamDocumentRequest request;
+  *request.mutable_request() = convert.request();
+  return request;
+}
+
+// Every envelope echoes the request_id (or carries none when the request
+// set none) and the sequence counts 1, 2, 3, ... with no gap.
+void require_envelope_order(const EnvelopeRun& run, const std::optional<std::string>& request_id,
+                            const std::string& label) {
+  uint64_t expected = 0;
+  for (const auto& envelope : run.envelopes) {
+    ++expected;
+    require(envelope.sequence_number() == expected,
+            label + ": sequence_number " + std::to_string(envelope.sequence_number()) +
+                " where " + std::to_string(expected) + " was due");
+    require(envelope.has_request_id() == request_id.has_value() &&
+                (!request_id.has_value() || envelope.request_id() == *request_id),
+            label + ": every envelope echoes the request_id");
+    require(envelope.timestamp_ms() > 0, label + ": every envelope carries its emit time");
+  }
+}
+
+bool is_status(const pipestream::parse::v1::StreamDocumentResponse& envelope,
+               pipestream::parse::v1::StreamStatus::Phase phase) {
+  return envelope.has_status() && envelope.status().phase() == phase;
+}
+
+// StreamDocument over inline sources: the envelopes run QUEUED, STARTED,
+// then per source PROCESSING and the final_document with its
+// source_result, or an error with a failed source_result, and close with
+// COMPLETED. The final_document is the Document the unary ConvertSource
+// returns for the same bytes and options, and a failed source does not
+// stop the next one.
+void verify_stream_document_inline_sources(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->stub();
+  const auto convert = unary_request();
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  parsev1::ConvertSourceResponse unary;
+  require(server->unary_stub()->ConvertSource(&unary_context, convert, &unary).ok(),
+          "the unary conversion the stream is compared with");
+
+  auto request = stream_document_request(convert);
+  request.set_request_id("req-377");
+  auto* broken = request.mutable_request()->add_sources()->mutable_file();
+  broken->set_filename("broken.png");
+  broken->set_base64_string("%%%%");
+  *request.mutable_request()->add_sources() = convert.request().sources(0);
+
+  const EnvelopeRun run = run_stream_document(client.get(), request);
+  require(run.status.ok(), "StreamDocument finishes OK: " + run.status.error_message());
+  require_envelope_order(run, "req-377", "inline sources");
+  const auto& envelopes = run.envelopes;
+  require(envelopes.size() == 12,
+          "QUEUED, STARTED, three sources of three envelopes, COMPLETED; got " +
+              std::to_string(envelopes.size()));
+  require(is_status(envelopes[0], parsev1::StreamStatus::PHASE_QUEUED) &&
+              !envelopes[0].has_source_index() && envelopes[0].status().num_docs() == 3,
+          "the stream opens QUEUED with the source count");
+  require(is_status(envelopes[1], parsev1::StreamStatus::PHASE_STARTED), "then STARTED");
+  for (uint32_t index = 0; index < 3; ++index) {
+    const auto& processing = envelopes[2 + index * 3];
+    const auto& outcome = envelopes[3 + index * 3];
+    const auto& result = envelopes[4 + index * 3];
+    const std::string label = "sources[" + std::to_string(index) + "]";
+    require(is_status(processing, parsev1::StreamStatus::PHASE_PROCESSING) &&
+                processing.source_index() == index &&
+                processing.status().num_processed() == index,
+            label + " opens with PROCESSING");
+    require(outcome.has_source_index() && outcome.source_index() == index &&
+                result.has_source_result() && result.source_index() == index &&
+                result.source_result().source_index() == index,
+            label + "'s envelopes are scoped to it");
+    if (index == 1) {
+      require(outcome.has_error() && !outcome.error().terminal() &&
+                  outcome.error().code() == parsev1::STREAM_ERROR_CODE_INVALID_ARGUMENT &&
+                  outcome.error().has_failure() &&
+                  outcome.error().failure().category() == parsev1::FAILURE_CATEGORY_POLICY &&
+                  !outcome.error().failure().retryable(),
+              "an undecodable source fails with a typed, classified error");
+      require(!result.source_result().success() && result.source_result().has_error_message() &&
+                  result.source_result().filename() == "broken.png",
+              "its source_result reports the failure");
+      continue;
+    }
+    require(outcome.has_final_document(), label + " streams its final_document");
+    require(same_message(outcome.final_document(), unary.response().document().doc()),
+            label + "'s final_document is the unary ConvertSource Document");
+    require(result.source_result().success() && result.source_result().filename() == "image.png" &&
+                !result.source_result().has_error_message(),
+            label + "'s source_result reports success");
+  }
+  const auto& closing = envelopes.back();
+  require(is_status(closing, parsev1::StreamStatus::PHASE_COMPLETED) &&
+              closing.status().num_processed() == 3 && closing.status().num_succeeded() == 2 &&
+              closing.status().num_failed() == 1 && closing.status().progress_percentage() == 1.0F,
+          "the stream closes COMPLETED with the counts");
+
+  // No source converted: the stream still runs every source and closes
+  // FAILED, OK on the wire; the envelopes carry the failure.
+  parsev1::StreamDocumentRequest failing;
+  *failing.mutable_request()->add_sources()->mutable_file() = *broken;
+  const EnvelopeRun failed = run_stream_document(client.get(), failing);
+  require(failed.status.ok(), "a stream whose every source failed still finishes OK");
+  require_envelope_order(failed, std::nullopt, "failing source");
+  require(failed.envelopes.size() == 6 && failed.envelopes[3].has_error() &&
+              is_status(failed.envelopes.back(), parsev1::StreamStatus::PHASE_FAILED) &&
+              failed.envelopes.back().status().num_failed() == 1,
+          "and closes FAILED");
+}
+
+// What the stream refuses as a whole is refused before any envelope, with
+// the status the unary surface would give.
+void verify_stream_document_refuses_requests(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->stub();
+  const EnvelopeRun empty = run_stream_document(client.get(), {});
+  require(empty.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              empty.envelopes.empty(),
+          "a request without a source is refused without an envelope");
+
+  auto targeted = stream_document_request(unary_request());
+  targeted.mutable_request()->mutable_target()->mutable_zip();
+  const EnvelopeRun target = run_stream_document(client.get(), targeted);
+  require(target.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              target.status.error_message().contains("target") && target.envelopes.empty(),
+          "a delivery target is refused: " + target.status.error_message());
+
+  auto unsupported = stream_document_request(unary_request());
+  unsupported.mutable_request()->mutable_options()->set_ocr_engine(
+      parsev1::OCR_ENGINE_EASYOCR);
+  grpc::ClientContext unary_context;
+  parsev1::ConvertSourceRequest unary;
+  *unary.mutable_request() = unsupported.request();
+  parsev1::ConvertSourceResponse ignored;
+  const grpc::Status unary_status =
+      server->unary_stub()->ConvertSource(&unary_context, unary, &ignored);
+  const EnvelopeRun options = run_stream_document(client.get(), unsupported);
+  require(!options.status.ok() && options.status.error_code() == unary_status.error_code() &&
+              options.envelopes.empty(),
+          "invalid options are refused as ConvertSource refuses them: " +
+              options.status.error_message());
+}
+
+// A client that cancels mid-stream ends the call CANCELLED, and the page
+// work still queued for it is cancelled rather than run.
+void verify_stream_document_cancels_with_the_client() {
+  TestServer server(200ms);
+  auto client = server.stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto reader = client->StreamDocument(&context, stream_document_request(unary_request()));
+  pipestream::parse::v1::StreamDocumentResponse envelope;
+  bool processing = false;
+  while (!processing && reader->Read(&envelope)) {
+    processing = is_status(envelope, pipestream::parse::v1::StreamStatus::PHASE_PROCESSING);
+  }
+  require(processing, "the stream reaches its first source");
+  context.TryCancel();
+  bool final_document = false;
+  while (reader->Read(&envelope)) final_document = final_document || envelope.has_final_document();
+  require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+          "a cancelled StreamDocument ends CANCELLED");
+  require(!final_document, "no final_document follows the cancel");
+  for (int attempt = 0; attempt < 100 && server.metrics().pages_cancelled == 0; ++attempt) {
+    std::this_thread::sleep_for(10ms);
+  }
+  require(server.metrics().pages_cancelled > 0, "the cancel reached the queued page work");
+}
+
 void verify_unsupported_options_are_rejected(TestServer* server) {
   auto client = server->unary_stub();
   auto request = unary_request();
@@ -417,6 +626,47 @@ void verify_unsupported_options_are_rejected(TestServer* server) {
   require(unspecified_status.error_message().contains("OUTPUT_FORMAT_UNSPECIFIED"),
           "the rejection must name the unrenderable format: " +
               unspecified_status.error_message());
+}
+
+void verify_a_calendar_input_is_not_implemented(TestServer* server) {
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  request.mutable_request()->mutable_sources(0)->mutable_file()->set_filename("invite.ics");
+  grpc::ClientContext context;
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              status.error_message().contains("INPUT_FORMAT_CALENDAR"),
+          "a detected calendar input is refused: " + status.error_message());
+
+  // unary_request names image.png but its bytes are the text "memory", so
+  // the sniffed type is text/plain and the detected InputFormat is MD.
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_IMAGE);
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
+  grpc::ClientContext image_only;
+  pipestream::parse::v1::ConvertSourceResponse image_only_response;
+  const grpc::Status image_only_status =
+      client->ConvertSource(&image_only, request, &image_only_response);
+  require(image_only_status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              image_only_status.error_message().contains("INPUT_FORMAT_MD"),
+          "CALENDAR beside IMAGE does not allow the detected markdown bytes: " +
+              image_only_status.error_message());
+
+  request = unary_request();
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_MD);
+  request.mutable_request()->mutable_options()->add_from_formats(
+      pipestream::parse::v1::INPUT_FORMAT_CALENDAR);
+  grpc::ClientContext allowed;
+  pipestream::parse::v1::ConvertSourceResponse allowed_response;
+  const grpc::Status allowed_status =
+      client->ConvertSource(&allowed, request, &allowed_response);
+  require(allowed_status.ok(),
+          "from_formats may name CALENDAR beside the detected format: " +
+              allowed_status.error_message());
 }
 
 // The docling-serve parity options: the export and heading tunings are
@@ -1125,7 +1375,7 @@ void verify_stream_resolves_recognition_options() {
   std::atomic<double> factory_dpi{0.0};
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi) {
+      [&factory_dpi](std::shared_ptr<const std::string>, bool, double render_dpi, const std::string&) {
         factory_dpi.store(render_dpi);
         return std::make_shared<WeakDigitalSource>();
       });
@@ -1577,7 +1827,7 @@ void verify_unary_callback_path_admits_concurrent_conversions() {
   };
   RendezvousRecognizer recognizer(kCalls);
   grparse::PageScheduler scheduler(recognizer, options,
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<SinglePageSource>();
                                    });
   grparse::DocumentParserService service(
@@ -1716,6 +1966,14 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   void set_ocr_recommendation_reasons(std::vector<pdfv1::OcrRecommendationReason> reasons) {
     ocr_recommendation_reasons_ = std::move(reasons);
   }
+  // Holds the folded document and the status trailer back this long after
+  // the info event: an inspector still reading a long document.
+  void set_trailer_delay(std::chrono::milliseconds delay) { trailer_delay_ = delay; }
+  // When the trailer went out (steady clock); the epoch until then.
+  std::chrono::steady_clock::time_point trailer_sent_at() const {
+    std::lock_guard<std::mutex> lock(trailer_mutex_);
+    return trailer_sent_at_;
+  }
 
   grpc::Status ParsePdf(
       grpc::ServerContext*,
@@ -1752,6 +2010,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
         event.Clear();
       }
     }
+    if (trailer_delay_ > 0ms) std::this_thread::sleep_for(trailer_delay_);
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -1805,6 +2064,10 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
     event.Clear();
     event.mutable_status()->set_pages_extracted(searchable_scan_ ? 3 : 0);
     event.mutable_status()->set_has_invisible_text(searchable_scan_);
+    {
+      std::lock_guard<std::mutex> lock(trailer_mutex_);
+      trailer_sent_at_ = std::chrono::steady_clock::now();
+    }
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -1817,6 +2080,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   bool ocr_recommended_ = false;
   std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::atomic<int> dials_{0};
+  std::chrono::milliseconds trailer_delay_{0};
+  mutable std::mutex trailer_mutex_;
+  std::chrono::steady_clock::time_point trailer_sent_at_{};
 };
 
 class FailingPdfInspector final : public pdfv1::PdfParseService::Service {
@@ -1863,7 +2129,7 @@ UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -1928,7 +2194,7 @@ void verify_remote_legs_get_a_per_call_document_id() {
 
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -1987,7 +2253,7 @@ void verify_collector_pages_return_no_scheduler_credit(const std::string& pdf_ta
   HeadOfLineRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, options,
                                    [pages = kPages](std::shared_ptr<const std::string>, bool,
-                                                    double) {
+                                                    double, const std::string&) {
                                      return std::make_shared<WideSource>(pages);
                                    });
   grparse::CollectorTargets targets;
@@ -2071,7 +2337,7 @@ void verify_document_timeout_bounds_the_cv_leg() {
 void verify_inflight_byte_budget() {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
@@ -2217,10 +2483,11 @@ class BudgetedParseServer final {
  public:
   BudgetedParseServer(std::shared_ptr<grparse::InflightBytes> inflight,
                       std::shared_ptr<grparse::RemoteFetchSlots> slots,
-                      std::chrono::milliseconds inference_delay = 0ms)
+                      std::chrono::milliseconds inference_delay = 0ms,
+                      std::optional<grparse::TaskRegistryOptions> tasks = std::nullopt)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
-                   [](std::shared_ptr<const std::string>, bool, double) {
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                      return std::make_shared<FakeSource>();
                    }),
         service_(scheduler_,
@@ -2228,6 +2495,7 @@ class BudgetedParseServer final {
                  grparse::CallExecutor::Options{}, grparse::RepairOptions{}, {}, {},
                  std::move(inflight)) {
     service_.set_remote_fetch_slots(std::move(slots));
+    if (tasks.has_value()) service_.set_task_options(*tasks);
     grpc::ServerBuilder builder;
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
     builder.RegisterService(&service_);
@@ -2253,6 +2521,7 @@ class BudgetedParseServer final {
   }
 
   pipestream::parse::v1::ParseService::Stub& stub() { return *stub_; }
+  grparse::DocumentParserService& service() { return service_; }
 
  private:
   FakeRecognizer recognizer_;
@@ -2441,6 +2710,435 @@ void verify_remote_fetches_wait_for_a_slot() {
   wait_for_charges_returned(*inflight, "every charge is returned");
 }
 
+// A StreamDocument service over a fake CV scheduler, with the budget and
+// fetch slots a test hands it.
+class BudgetedStreamServer final {
+ public:
+  BudgetedStreamServer(std::shared_ptr<grparse::InflightBytes> inflight,
+                       std::shared_ptr<grparse::RemoteFetchSlots> slots)
+      : scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                     return std::make_shared<FakeSource>();
+                   }),
+        service_(scheduler_,
+                 std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+                 grparse::RepairOptions{}, std::move(inflight)) {
+    service_.set_remote_fetch_slots(std::move(slots));
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&service_);
+    server_ = builder.BuildAndStart();
+    require(server_ && port_ != 0, "budgeted stream server failed to start");
+    stub_ = pipestream::parse::v1::ParseStreamingService::NewStub(grpc::CreateChannel(
+        "127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  ~BudgetedStreamServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  pipestream::parse::v1::ParseStreamingService::Stub& stub() { return *stub_; }
+
+ private:
+  FakeRecognizer recognizer_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentStreamingService service_;
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub_;
+};
+
+// StreamDocument fetches a remote source the way ConvertSource does: behind
+// a fetch slot (a call that goes away while it waits never fetches) and
+// charged to the in-flight budget, every charge returned with the call.
+void verify_stream_document_fetches_remote_sources() {
+  RemoteSourceOrigin origin;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+  const auto slots = std::make_shared<grparse::RemoteFetchSlots>(1);
+  BudgetedStreamServer server(inflight, slots);
+  const auto request = stream_document_request(origin.request("/image.png"));
+
+  auto held = slots->acquire([] { return true; });
+  require(held.held(), "the test holds the only fetch slot");
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    auto reader = server.stub().StreamDocument(&context, request);
+    wait_until([&] { return slots->waiting() == 1; }, "the remote source waits for the slot");
+    context.TryCancel();
+    pipestream::parse::v1::StreamDocumentResponse ignored;
+    while (reader->Read(&ignored)) {
+    }
+    require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled stream ends while it waits");
+  }
+  wait_until([&] { return slots->waiting() == 0; }, "the cancelled parse stops waiting");
+  held.reset();
+  require(origin.connections() == 0, "the stream that went away never fetched");
+
+  const EnvelopeRun run = run_stream_document(&server.stub(), request);
+  require(run.status.ok(), "a fetched source streams: " + run.status.error_message());
+  require_envelope_order(run, std::nullopt, "fetched source");
+  require(origin.connections() == 1, "the source was fetched once");
+  const auto final_document =
+      std::ranges::find_if(run.envelopes, [](const auto& envelope) {
+        return envelope.has_final_document();
+      });
+  require(final_document != run.envelopes.end() &&
+              final_document->final_document().texts_size() == 3,
+          "the fetched source's Document streams whole");
+  require(slots->in_use() == 0, "the fetch returned its slot");
+  wait_for_charges_returned(*inflight, "every charge the stream took is returned");
+
+  // A fetched copy past the budget is that source's failure, typed.
+  const auto small = std::make_shared<grparse::InflightBytes>(request.ByteSizeLong() * 3);
+  BudgetedStreamServer tight(small, std::make_shared<grparse::RemoteFetchSlots>(1));
+  const EnvelopeRun refused =
+      run_stream_document(&tight.stub(), stream_document_request(origin.request("/large.png")));
+  require(refused.status.ok(), "the stream reports the refused fetch on its envelopes");
+  const auto error = std::ranges::find_if(
+      refused.envelopes, [](const auto& envelope) { return envelope.has_error(); });
+  require(error != refused.envelopes.end() &&
+              error->error().code() ==
+                  pipestream::parse::v1::STREAM_ERROR_CODE_RESOURCE_EXHAUSTED &&
+              error->error().failure().retryable() &&
+              error->error().message().contains("GRPARSE_MAX_INFLIGHT_BYTES"),
+          "a fetched copy past the budget is a RESOURCE_EXHAUSTED source error");
+  wait_for_charges_returned(*small, "the refused stream returns every charge");
+}
+
+
+pipestream::parse::v1::TaskStatusPollResponse poll_task(pipestream::parse::v1::ParseService::Stub& client,
+                                          const std::string& task_id, double wait_time,
+                                          grpc::Status* status) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::PollTaskStatusRequest request;
+  request.mutable_request()->set_task_id(task_id);
+  request.mutable_request()->set_wait_time(wait_time);
+  pipestream::parse::v1::PollTaskStatusResponse response;
+  *status = client.PollTaskStatus(&context, request, &response);
+  return response.response();
+}
+
+// Polls with a wait until the task is terminal.
+pipestream::parse::v1::TaskStatusPollResponse poll_until_finished(pipestream::parse::v1::ParseService::Stub& client,
+                                                    const std::string& task_id,
+                                                    const std::string& label) {
+  for (int attempt = 0; attempt < 20; ++attempt) {
+    grpc::Status status;
+    const auto polled = poll_task(client, task_id, 5.0, &status);
+    require(status.ok(), label + ": poll failed: " + status.error_message());
+    require(polled.task_id() == task_id, label + ": the poll names its task");
+    if (polled.task_status() == pipestream::parse::v1::TASK_STATUS_SUCCESS ||
+        polled.task_status() == pipestream::parse::v1::TASK_STATUS_FAILURE) {
+      return polled;
+    }
+  }
+  require(false, label + ": the task never finished");
+  return {};
+}
+
+grpc::Status convert_async(pipestream::parse::v1::ParseService::Stub& client,
+                           const pipestream::parse::v1::ConvertDocumentRequest& convert,
+                           pipestream::parse::v1::TaskStatusPollResponse* accepted) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceAsyncRequest request;
+  *request.mutable_request() = convert;
+  pipestream::parse::v1::ConvertSourceAsyncResponse response;
+  const grpc::Status status = client.ConvertSourceAsync(&context, request, &response);
+  *accepted = response.response();
+  return status;
+}
+
+grpc::Status convert_result(pipestream::parse::v1::ParseService::Stub& client, const std::string& task_id,
+                            pipestream::parse::v1::ConvertDocumentResponse* result) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::GetConvertResultRequest request;
+  request.mutable_request()->set_task_id(task_id);
+  pipestream::parse::v1::GetConvertResultResponse response;
+  const grpc::Status status = client.GetConvertResult(&context, request, &response);
+  *result = response.response();
+  return status;
+}
+
+// What two conversions of the same bytes and options share: everything
+// but the wall-clock fields.
+void require_same_conversion(pipestream::parse::v1::ConvertDocumentResponse a,
+                             pipestream::parse::v1::ConvertDocumentResponse b, const std::string& label) {
+  for (auto* response : {&a, &b}) {
+    response->clear_processing_time();
+    response->clear_timings();
+    response->clear_profiling();
+  }
+  require(same_message(a, b), label);
+}
+
+// Submit, poll, fetch: ConvertSourceAsync answers at once with a pending
+// task, PollTaskStatus follows it to SUCCESS, and GetConvertResult returns
+// what the unary ConvertSource returns for the same bytes and options. The
+// result stays readable until cleared, an unknown id is NOT_FOUND, and the
+// other kind's result RPC is refused.
+void verify_convert_task_matches_the_unary_conversion(TestServer* server) {
+  auto client = server->unary_stub();
+  const auto request = unary_request();
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse unary;
+  require(client->ConvertSource(&unary_context, request, &unary).ok(), "the unary conversion");
+
+  pipestream::parse::v1::TaskStatusPollResponse accepted;
+  const grpc::Status submitted = convert_async(*client, request.request(), &accepted);
+  require(submitted.ok(), "ConvertSourceAsync accepts the request: " + submitted.error_message());
+  require(!accepted.task_id().empty() && accepted.task_kind() == pipestream::parse::v1::TASK_TYPE_CONVERT &&
+              accepted.task_type() == "convert" &&
+              accepted.task_status() == pipestream::parse::v1::TASK_STATUS_PENDING &&
+              accepted.has_task_position() && accepted.task_meta().num_docs() == 1,
+          "the submission answers with the pending task");
+  const auto finished = poll_until_finished(*client, accepted.task_id(), "convert task");
+  require(finished.task_status() == pipestream::parse::v1::TASK_STATUS_SUCCESS &&
+              finished.task_meta().num_succeeded() == 1 && !finished.has_failure(),
+          "the task succeeds: " + finished.error_message());
+  for (int read = 0; read < 2; ++read) {
+    pipestream::parse::v1::ConvertDocumentResponse result;
+    const grpc::Status fetched = convert_result(*client, accepted.task_id(), &result);
+    require(fetched.ok(), "GetConvertResult returns the result: " + fetched.error_message());
+    require_same_conversion(result, unary.response(),
+                            "the task's result is the unary ConvertSource response");
+  }
+
+  grpc::ClientContext chunk_context;
+  pipestream::parse::v1::GetChunkResultRequest chunk_request;
+  chunk_request.mutable_request()->set_task_id(accepted.task_id());
+  pipestream::parse::v1::GetChunkResultResponse chunk_response;
+  const grpc::Status wrong_kind = client->GetChunkResult(&chunk_context, chunk_request, &chunk_response);
+  require(wrong_kind.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+              wrong_kind.error_message().contains("GetConvertResult"),
+          "a convert task's result is not a chunk result");
+
+  grpc::Status unknown;
+  poll_task(*client, "no-such-task", 0, &unknown);
+  require(unknown.error_code() == grpc::StatusCode::NOT_FOUND, "an unknown task id is NOT_FOUND");
+
+  grpc::ClientContext converters_context;
+  pipestream::parse::v1::ClearConvertersResponse converters;
+  require(client->ClearConverters(&converters_context, {}, &converters).ok() &&
+              converters.response().status() == "ok",
+          "ClearConverters acknowledges");
+  grpc::ClientContext clear_context;
+  pipestream::parse::v1::ClearResultsRequest clear;
+  clear.set_older_than(0);
+  pipestream::parse::v1::ClearResultsResponse cleared;
+  require(client->ClearResults(&clear_context, clear, &cleared).ok() &&
+              cleared.response().status() == "ok",
+          "ClearResults acknowledges");
+  grpc::Status gone;
+  poll_task(*client, accepted.task_id(), 0, &gone);
+  require(gone.error_code() == grpc::StatusCode::NOT_FOUND,
+          "a cleared task is gone: " + gone.error_message());
+
+  // A source that cannot be parsed fails the task, typed and classified;
+  // its result RPC answers with that failure.
+  auto broken = request.request();
+  broken.mutable_sources(0)->mutable_file()->set_base64_string("%%%%");
+  require(convert_async(*client, broken, &accepted).ok(), "the broken source is accepted");
+  const auto failed = poll_until_finished(*client, accepted.task_id(), "broken task");
+  require(failed.task_status() == pipestream::parse::v1::TASK_STATUS_FAILURE && failed.has_error_message() &&
+              failed.has_failure() &&
+              failed.failure().category() == pipestream::parse::v1::FAILURE_CATEGORY_POLICY &&
+              failed.task_meta().num_failed() == 1,
+          "the broken source fails its task");
+  pipestream::parse::v1::ConvertDocumentResponse none;
+  require(convert_result(*client, accepted.task_id(), &none).error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT,
+          "the failed task's result is its failure");
+
+  // What the synchronous RPC refuses before parsing, the async one refuses
+  // before registering a task.
+  auto two = request.request();
+  *two.add_sources() = two.sources(0);
+  require(convert_async(*client, two, &accepted).error_code() ==
+              grpc::StatusCode::INVALID_ARGUMENT,
+          "two sources are refused at submission");
+}
+
+// WatchConvertSource submits and streams every status the task takes, in
+// order and each once, closing OK after the terminal one; the chunk
+// watchers do the same, and their results are the synchronous chunk RPCs'
+// chunks. ConvertSourceStream answers with one message, the unary result.
+void verify_watch_streams_the_task_to_its_end(TestServer* server) {
+  auto client = server->unary_stub();
+  const auto request = unary_request();
+
+  const auto check_statuses = [](const std::vector<pipestream::parse::v1::TaskStatusPollResponse>& statuses,
+                                 const grpc::Status& status, const std::string& label) {
+    require(status.ok(), label + ": the watch closes OK: " + status.error_message());
+    require(!statuses.empty() &&
+                statuses.back().task_status() == pipestream::parse::v1::TASK_STATUS_SUCCESS,
+            label + ": the watch ends with SUCCESS");
+    int last = 0;
+    for (const auto& status_message : statuses) {
+      require(status_message.task_id() == statuses.front().task_id(),
+              label + ": every status names the one task");
+      const int rank = status_message.task_status();
+      require(rank > last, label + ": statuses arrive in order, each once");
+      last = rank;
+    }
+    return statuses.back().task_id();
+  };
+
+  grpc::ClientContext watch_context;
+  watch_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::WatchConvertSourceRequest watch;
+  *watch.mutable_request() = request.request();
+  auto reader = client->WatchConvertSource(&watch_context, watch);
+  std::vector<pipestream::parse::v1::TaskStatusPollResponse> statuses;
+  pipestream::parse::v1::WatchConvertSourceResponse message;
+  while (reader->Read(&message)) statuses.push_back(message.response());
+  const std::string task_id = check_statuses(statuses, reader->Finish(), "WatchConvertSource");
+  pipestream::parse::v1::ConvertDocumentResponse watched;
+  require(convert_result(*client, task_id, &watched).ok(), "the watched task's result");
+
+  grpc::ClientContext stream_context;
+  stream_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::ConvertSourceStreamRequest stream_request;
+  *stream_request.mutable_request() = request.request();
+  auto stream = client->ConvertSourceStream(&stream_context, stream_request);
+  std::vector<pipestream::parse::v1::ConvertSourceStreamResponse> streamed;
+  pipestream::parse::v1::ConvertSourceStreamResponse streamed_message;
+  while (stream->Read(&streamed_message)) streamed.push_back(streamed_message);
+  const grpc::Status stream_status = stream->Finish();
+  require(stream_status.ok() && streamed.size() == 1,
+          "ConvertSourceStream answers with one message: " + stream_status.error_message());
+  require_same_conversion(streamed.front().response(), watched,
+                          "ConvertSourceStream's message is the conversion the task stored");
+
+  grpc::ClientContext sync_context;
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest sync;
+  *sync.mutable_request()->mutable_sources() = request.request().sources();
+  pipestream::parse::v1::ChunkHierarchicalSourceResponse sync_response;
+  require(client->ChunkHierarchicalSource(&sync_context, sync, &sync_response).ok(),
+          "the synchronous hierarchical chunks");
+  grpc::ClientContext hierarchical_context;
+  hierarchical_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::WatchChunkHierarchicalSourceRequest hierarchical;
+  *hierarchical.mutable_request() = sync.request();
+  auto hierarchical_reader = client->WatchChunkHierarchicalSource(&hierarchical_context, hierarchical);
+  statuses.clear();
+  pipestream::parse::v1::WatchChunkHierarchicalSourceResponse hierarchical_message;
+  while (hierarchical_reader->Read(&hierarchical_message)) {
+    statuses.push_back(hierarchical_message.response());
+  }
+  const std::string chunk_task =
+      check_statuses(statuses, hierarchical_reader->Finish(), "WatchChunkHierarchicalSource");
+  require(statuses.back().task_kind() == pipestream::parse::v1::TASK_TYPE_CHUNK, "a chunk task");
+  grpc::ClientContext result_context;
+  pipestream::parse::v1::GetChunkResultRequest result_request;
+  result_request.mutable_request()->set_task_id(chunk_task);
+  pipestream::parse::v1::GetChunkResultResponse result;
+  require(client->GetChunkResult(&result_context, result_request, &result).ok(),
+          "the chunk task's result");
+  require(result.response().chunks_size() == sync_response.response().chunks_size() &&
+              result.response().chunks_size() > 0,
+          "the chunk task returns the synchronous RPC's chunks");
+  for (int index = 0; index < result.response().chunks_size(); ++index) {
+    require(same_message(result.response().chunks(index), sync_response.response().chunks(index)),
+            "chunk " + std::to_string(index) + " matches the synchronous RPC");
+  }
+
+  grpc::ClientContext hybrid_context;
+  hybrid_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::WatchChunkHybridSourceRequest hybrid;
+  *hybrid.mutable_request()->mutable_sources() = request.request().sources();
+  hybrid.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
+  auto hybrid_reader = client->WatchChunkHybridSource(&hybrid_context, hybrid);
+  statuses.clear();
+  pipestream::parse::v1::WatchChunkHybridSourceResponse hybrid_message;
+  while (hybrid_reader->Read(&hybrid_message)) statuses.push_back(hybrid_message.response());
+  check_statuses(statuses, hybrid_reader->Finish(), "WatchChunkHybridSource");
+
+  // The hybrid budget is checked at submission, as the synchronous RPC
+  // checks it before parsing.
+  grpc::ClientContext refused_context;
+  pipestream::parse::v1::ChunkHybridSourceAsyncRequest refused;
+  *refused.mutable_request()->mutable_sources() = request.request().sources();
+  pipestream::parse::v1::ChunkHybridSourceAsyncResponse refused_response;
+  require(client->ChunkHybridSourceAsync(&refused_context, refused, &refused_response)
+                  .error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+          "a hybrid task without max_tokens is refused at submission");
+}
+
+// The registry's bounds: past GRPARSE_MAX_TASKS a submission is refused
+// naming it, past GRPARSE_MAX_WATCHERS a watch is, and a finished task's
+// stored result is charged to the in-flight budget until its TTL passes,
+// when it expires and the budget is whole again.
+void verify_task_registry_bounds() {
+  const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+  grparse::TaskRegistryOptions options;
+  options.max_tasks = 1;
+  options.max_watchers = 1;
+  options.result_ttl = 1000ms;
+  BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4), 400ms,
+                             options);
+  auto& client = server.stub();
+  const auto request = unary_request();
+
+  pipestream::parse::v1::TaskStatusPollResponse first;
+  require(convert_async(client, request.request(), &first).ok(), "the first task is accepted");
+  pipestream::parse::v1::TaskStatusPollResponse second;
+  const grpc::Status full = convert_async(client, request.request(), &second);
+  require(full.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              full.error_message().contains("GRPARSE_MAX_TASKS"),
+          "a task past the cap is refused naming GRPARSE_MAX_TASKS: " + full.error_message());
+
+  // One waiting poll is the one watcher; a watch beside it is refused.
+  grpc::Status waited;
+  std::thread waiter([&] { poll_task(client, first.task_id(), 20.0, &waited); });
+  wait_until([&] { return server.service().tasks().watchers() == 1; }, "the poll waits");
+  grpc::ClientContext watch_context;
+  pipestream::parse::v1::WatchConvertSourceRequest watch;
+  *watch.mutable_request() = request.request();
+  auto reader = client.WatchConvertSource(&watch_context, watch);
+  pipestream::parse::v1::WatchConvertSourceResponse ignored;
+  while (reader->Read(&ignored)) {
+  }
+  const grpc::Status watch_status = reader->Finish();
+  require(watch_status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "a submission past the task cap fails the watch too: " + watch_status.error_message());
+  waiter.join();
+  require(waited.ok(), "the waiting poll answers when the task ends");
+
+  const auto finished = poll_until_finished(client, first.task_id(), "bounded task");
+  require(finished.task_status() == pipestream::parse::v1::TASK_STATUS_SUCCESS, "the bounded task succeeds");
+  require(inflight->in_use() > 0, "the stored result is charged to the in-flight budget");
+  wait_until([&] { return inflight->in_use() == 0; },
+             "the result expires after its TTL and returns its charge");
+  grpc::Status expired;
+  poll_task(client, first.task_id(), 0, &expired);
+  require(expired.error_code() == grpc::StatusCode::NOT_FOUND, "an expired task is NOT_FOUND");
+  require(convert_async(client, request.request(), &second).ok(),
+          "the expired task freed its place");
+  poll_until_finished(client, second.task_id(), "the next task");
+
+  // The watcher cap, with a watch already open on a running task.
+  require(server.service().tasks().watchers() == 0, "no watcher left");
+  grparse::TaskRegistry registry(options, inflight);
+  const auto created = registry.create(pipestream::parse::v1::TASK_TYPE_CONVERT);
+  require(created.has_value(), "a registry task");
+  const auto watched = registry.watch(created->task_id(), [](const auto&) {});
+  require(watched.has_value(), "the first watcher subscribes");
+  const auto refused = registry.watch(created->task_id(), [](const auto&) {});
+  require(!refused.has_value() &&
+              refused.error().error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              refused.error().error_message().contains("GRPARSE_MAX_WATCHERS"),
+          "a watcher past the cap is refused naming GRPARSE_MAX_WATCHERS");
+  registry.unwatch(watched->token);
+  require(registry.watchers() == 0, "unwatch removes the subscription");
+}
+
 // The chunk RPCs have nowhere to report a delivery, so a target is refused
 // rather than skipped; and a collector that failed beside a surviving one
 // shows up even when the converted document was not asked for.
@@ -2502,19 +3200,21 @@ struct StreamPdfRun {
   grpc::Status status;
   std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
   int recognizer_calls = 0;
+  // DocumentStreamingService::folded_page_events once the stream ended.
+  uint64_t folded_page_events = 0;
 };
 
 StreamPdfRun run_stream_pdf(
     const std::string& pdf_target, bool capture_page_images = false,
     const std::string& pdf_bytes = "%PDF-in-memory",
     const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {},
-    bool slim_collector_documents = false) {
+    bool slim_collector_documents = false, std::optional<bool> repair_delta = std::nullopt) {
   FakeRecognizer recognizer;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -2539,6 +3239,7 @@ StreamPdfRun run_stream_pdf(
   chunk.set_data(pdf_bytes);
   chunk.set_complete(true);
   if (slim_collector_documents) chunk.set_slim_collector_documents(true);
+  if (repair_delta.has_value()) chunk.set_repair_delta(*repair_delta);
   require(stream->Write(chunk), "pdf routing client could not write the source chunk");
   stream->WritesDone();
   StreamPdfRun run;
@@ -2551,6 +3252,7 @@ StreamPdfRun run_stream_pdf(
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
   run.recognizer_calls = recognizer.calls.load();
+  run.folded_page_events = streaming_service.folded_page_events();
   return run;
 }
 
@@ -2567,7 +3269,7 @@ void verify_stream_charge_follows_the_bytes() {
     FakeRecognizer recognizer;
     grparse::PageScheduler scheduler(
         recognizer, {2, 3, 2, 3, 2, 2, 2},
-        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double) {
+        [&held_mutex, &held](std::shared_ptr<const std::string> bytes, bool, double, const std::string&) {
           const std::lock_guard<std::mutex> lock(held_mutex);
           held = std::move(bytes);
           return std::make_shared<FakeSource>();
@@ -2621,8 +3323,9 @@ class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
     received_.store(true);
     const auto ceiling = std::chrono::steady_clock::now() + 5s;
     while (!context->IsCancelled() && std::chrono::steady_clock::now() < ceiling) {
-      std::this_thread::sleep_for(5ms);
+      std::this_thread::sleep_for(1ms);
     }
+    cancelled_at_.store(std::chrono::steady_clock::now());
     cancelled_.store(context->IsCancelled());
     finished_.store(true);
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until cancelled");
@@ -2631,11 +3334,14 @@ class HangingPdfInspector final : public pdfv1::PdfParseService::Service {
   bool received() const { return received_.load(); }
   bool cancelled() const { return cancelled_.load(); }
   bool finished() const { return finished_.load(); }
+  // When the call saw its cancel, to within the 1 ms poll above.
+  std::chrono::steady_clock::time_point cancelled_at() const { return cancelled_at_.load(); }
 
  private:
   std::atomic<bool> received_{false};
   std::atomic<bool> cancelled_{false};
   std::atomic<bool> finished_{false};
+  std::atomic<std::chrono::steady_clock::time_point> cancelled_at_{};
 };
 
 // Waits up to `limit` for `condition`, polling.
@@ -2650,13 +3356,16 @@ bool wait_for(Condition condition, std::chrono::milliseconds limit) {
 
 // A client that cancels mid-classification cancels the pdf routing leg's
 // own call too, like every other remote leg, instead of leaving it to run
-// to the call's deadline.
+// to the call's deadline. The cancel is pushed from the reactor's OnCancel,
+// so the inspector sees it within a couple of loopback round trips; the
+// 100 ms CancelWatch poll it replaced would miss the bound three times in
+// four.
 void verify_streaming_pdf_router_cancels_with_the_client() {
   HangingPdfInspector inspector;
   PdfInspectorServer inspector_server(&inspector);
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<RoutableDigitalSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -2684,6 +3393,7 @@ void verify_streaming_pdf_router_cancels_with_the_client() {
   stream->WritesDone();
   require(wait_for([&inspector] { return inspector.received(); }, 5000ms),
           "the routing leg reaches the inspector");
+  const auto cancelled_at = std::chrono::steady_clock::now();
   context.TryCancel();
   pipestream::parse::v1::DocumentStreamEvent ignored;
   while (stream->Read(&ignored)) {
@@ -2692,8 +3402,343 @@ void verify_streaming_pdf_router_cancels_with_the_client() {
   require(wait_for([&inspector] { return inspector.finished(); }, 6000ms),
           "the inspector call ends");
   require(inspector.cancelled(), "the routing leg's own call is cancelled with the client");
+  const auto latency = std::chrono::duration_cast<std::chrono::milliseconds>(
+      inspector.cancelled_at() - cancelled_at);
+  std::println("pdf router cancel: the inspector saw it {} ms after the client", latency.count());
+  require(latency < 25ms, "the cancel reaches the routing leg pushed, not polled: " +
+                              std::to_string(latency.count()) + " ms");
   server->Shutdown(std::chrono::system_clock::now() + 2s);
   server->Wait();
+}
+
+// Holds every ParsePdf call until released, then fails it, so the routing
+// leg falls back to the CV path and the stream still completes.
+class GatedPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext* context,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    ++received_;
+    arrived_.notify_all();
+    released_cv_.wait_for(lock, 10s, [this, context] { return released_ || context->IsCancelled(); });
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "held until released");
+  }
+
+  bool wait_received(int count, std::chrono::milliseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return arrived_.wait_for(lock, limit, [this, count] { return received_ >= count; });
+  }
+
+  void release() {
+    {
+      std::lock_guard<std::mutex> lock(mutex_);
+      released_ = true;
+    }
+    released_cv_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable arrived_;
+  std::condition_variable released_cv_;
+  int received_ = 0;
+  bool released_ = false;
+};
+
+pipestream::parse::v1::DocumentChunk routed_pdf_chunk(const std::string& id) {
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id(id);
+  chunk.set_filename(id + ".pdf");
+  chunk.set_content_type("application/pdf");
+  chunk.set_data("%PDF-in-memory");
+  chunk.set_complete(true);
+  return chunk;
+}
+
+// GRPARSE_MAX_ACTIVE_STREAMS counts open streams server wide: with the cap
+// held by streams waiting on a slow collector, one more stream finishes
+// RESOURCE_EXHAUSTED naming the variable, and the held ones still complete.
+void verify_stream_admission_cap() {
+  GatedPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<RoutableDigitalSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  grparse::StreamingLimits limits;
+  limits.max_active_streams = 2;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets), grparse::RepairOptions{},
+      {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "admission stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  struct Held {
+    grpc::ClientContext context;
+    std::unique_ptr<grpc::ClientReaderWriter<pipestream::parse::v1::DocumentChunk,
+                                             pipestream::parse::v1::DocumentStreamEvent>>
+        stream;
+  };
+  std::array<Held, 2> held;
+  for (size_t index = 0; index < held.size(); ++index) {
+    held[index].context.set_deadline(std::chrono::system_clock::now() + 30s);
+    held[index].stream = client->StreamProcessDocument(&held[index].context);
+    require(held[index].stream->Write(routed_pdf_chunk("held-" + std::to_string(index))),
+            "a held stream could not write its chunk");
+    held[index].stream->WritesDone();
+  }
+  require(inspector.wait_received(2, 5000ms), "both admitted streams reach the inspector");
+  require(streaming_service.active_streams() == 2, "both streams hold a slot");
+
+  grpc::ClientContext refused_context;
+  refused_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto refused = client->StreamProcessDocument(&refused_context);
+  refused->Write(routed_pdf_chunk("refused"));
+  refused->WritesDone();
+  pipestream::parse::v1::DocumentStreamEvent event;
+  int refused_events = 0;
+  while (refused->Read(&event)) ++refused_events;
+  const grpc::Status refused_status = refused->Finish();
+  require(refused_status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED,
+          "the stream past the cap is refused: " + refused_status.error_message());
+  require(refused_status.error_message().find("GRPARSE_MAX_ACTIVE_STREAMS") != std::string::npos,
+          "the refusal names the cap: " + refused_status.error_message());
+  require(refused_events == 0, "a refused stream emits nothing");
+
+  inspector.release();
+  for (auto& stream : held) {
+    bool complete = false;
+    while (stream.stream->Read(&event)) {
+      if (event.has_complete()) complete = true;
+    }
+    const grpc::Status status = stream.stream->Finish();
+    require(status.ok(), "an admitted stream completes: " + status.error_message());
+    require(complete, "an admitted stream ends with its complete event");
+  }
+  require(wait_for([&streaming_service] { return streaming_service.active_streams() == 0; },
+                   5000ms),
+          "finished streams return their slots");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// A leg the full stream queue refuses fails that collector alone: with one
+// worker (running the plan) and a queue of one (taken by the first leg),
+// the second leg is a capacity failure on the complete event while the
+// first leg's Document still arrives.
+void verify_refused_leg_is_a_capacity_failure() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::StreamingLimits limits;
+  limits.executor.workers = 1;
+  limits.executor.queue_capacity = 1;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::RepairOptions{}, {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "capacity stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("capacity");
+  source.set_filename("page.bin");
+  source.set_content_type(grparse::kConfluenceStorageMimetype);
+  source.set_data(kStorageBody);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+  source.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+  source.set_complete(true);
+  const StreamRun run = run_chunks(client.get(), {source});
+  require(run.status.ok(), "one refused leg does not fail the parse: " + run.status.error_message());
+  bool storage_document = false;
+  for (const auto& event : run.events) {
+    if (event.has_collector_document() &&
+        event.collector_document().collector() == pipestream::parse::v1::COLLECTOR_CONFLUENCE) {
+      storage_document = true;
+    }
+  }
+  require(storage_document, "the admitted leg's Document still arrives");
+  require(!run.events.empty() && run.events.back().has_complete(), "the stream completes");
+  const auto& failures = run.events.back().complete().collector_failures();
+  require(failures.size() == 1 &&
+              failures[0].collector() == pipestream::parse::v1::COLLECTOR_EMAIL,
+          "the refused leg is the one failure");
+  require(failures[0].category() == pipestream::parse::v1::FAILURE_CATEGORY_CAPACITY,
+          "a refused leg is a capacity failure");
+  require(failures[0].error().find("GRPARSE_STREAM_QUEUE") != std::string::npos,
+          "the failure names the queue: " + failures[0].error());
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// Threads this process runs now, from /proc/self/status.
+size_t process_threads() {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.starts_with("Threads:")) return std::stoul(line.substr(8));
+  }
+  return 0;
+}
+
+// Holds each ParseEmail call a little, then fails it, so many legs overlap.
+class SlowEmailService final : public ai::pipestream::email::v1::EmailParseService::Service {
+ public:
+  grpc::Status ParseEmail(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::email::v1::ParseEmailResponse,
+                               ai::pipestream::email::v1::ParseEmailRequest>* stream) override {
+    ai::pipestream::email::v1::ParseEmailRequest request;
+    while (stream->Read(&request)) {
+    }
+    calls.fetch_add(1);
+    std::this_thread::sleep_for(100ms);
+    return grpc::Status(grpc::StatusCode::UNAVAILABLE, "slow email fake");
+  }
+
+  std::atomic<int> calls{0};
+};
+
+// The threads a stream costs come out of the stream pool, not the OS: 100
+// streams open at once, each with an in-process leg and a remote leg (an
+// upload thread, a pushed cancel registration, no watch thread), never
+// raise the thread count past the pool's own workers plus one upload per
+// running leg and a fixed allowance for gRPC's own threads. The detached
+// design this replaced ran 100 x 4 threads here.
+void verify_stream_threads_stay_bounded_under_load() {
+  SlowEmailService email;
+  grpc::ServerBuilder email_builder;
+  int email_port = 0;
+  email_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &email_port);
+  email_builder.RegisterService(&email);
+  auto email_server = email_builder.BuildAndStart();
+  require(email_server && email_port != 0, "slow email collector failed to start");
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.email = "127.0.0.1:" + std::to_string(email_port);
+  constexpr size_t kStreams = 100;
+  constexpr size_t kWorkers = 8;
+  grparse::StreamingLimits limits;
+  limits.max_active_streams = kStreams;
+  limits.executor.workers = kWorkers;
+  limits.executor.queue_capacity = 4 * kStreams;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets), grparse::RepairOptions{},
+      {}, {}, limits);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "load stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  // Warm the channels and gRPC's pools before taking the baseline.
+  {
+    pipestream::parse::v1::DocumentChunk warm;
+    warm.set_document_id("warm");
+    warm.set_filename("page.bin");
+    warm.set_content_type(grparse::kConfluenceStorageMimetype);
+    warm.set_data(kStorageBody);
+    warm.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+    warm.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    warm.set_complete(true);
+    require(run_chunks(client.get(), {warm}).status.ok(), "the warm-up stream completes");
+  }
+  const size_t baseline = process_threads();
+  require(baseline > 0, "the thread count is readable");
+  std::atomic<bool> sampling{true};
+  std::atomic<size_t> peak{baseline};
+  std::thread sampler([&sampling, &peak] {
+    while (sampling.load()) {
+      const size_t now = process_threads();
+      size_t seen = peak.load();
+      while (now > seen && !peak.compare_exchange_weak(seen, now)) {
+      }
+      std::this_thread::sleep_for(2ms);
+    }
+  });
+  struct Open {
+    grpc::ClientContext context;
+    std::unique_ptr<grpc::ClientReaderWriter<pipestream::parse::v1::DocumentChunk,
+                                             pipestream::parse::v1::DocumentStreamEvent>>
+        stream;
+  };
+  std::vector<std::unique_ptr<Open>> streams;
+  for (size_t index = 0; index < kStreams; ++index) {
+    auto open = std::make_unique<Open>();
+    open->context.set_deadline(std::chrono::system_clock::now() + 60s);
+    open->stream = client->StreamProcessDocument(&open->context);
+    pipestream::parse::v1::DocumentChunk source;
+    source.set_document_id("load-" + std::to_string(index));
+    source.set_filename("page.bin");
+    source.set_content_type(grparse::kConfluenceStorageMimetype);
+    source.set_data(kStorageBody);
+    source.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+    source.add_collectors(pipestream::parse::v1::COLLECTOR_EMAIL);
+    source.set_complete(true);
+    require(open->stream->Write(source), "a load stream could not write its chunk");
+    open->stream->WritesDone();
+    streams.push_back(std::move(open));
+  }
+  require(wait_for([&email] { return email.calls.load() >= static_cast<int>(kWorkers); },
+                   10000ms),
+          "the remote legs run");
+  size_t completed = 0;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  for (auto& open : streams) {
+    bool complete = false;
+    while (open->stream->Read(&event)) {
+      if (event.has_complete()) complete = true;
+    }
+    const grpc::Status status = open->stream->Finish();
+    require(status.ok(), "a load stream completes: " + status.error_message());
+    if (complete) ++completed;
+  }
+  sampling.store(false);
+  sampler.join();
+  require(completed == kStreams, "every load stream ends with its complete event");
+  require(email.calls.load() == static_cast<int>(kStreams + 1), "every remote leg ran");
+  // The stream workers already run in the baseline; what may grow is one
+  // upload thread per running remote leg (at most kWorkers), the email
+  // fake's per-call server threads (at most kWorkers more) and gRPC's own
+  // pools.
+  constexpr size_t kGrpcAllowance = 32;
+  const size_t ceiling = baseline + 2 * kWorkers + kGrpcAllowance;
+  std::println("stream load: {} streams, thread peak {} over a baseline of {} (ceiling {})",
+               kStreams, peak.load(), baseline, ceiling);
+  require(peak.load() <= ceiling, "threads stayed bounded under load: peak " +
+                                      std::to_string(peak.load()) + ", baseline " +
+                                      std::to_string(baseline) + ", ceiling " +
+                                      std::to_string(ceiling));
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  email_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  email_server->Wait();
 }
 
 void verify_pdf_fast_path_skips_the_cv_pipeline() {
@@ -2773,6 +3818,46 @@ void verify_streaming_pdf_ocr_recommendation_takes_the_cv_path() {
   for (const auto& event : run.events) {
     require(!event.has_collector_document(),
             "the streamed leg does not deliver the fold as the fast-path result");
+  }
+}
+
+// An info event that recommends OCR for the whole document settles the
+// route before the inspector reads on: the CV run starts at once, so its
+// first page reaches the client while the inspector still holds its
+// trailer back, and the terminal event still waits for that trailer.
+void verify_streaming_forced_ocr_starts_before_the_inspector_trailer() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  inspector.set_ocr_recommended(true);
+  inspector.set_trailer_delay(1s);
+  PdfInspectorServer inspector_server(&inspector);
+  std::optional<std::chrono::steady_clock::time_point> first_page_at;
+  std::optional<std::chrono::steady_clock::time_point> complete_at;
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), false, "%PDF-in-memory",
+      [&first_page_at, &complete_at](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && !first_page_at.has_value()) {
+          first_page_at = std::chrono::steady_clock::now();
+        }
+        if (event.has_complete()) complete_at = std::chrono::steady_clock::now();
+      });
+  require(run.status.ok(), "early forced-OCR stream failed: " + run.status.error_message());
+  require(run.recognizer_calls == 3,
+          "the early CV run still recognizes every page, got " +
+              std::to_string(run.recognizer_calls));
+  const auto trailer_at = inspector.trailer_sent_at();
+  require(first_page_at.has_value() && trailer_at != std::chrono::steady_clock::time_point{},
+          "the stream delivered a page and the inspector sent its trailer");
+  require(*first_page_at < trailer_at,
+          "the first CV page arrives before the inspector's trailer, " +
+              std::to_string(std::chrono::duration_cast<std::chrono::milliseconds>(
+                                 trailer_at - *first_page_at)
+                                 .count()) +
+              " ms ahead");
+  require(complete_at.has_value() && *complete_at >= trailer_at,
+          "the complete event waits for the inspector to drain");
+  for (const auto& event : run.events) {
+    require(!event.has_collector_document(),
+            "the early route never delivers the fold as the fast-path result");
   }
 }
 
@@ -2917,7 +4002,7 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   GateRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       });
   grparse::CollectorTargets targets;
@@ -3053,6 +4138,242 @@ void verify_streaming_pdf_fast_path_projects_pages() {
   require(run.events.at(3).has_complete(), "the stream closes with the complete event");
 }
 
+// One "<field>: <n> kB" line of /proc/self/status, in bytes.
+[[maybe_unused]] uint64_t proc_status_bytes(std::string_view field) {
+  std::ifstream status("/proc/self/status");
+  std::string line;
+  while (std::getline(status, line)) {
+    if (line.size() > field.size() && line.starts_with(field) && line[field.size()] == ':') {
+      return std::stoull(line.substr(field.size() + 1)) * 1024U;
+    }
+  }
+  throw std::runtime_error("no " + std::string(field) + " line in /proc/self/status");
+}
+
+// Resets VmHWM to the current resident set (clear_refs value 5, proc(5)),
+// so the peak read later belongs to what ran after this call and not to an
+// earlier case in the same process.
+[[maybe_unused]] void reset_peak_rss() {
+  std::ofstream clear_refs("/proc/self/clear_refs");
+  clear_refs << "5";
+  clear_refs.flush();
+  require(clear_refs.good(), "could not reset the peak RSS through /proc/self/clear_refs");
+}
+
+constexpr std::size_t kLargePictureImageBytes = 4U << 20U;
+constexpr int kLargePictureTexts = 2000;
+
+// A collector Document dominated by one picture: a 4 MiB data URI on its
+// PictureItem.image beside 2,000 short texts. Nothing is placed on a page,
+// so the stream carries it as the collector-document event alone.
+docv1::Document large_picture_document() {
+  docv1::Document document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  for (int i = 0; i < kLargePictureTexts; ++i) {
+    const std::string ref = std::format("#/texts/{}", i);
+    auto* base = document.add_texts()->mutable_text()->mutable_base();
+    base->set_self_ref(ref);
+    base->mutable_parent()->set_ref("#/body");
+    base->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    base->set_text(std::format("caption line {}", i));
+    base->add_source()->mutable_collector()->set_collector("pdf");
+    document.mutable_body()->add_children()->set_ref(ref);
+  }
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  picture->mutable_parent()->set_ref("#/body");
+  picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+  picture->mutable_image()->set_mimetype("image/png");
+  picture->mutable_image()->set_uri("data:image/png;base64," +
+                                    std::string(kLargePictureImageBytes, 'A'));
+  document.mutable_body()->add_children()->set_ref("#/pictures/0");
+  return document;
+}
+
+// The inspector's fast path with large_picture_document(), held open at the
+// end so the test can mark where the coordinator's emission of it begins:
+// the handler writes the classification, the Document and the trailer,
+// says so, and returns only once the test releases it. The collector call
+// ends on that return, and the outcome goes straight on to the stream.
+class LargeDocumentInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    {
+      pdfv1::ParsePdfResponse event;
+      event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+      event.mutable_info()->set_page_count(1);
+      stream->Write(event);
+    }
+    {
+      // Scoped, so this side's copy is gone before the test resets the peak.
+      pdfv1::ParsePdfResponse event;
+      *event.mutable_document() = large_picture_document();
+      stream->Write(event);
+    }
+    {
+      pdfv1::ParsePdfResponse event;
+      event.mutable_status();
+      stream->Write(event);
+    }
+    std::unique_lock<std::mutex> lock(mutex_);
+    written_ = true;
+    changed_.notify_all();
+    changed_.wait_for(lock, 20s, [this] { return released_; });
+    return grpc::Status::OK;
+  }
+
+  bool wait_until_written(std::chrono::milliseconds limit) {
+    std::unique_lock<std::mutex> lock(mutex_);
+    return changed_.wait_for(lock, limit, [this] { return written_; });
+  }
+
+  void release() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    released_ = true;
+    changed_.notify_all();
+  }
+
+ private:
+  std::mutex mutex_;
+  std::condition_variable changed_;
+  bool written_ = false;
+  bool released_ = false;
+};
+
+// A collector Document moves into its collector-document event; it is not
+// copied. The peak resident set is reset once the coordinator holds the
+// collector's Document and read again after the emission (the event built
+// and its write serialized), while the client reads nothing: with BDP
+// probing off its stream window stays at the 64 KiB default, so the event
+// waits on the server side rather than in the client's transport. The
+// write's serialized bytes are one Document's worth of growth; a deep copy
+// into the event adds a second Document. Measured (CPU image, 8 runs each):
+// 1.04-1.05x the serialized size with the move, 2.30-2.32x with the copy;
+// the 1.5x line sits about 2 MB clear of either.
+void verify_collector_document_moves_into_its_event() {
+  const uint64_t serialized = large_picture_document().ByteSizeLong();
+  LargeDocumentInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<RoutableDigitalSource>();
+      });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  auto transfer_observer = std::make_shared<grparse::CollectorDocumentTransferObserver>();
+  std::atomic<int> transfer_observations{0};
+#if defined(__SANITIZE_ADDRESS__)
+  uint64_t transfer_baseline = 0;
+  std::atomic<uint64_t> transfer_growth{0};
+  transfer_observer->before_transfer = [&] {
+    transfer_baseline = __sanitizer_get_current_allocated_bytes();
+  };
+#endif
+  transfer_observer->after_transfer = [&] {
+#if defined(__SANITIZE_ADDRESS__)
+    const uint64_t live = __sanitizer_get_current_allocated_bytes();
+    transfer_growth.store(live > transfer_baseline ? live - transfer_baseline : 0);
+#endif
+    ++transfer_observations;
+  };
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets),
+      grparse::RepairOptions{}, nullptr, transfer_observer);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "large document stream server failed to start");
+  grpc::ChannelArguments arguments;
+  arguments.SetInt(GRPC_ARG_HTTP2_BDP_PROBE, 0);
+  arguments.SetMaxReceiveMessageSize(64 << 20);
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(grpc::CreateCustomChannel(
+      "127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials(), arguments));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  auto stream = client->StreamProcessDocument(&context);
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id("large-picture");
+  chunk.set_filename("large-picture.pdf");
+  chunk.set_content_type("application/pdf");
+  chunk.set_data("%PDF-in-memory");
+  chunk.set_complete(true);
+  require(stream->Write(chunk), "large document client could not write the source chunk");
+  stream->WritesDone();
+  require(inspector.wait_until_written(10s), "the inspector never wrote the large document");
+#if !defined(__SANITIZE_ADDRESS__)
+  // RSS includes serialization, so measure while the unread client's small
+  // HTTP/2 window retains the event. The synchronous ASan transfer probe
+  // needs neither these timing assumptions nor malloc_trim.
+  std::this_thread::sleep_for(300ms);
+  malloc_trim(0);
+  reset_peak_rss();
+  const uint64_t baseline = proc_status_bytes("VmHWM");
+#endif
+  inspector.release();
+#if !defined(__SANITIZE_ADDRESS__)
+  std::this_thread::sleep_for(500ms);
+  const uint64_t peak = proc_status_bytes("VmHWM");
+  const uint64_t growth = peak > baseline ? peak - baseline : 0;
+#endif
+  int collector_documents = 0;
+  int pages = 0;
+  int texts = 0;
+  std::size_t image_bytes = 0;
+  bool complete = false;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) {
+    if (event.has_page()) ++pages;
+    if (event.has_complete()) complete = true;
+    if (event.has_collector_document()) {
+      ++collector_documents;
+      const auto& document = event.collector_document().document();
+      texts = document.texts_size();
+      if (document.pictures_size() == 1) image_bytes = document.pictures(0).image().uri().size();
+    }
+  }
+  const grpc::Status status = stream->Finish();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.ok(), "large document stream failed: " + status.error_message());
+  require(collector_documents == 1 && pages == 0 && complete,
+          "a Document placed on no page streams as one collector-document event, then complete");
+  require(texts == kLargePictureTexts &&
+              image_bytes == kLargePictureImageBytes + std::string_view("data:image/png;base64,").size(),
+          "the collector-document event carries the whole Document");
+  require(transfer_observations.load() == 1, "the collector transfer was observed exactly once");
+#if defined(__SANITIZE_ADDRESS__)
+  // Sample synchronously at the assignment, before outcome.document can be
+  // destroyed. A copy must coexist with its source here; HTTP/2 backpressure
+  // and thread scheduling cannot hide it. Serialization has not started yet,
+  // so allow only half a Document of incidental allocations, not the 1.5x
+  // RSS allowance (which includes serialized transport bytes).
+  const uint64_t growth = transfer_growth.load();
+  std::println("collector-document transfer: live heap growth {} bytes, Document serialized {} bytes",
+               growth, serialized);
+  require(growth < serialized / 2,
+          std::format("collector transfer allocated {} live bytes, at least half the Document's "
+                      "{} serialized bytes: expected a move, not a copy", growth, serialized));
+#else
+  std::println("collector-document emission: peak RSS growth {} bytes, Document serialized {} bytes",
+               growth, serialized);
+  require(growth < serialized * 3 / 2,
+          std::format("emitting the collector document grew the peak RSS by {} bytes, at least "
+                      "1.5x the Document's {} serialized bytes: the Document was copied into its "
+                      "event instead of moved", growth, serialized));
+#endif
+}
+
 // Holds the last page's recognition until the client has read page one. A
 // server that pushes each page as it is ready gets past the gate at once; one
 // that buffered the document would hold page one behind the last page, the
@@ -3158,7 +4479,7 @@ void verify_pages_stream_before_the_document_finishes() {
   LastPageGate gate(kPages);
   const std::vector<int> pages = stream_behind_gate(
       gate, kPages,
-      [count = kPages](std::shared_ptr<const std::string>, bool, double) {
+      [count = kPages](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<WideSource>(count);
       },
       grparse::CollectorTargets{}, "scan.png", "image/png", "in-memory-source");
@@ -3180,7 +4501,7 @@ void verify_routed_scan_pages_stream_before_the_document_finishes() {
   LastPageGate gate(3);
   const std::vector<int> pages = stream_behind_gate(
       gate, 3,
-      [](std::shared_ptr<const std::string>, bool, double) {
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
         return std::make_shared<RoutableDigitalSource>();
       },
       std::move(targets), "scan.pdf", "application/pdf", "%PDF-in-memory");
@@ -3554,6 +4875,446 @@ void verify_streamed_pages_plus_repair_rebuild_the_document() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Worker-count invariance. One synthetic 24-page scan whose whole-document
+// passes all have work to do: section headers at three heights (levels
+// cluster over every page's heights at stream end), a running header in
+// the top band of every page (demoted by the repair pass), a paragraph a
+// page break splits between pages three and four (rejoined, renumbering
+// every text after it), a table spanning pages seven and eight and a list
+// running from page twelve onto thirteen. Pixel (0, 0) of each raster is
+// its page number, so the recognizer and the detector agree on the page.
+
+constexpr int kInvariancePages = 24;
+constexpr int kSyntheticWidth = 600;
+constexpr int kSyntheticHeight = 800;
+
+struct SyntheticPage {
+  std::vector<grparse::OcrLine> lines;
+  std::vector<grparse::LayoutRegion> regions;
+};
+
+SyntheticPage synthetic_page(int page) {
+  static const std::vector<std::string> names{
+      "",        "alpha",  "bravo",  "charlie", "delta",   "echo",    "foxtrot",
+      "golf",    "hotel",  "india",  "juliett", "kilo",    "lima",    "mike",
+      "november", "oscar", "papa",   "quebec",  "romeo",   "sierra",  "tango",
+      "uniform", "victor", "whiskey", "xray"};
+  const std::string& name = names.at(page);
+  SyntheticPage out;
+  const auto line = [&out](std::string text, int left, int top, int right, int bottom) {
+    out.lines.push_back(
+        {std::move(text), {{left, top}, {right, top}, {right, bottom}, {left, bottom}}, 0.9F});
+  };
+  const auto region = [&out](std::string label, int left, int top, int right, int bottom) {
+    out.regions.push_back({std::move(label), 0.9F, left, top, right, bottom});
+  };
+  line("SYNTHETIC REPORT", 40, 20, 260, 40);
+  // Pages that open on a continuation carry no heading above it, and page
+  // one none at all (a first-page heading is a title candidate).
+  const bool continues_from_before = page == 4 || page == 8 || page == 13;
+  if (page != 1 && !continues_from_before) {
+    const int height = page % 6 == 2 ? 40 : (page % 2 == 0 ? 28 : 20);
+    const std::string kind = height == 40 ? "Survey " : (height == 28 ? "Method " : "Detail ");
+    region("section_header", 36, 316, 400, 320 + height + 4);
+    line(kind + name, 40, 320, 360, 320 + height);
+  }
+  region("text", 36, 396, 564, 450);
+  line("Findings for " + name + " open the page body and", 40, 400, 540, 420);
+  line("close it again on a second line.", 40, 425, 500, 445);
+  if (page == 3) {
+    region("text", 36, 646, 564, 674);
+    line("The committee decided that the", 40, 650, 400, 670);
+  }
+  if (page == 4) {
+    region("text", 36, 116, 564, 144);
+    line("budget would be approved by the board.", 40, 120, 520, 140);
+  }
+  // The table: three rows at the foot of page seven, two more at the head
+  // of page eight, the same two columns.
+  if (page == 7 || page == 8) {
+    const int top = page == 7 ? 500 : 120;
+    const int rows = page == 7 ? 3 : 2;
+    region("table", 36, top - 4, 564, top + rows * 60);
+    for (int row = 0; row < rows; ++row) {
+      const std::string id = std::to_string(page * 10 + row);
+      const int y = top + row * 60;
+      line("Metric " + id, 40, y, 240, y + 20);
+      line("Value " + id, 320, y, 520, y + 20);
+    }
+  }
+  // The list: three items at the foot of page twelve, two at the head of
+  // page thirteen.
+  if (page == 12 || page == 13) {
+    const int top = page == 12 ? 520 : 120;
+    const int items = page == 12 ? 3 : 2;
+    for (int item = 0; item < items; ++item) {
+      const int y = top + item * 50;
+      region("list_item", 36, y - 4, 564, y + 24);
+      line("• point " + names.at(page + item) + " of the running list", 40, y, 500, y + 20);
+    }
+  }
+  return out;
+}
+
+class SyntheticSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return kInvariancePages; }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(kSyntheticHeight, kSyntheticWidth, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+// page_scheduler_test's jitter: within each run of eight pages the later
+// ones finish first, so completion order is never document order.
+class JitteredRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const int page = image.at<unsigned char>(0, 0);
+    std::this_thread::sleep_for(std::chrono::milliseconds((8 - page % 8) * 2));
+    return {kSyntheticWidth, kSyntheticHeight, synthetic_page(page).lines};
+  }
+};
+
+class SyntheticDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat& image) override {
+    return synthetic_page(image.at<unsigned char>(0, 0)).regions;
+  }
+};
+
+// TestServer's shape with the scheduler's three worker pools chosen by the
+// caller (GRPARSE_RENDER_WORKERS, GRPARSE_PAGE_WORKERS and
+// GRPARSE_ASSEMBLY_WORKERS in a deployment).
+class WorkerCountServer final {
+ public:
+  WorkerCountServer(size_t render_workers, size_t inference_workers, size_t assembly_workers)
+      : scheduler_(recognizer_,
+                   grparse::PageScheduler::Options{
+                       .render_workers = render_workers,
+                       .inference_workers = inference_workers,
+                       .assembly_workers = assembly_workers,
+                       .page_window = 8,
+                   },
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                     return std::make_shared<SyntheticSource>();
+                   },
+                   &detector_),
+        parser_service_(scheduler_,
+                        std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
+        streaming_service_(scheduler_,
+                           std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&parser_service_);
+    builder.RegisterService(&streaming_service_);
+    server_ = builder.BuildAndStart();
+    if (!server_ || port_ == 0) throw std::runtime_error("worker-count server failed to start");
+  }
+
+  ~WorkerCountServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub() const {
+    return pipestream::parse::v1::ParseStreamingService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseService::Stub> unary_stub() const {
+    return pipestream::parse::v1::ParseService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  uint64_t folded_page_events() const { return streaming_service_.folded_page_events(); }
+
+ private:
+  JitteredRecognizer recognizer_;
+  SyntheticDetector detector_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentParserService parser_service_;
+  grparse::DocumentStreamingService streaming_service_;
+  std::unique_ptr<grpc::Server> server_;
+  int port_ = 0;
+};
+
+// What a client holds once the stream ends: the page events folded, the
+// complete event's heading levels applied, then the repair event.
+docv1::Document fold_stream(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.stub();
+  const StreamRun run = run_chunks(client.get(), {chunk(true)});
+  require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete(),
+          label + ": the stream closes with the complete event");
+  grparse::PageFold fold;
+  int pages = 0;
+  int repairs = 0;
+  for (const auto& event : run.events) {
+    if (event.has_page()) {
+      require(event.page().page_number() == ++pages, label + ": pages stream in document order");
+      fold.fold(event.page());
+    } else if (event.has_repair()) {
+      ++repairs;
+    }
+  }
+  require(pages == kInvariancePages, label + ": every page streams once");
+  require(repairs == 1, label + ": one repair event; got " + std::to_string(repairs));
+  const auto& complete = run.events.back().complete();
+  const std::map<std::string, int32_t> levels(complete.section_header_levels().begin(),
+                                              complete.section_header_levels().end());
+  docv1::Document rebuilt = fold.document();
+  grparse::apply_section_header_levels(levels, &rebuilt);
+  for (const auto& event : run.events) {
+    if (event.has_repair()) {
+      require(grparse::apply_repair_delta(event.repair(), &rebuilt),
+              label + ": the repair event applies to the fold");
+    }
+  }
+  return rebuilt;
+}
+
+docv1::Document convert_unary(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, unary_request(), &response);
+  require(status.ok(), label + ": unary conversion failed: " + status.error_message());
+  return response.response().document().doc();
+}
+
+// The final_document StreamDocument sends for the unary request, after
+// checking the envelopes around it arrive in sequence.
+docv1::Document stream_document(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.stub();
+  const EnvelopeRun run = run_stream_document(client.get(), stream_document_request(unary_request()));
+  require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+  require_envelope_order(run, std::nullopt, label);
+  require(run.envelopes.size() == 6 && run.envelopes[3].has_final_document(),
+          label + ": QUEUED, STARTED, PROCESSING, final_document, source_result, COMPLETED");
+  return run.envelopes[3].final_document();
+}
+
+// Where two renderings first part, with a little of each side.
+std::string first_difference(const std::string& expected, const std::string& actual) {
+  const auto mismatch = std::ranges::mismatch(expected, actual);
+  const auto at = static_cast<size_t>(mismatch.in1 - expected.begin());
+  const size_t from = at > 160 ? at - 160 : 0;
+  return std::format("first difference at byte {} of {} vs {}:\n  expected ...{}\n  actual   ...{}",
+                     at, expected.size(), actual.size(), expected.substr(from, 320),
+                     actual.substr(from, 320));
+}
+
+// Proves the synthetic document reaches every whole-document pass the
+// comparison is meant to cover, so the identity below is not vacuous.
+void require_synthetic_structure(const docv1::Document& document) {
+  std::set<int32_t> levels;
+  int headers = 0;
+  bool rejoined = false;
+  for (const auto& text : document.texts()) {
+    if (text.has_section_header()) {
+      ++headers;
+      levels.insert(text.section_header().level());
+    }
+    if (text.has_text() &&
+        text.text().base().text() == "The committee decided that the budget would be approved by the board.") {
+      rejoined = true;
+    }
+  }
+  require(headers == kInvariancePages - 4, "one heading on every page that opens fresh");
+  require(levels.size() == 3 && !levels.contains(0),
+          "three heading heights cluster into three levels; got " + std::to_string(levels.size()));
+  require(rejoined, "the paragraph split across pages three and four is rejoined");
+  require(document.furniture().children_size() == kInvariancePages,
+          "the running header is furniture on every page; got " +
+              std::to_string(document.furniture().children_size()));
+  std::set<int> table_pages;
+  for (const auto& table : document.tables()) {
+    for (const auto& prov : table.prov()) table_pages.insert(prov.page_no());
+  }
+  require(table_pages == std::set<int>{7, 8}, "the table spans pages seven and eight");
+  std::set<int> list_pages;
+  bool grouped = false;
+  for (const auto& group : document.groups()) {
+    if (group.label() == docv1::GROUP_LABEL_LIST) grouped = true;
+  }
+  for (const auto& text : document.texts()) {
+    if (!text.has_list_item()) continue;
+    for (const auto& prov : text.list_item().base().prov()) list_pages.insert(prov.page_no());
+  }
+  require(grouped && list_pages == std::set<int>{12, 13},
+          "the list runs from page twelve onto thirteen, grouped");
+}
+
+// The scheduler's output must not depend on its worker counts or on the
+// order pages finish: three worker configurations, each streamed twice
+// against the jittered recognizer, fold to byte-identical canonical JSON,
+// and to the unary ConvertSource of the same input. Heading levels
+// clustered over every page, the ref cursor that spans the stream and the
+// reorder buffer are where an interleaving would show.
+void verify_stream_is_invariant_under_worker_counts() {
+  struct Workers {
+    size_t render;
+    size_t inference;
+    size_t assembly;
+  };
+  std::optional<std::string> expected;
+  std::string expected_label;
+  for (const Workers workers : {Workers{1, 1, 1}, Workers{4, 2, 2}, Workers{2, 4, 1}}) {
+    WorkerCountServer server(workers.render, workers.inference, workers.assembly);
+    const std::string config = std::format("workers ({},{},{})", workers.render, workers.inference,
+                                           workers.assembly);
+    for (int attempt = 1; attempt <= 2; ++attempt) {
+      const std::string label = std::format("{} run {}", config, attempt);
+      const docv1::Document streamed = fold_stream(server, label + " stream");
+      if (!expected.has_value()) require_synthetic_structure(streamed);
+      const std::string stream_json = grparse::render_canonical_json(rebuilt_part(streamed));
+      if (!expected.has_value()) {
+        expected = stream_json;
+        expected_label = label + " stream";
+      }
+      require(stream_json == *expected, label + " stream differs from " + expected_label + ": " +
+                                            first_difference(*expected, stream_json));
+      const std::string unary_json =
+          grparse::render_canonical_json(rebuilt_part(convert_unary(server, label + " unary")));
+      require(unary_json == *expected, label + " unary differs from " + expected_label + ": " +
+                                           first_difference(*expected, unary_json));
+      const std::string source_stream_json = grparse::render_canonical_json(
+          rebuilt_part(stream_document(server, label + " StreamDocument")));
+      require(source_stream_json == *expected,
+              label + " StreamDocument differs from " + expected_label + ": " +
+                  first_difference(*expected, source_stream_json));
+    }
+  }
+}
+
+// DocumentChunk.repair_delta = false: the client folds no page events, so
+// the server keeps no fold of them (the service's fold counter does not
+// move), computes and sends no repair event, and says so on the complete
+// event. Everything else is the stream the default sends: the same page
+// events, the repaired collector document, and the complete event's
+// heading levels. Unset or true keeps the repair event and the fold.
+void verify_repair_delta_opt_out_keeps_no_fold() {
+  using Events = std::vector<pipestream::parse::v1::DocumentStreamEvent>;
+  const auto count_repairs = [](const Events& events) {
+    return std::ranges::count_if(events, [](const auto& event) { return event.has_repair(); });
+  };
+  const auto pages_of = [](const Events& events) {
+    std::vector<pipestream::parse::v1::PageData> pages;
+    for (const auto& event : events) {
+      if (event.has_page()) pages.push_back(event.page());
+    }
+    return pages;
+  };
+  const auto same_pages = [](const std::vector<pipestream::parse::v1::PageData>& left,
+                             const std::vector<pipestream::parse::v1::PageData>& right) {
+    if (left.size() != right.size()) return false;
+    for (size_t index = 0; index < left.size(); ++index) {
+      if (!google::protobuf::util::MessageDifferencer::Equals(left[index], right[index])) {
+        return false;
+      }
+    }
+    return true;
+  };
+  const auto levels_of = [](const pipestream::parse::v1::DocumentComplete& complete) {
+    return std::map<std::string, int32_t>(complete.section_header_levels().begin(),
+                                          complete.section_header_levels().end());
+  };
+  {
+    // The inspector's streamed fast path, whose pages go out before the
+    // repair pass rejoins a paragraph and demotes the running header.
+    RepairablePdfInspector inspector;
+    PdfInspectorServer inspector_server(&inspector);
+    for (const std::optional<bool> wanted : {std::optional<bool>{}, std::optional<bool>{true}}) {
+      const std::string label = wanted.has_value() ? "repair_delta = true" : "repair_delta unset";
+      const StreamPdfRun run =
+          run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, wanted);
+      require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+      require(count_repairs(run.events) == 1, label + ": the repair event is sent");
+      require(run.folded_page_events == 3, label + ": the server folds the three streamed pages");
+      require(run.events.back().has_complete() &&
+                  !run.events.back().complete().repair_delta_omitted(),
+              label + ": the complete event reports no omission");
+    }
+    const StreamPdfRun kept = run_stream_pdf(inspector_server.target());
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, false);
+    require(run.status.ok(), "opted-out stream failed: " + run.status.error_message());
+    require(run.events.size() == 5,
+            "three pages, the collector document, then complete; got " +
+                std::to_string(run.events.size()));
+    require(count_repairs(run.events) == 0, "an opted-out stream sends no repair event");
+    require(run.folded_page_events == 0, "an opted-out stream keeps no fold of its pages");
+    require(same_pages(pages_of(run.events), pages_of(kept.events)),
+            "the page events are the ones the default stream sends");
+    const auto& collector = run.events.at(3);
+    require(collector.has_collector_document() &&
+                collector.collector_document().document().furniture().children_size() == 3 &&
+                collector.collector_document().document().texts_size() == 6,
+            "the collector document is still the repaired one");
+    require(run.events.at(4).has_complete() && run.events.at(4).complete().repair_delta_omitted(),
+            "the complete event records the requested omission");
+  }
+  {
+    // Pages projected from a finished collector Document build no fold
+    // either.
+    FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+    PdfInspectorServer inspector_server(&inspector);
+    const StreamPdfRun kept = run_stream_pdf(inspector_server.target());
+    require(kept.status.ok() && kept.folded_page_events == 2,
+            "the default projected stream folds its two pages for the delta");
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false, false);
+    require(run.status.ok(), "opted-out projected stream failed: " + run.status.error_message());
+    require(run.folded_page_events == 0, "an opted-out projected stream folds nothing");
+    require(count_repairs(run.events) == 0 && run.events.size() == 4 &&
+                run.events.back().has_complete() &&
+                run.events.back().complete().repair_delta_omitted(),
+            "two pages, the collector document, then the complete event marking the omission");
+  }
+  {
+    // CV pages: the default folds every page and sends what the list
+    // grouping and the repair pass changed; the opt-out (resolved from the
+    // first chunk that sets it, so a later true does not undo it) keeps
+    // neither, while the heading levels still ship.
+    WorkerCountServer server(2, 2, 2);
+    auto client = server.stub();
+    const StreamRun kept = run_chunks(client.get(), {chunk(true)});
+    require(kept.status.ok(), "default CV stream failed: " + kept.status.error_message());
+    require(count_repairs(kept.events) == 1, "the default CV stream sends its repair event");
+    require(server.folded_page_events() == kInvariancePages,
+            "the default CV stream folds every page; got " +
+                std::to_string(server.folded_page_events()));
+    require(!kept.events.empty() && kept.events.back().has_complete() &&
+                !kept.events.back().complete().repair_delta_omitted(),
+            "the default reports no omission");
+    auto first = chunk(false);
+    first.set_repair_delta(false);
+    auto last = chunk(true);
+    last.set_repair_delta(true);
+    const StreamRun run = run_chunks(client.get(), {first, last});
+    require(run.status.ok(), "opted-out CV stream failed: " + run.status.error_message());
+    require(count_repairs(run.events) == 0, "the opted-out CV stream sends no repair event");
+    require(server.folded_page_events() == kInvariancePages,
+            "the opted-out CV stream folds no page; the counter moved to " +
+                std::to_string(server.folded_page_events()));
+    require(pages_of(run.events).size() == static_cast<size_t>(kInvariancePages),
+            "every CV page still streams");
+    require(!run.events.empty() && run.events.back().has_complete(),
+            "the opted-out CV stream closes with the complete event");
+    const auto& complete = run.events.back().complete();
+    require(complete.repair_delta_omitted(), "the complete event records the omission");
+    std::set<int32_t> levels;
+    for (const auto& [_, level] : complete.section_header_levels()) levels.insert(level);
+    require(complete.section_header_levels_size() == kInvariancePages - 4 && levels.size() == 3,
+            "the heading levels still ship with the complete event; got " +
+                std::to_string(complete.section_header_levels_size()));
+    require(levels_of(complete) == levels_of(kept.events.back().complete()),
+            "the levels match the default stream's");
+  }
+}
+
 // gRParse reads PDFs only through a PdfBackendService. With none configured
 // a PDF on the CV path fails the way an unconfigured collector does
 // (FAILED_PRECONDITION), naming the variable that fixes it.
@@ -3668,8 +5429,10 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
             "the chunk span is the parse's own offset entry");
     require(chunk.page_numbers_size() == 1 && chunk.page_numbers(0) == index + 1,
             "the chunk carries the page it came from");
-    require(chunk.metadata().at("text_source") == "ocr",
-            "the recognized-text source rides as metadata");
+    require(chunk.metadata().empty() &&
+                chunk.typed_metadata().at("text_source").string_value() == "ocr" &&
+                chunk.text_source() == ai::pipestream::parse::v1::CHUNK_TEXT_SOURCE_OCR,
+            "the recognized-text source rides typed, never as string metadata");
     const std::string producer =
         std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
     require(chunk.producer() == producer, "every chunk names the build that produced it");
@@ -3841,7 +5604,7 @@ void verify_stream_chunks_returns_its_charge_when_the_reader_cancels() {
   const auto inflight = std::make_shared<grparse::InflightBytes>(256ULL << 20U);
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::DocumentParserService parser_service(
@@ -3958,7 +5721,7 @@ void verify_vlm_pipeline_document_carries_the_parse_identity() {
 
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
-                                   [](std::shared_ptr<const std::string>, bool, double) {
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
                                      return std::make_shared<FakeSource>();
                                    });
   grparse::CollectorTargets targets;
@@ -4128,7 +5891,7 @@ void verify_chunk_embeddings_rpc() {
   require(engine->cancelled_seen.load(), "embedding engine did not observe RPC cancellation");
 }
 
-void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server) {
+void verify_disabled_embeddings_on_every_chunk_rpc(TestServer* server) {
   namespace parsev1 = pipestream::parse::v1;
   auto client = server->unary_stub();
   const int parses = server->recognizer_calls();
@@ -4152,36 +5915,308 @@ void verify_disabled_embeddings_and_unimplemented_chunk_rpcs(TestServer* server)
   require(client->GetServiceInfo(&info_context, {}, &info).ok() && !info.has_embeddings(),
           "disabled service info must retain its old wire output");
 
+  // The async and watch variants refuse the same request at submission,
+  // before a task is registered.
   parsev1::ChunkHierarchicalSourceAsyncRequest async_request;
   *async_request.mutable_request() = request.request();
   parsev1::ChunkHierarchicalSourceAsyncResponse async_response;
   grpc::ClientContext async_context;
   require(client->ChunkHierarchicalSourceAsync(&async_context, async_request, &async_response).error_code() ==
-              grpc::StatusCode::UNIMPLEMENTED, "async hierarchical remains unimplemented");
+              grpc::StatusCode::FAILED_PRECONDITION, "async hierarchical refuses disabled embeddings");
   parsev1::ChunkHybridSourceAsyncRequest async_hybrid;
   *async_hybrid.mutable_request() = hybrid.request();
   parsev1::ChunkHybridSourceAsyncResponse async_hybrid_response;
   grpc::ClientContext async_hybrid_context;
   require(client->ChunkHybridSourceAsync(&async_hybrid_context, async_hybrid, &async_hybrid_response).error_code() ==
-              grpc::StatusCode::UNIMPLEMENTED, "async hybrid remains unimplemented");
+              grpc::StatusCode::FAILED_PRECONDITION, "async hybrid refuses disabled embeddings");
   parsev1::WatchChunkHierarchicalSourceRequest watch_request;
   *watch_request.mutable_request() = request.request();
   grpc::ClientContext watch_context;
   auto watch = client->WatchChunkHierarchicalSource(&watch_context, watch_request);
   parsev1::WatchChunkHierarchicalSourceResponse watch_response;
-  require(!watch->Read(&watch_response) && watch->Finish().error_code() == grpc::StatusCode::UNIMPLEMENTED,
-          "watch hierarchical remains unimplemented");
+  require(!watch->Read(&watch_response) && watch->Finish().error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+          "watch hierarchical refuses disabled embeddings");
   parsev1::WatchChunkHybridSourceRequest watch_hybrid;
   *watch_hybrid.mutable_request() = hybrid.request();
   grpc::ClientContext watch_hybrid_context;
   auto hybrid_watch = client->WatchChunkHybridSource(&watch_hybrid_context, watch_hybrid);
   parsev1::WatchChunkHybridSourceResponse watch_hybrid_response;
   require(!hybrid_watch->Read(&watch_hybrid_response) &&
-              hybrid_watch->Finish().error_code() == grpc::StatusCode::UNIMPLEMENTED,
-          "watch hybrid remains unimplemented");
+              hybrid_watch->Finish().error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+          "watch hybrid refuses disabled embeddings");
+  require(server->recognizer_calls() == parses, "no refused task parsed anything");
 }
 
 }  // namespace
+
+// The digests the reactor feeds chunk by chunk equal the whole-upload
+// functions they replace, however the upload is cut: no chunk, one, two,
+// and a thousand of mixed sizes crossing the SHA-256 block boundary every
+// which way.
+void verify_incremental_digests_match_the_whole_upload() {
+  std::string upload;
+  for (int index = 0; index < 300'000; ++index) {
+    upload.push_back(static_cast<char>((index * 131 + index / 7) & 0xff));
+  }
+  const auto check = [](const std::vector<std::string_view>& pieces, const std::string& label) {
+    std::string whole;
+    grparse::ContentHash fnv;
+    grparse::targets::Sha256 sha;
+    for (const auto piece : pieces) {
+      whole.append(piece);
+      fnv.update(piece);
+      sha.update(piece);
+    }
+    require(fnv.value() == grparse::content_hash(whole),
+            label + ": the incremental FNV-1a equals content_hash");
+    require(sha.hex_digest() == grparse::targets::sha256_hex(whole),
+            label + ": the incremental SHA-256 equals sha256_hex");
+  };
+  const std::string_view view(upload);
+  check({}, "no chunk");
+  check({view.substr(0, 1)}, "one one-byte chunk");
+  check({view}, "one chunk");
+  check({view.substr(0, 63), view.substr(63, 1000)}, "two chunks");
+  std::vector<std::string_view> mixed;
+  size_t offset = 0;
+  for (size_t index = 0; index < 1000; ++index) {
+    // 0, 1, 63, 64, 65 and longer pieces, so pieces end inside, on, and
+    // past a block, and an empty piece lands mid-stream.
+    static constexpr std::array<size_t, 8> kSizes{0, 1, 63, 64, 65, 127, 200, 500};
+    const size_t size = std::min(kSizes[index % kSizes.size()] + index % 3, view.size() - offset);
+    mixed.push_back(view.substr(offset, size));
+    offset += size;
+  }
+  require(offset > 64 * 1000, "the thousand chunks cover many blocks");
+  check(mixed, "a thousand mixed chunks");
+  require(grparse::targets::Sha256().hex_digest() == grparse::targets::sha256_hex(""),
+          "an unfed context digests the empty string");
+}
+
+// Reads any raster, the fake backend's blank white pages included.
+class ConstantRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    return {100, 200, {{"recognized", {{1, 2}, {20, 2}, {20, 12}, {1, 12}}, 0.9F}}};
+  }
+};
+
+// A PDF streamed in chunks is hashed as it lands: the source factory gets
+// the upload's SHA-256 (so no source reads the bytes again), the backend
+// sees the one upload addressed by it, and the origin's binary_hash is the
+// whole upload's FNV-1a. The unary CV leg hands its source the digest the
+// same way, computed once per request.
+void verify_stream_hands_the_chunk_digest_to_the_source() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  auto& backend = pdf_backend.backend();
+  const std::string streamed = "%PDF-1.7\n" + std::string(5000, 's') + "\n%%EOF streamed";
+  const std::string unary = "%PDF-1.7\n" + std::string(3000, 'u') + "\n%%EOF unary";
+  backend.add_document(streamed, {grparse_test::text_page({"Streamed"})});
+  backend.add_document(unary, {grparse_test::text_page({"Unary"})});
+  ConstantRecognizer recognizer;
+  std::mutex seen_mutex;
+  std::vector<std::string> seen;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [&seen_mutex, &seen](std::shared_ptr<const std::string> bytes, bool pdf, double render_dpi,
+                           const std::string& precomputed_sha256) {
+        {
+          std::lock_guard<std::mutex> lock(seen_mutex);
+          seen.push_back(precomputed_sha256);
+        }
+        return grparse::open_in_memory_document(std::move(bytes), pdf, render_dpi,
+                                                grparse::SourceOpening::kOnFirstUse,
+                                                precomputed_sha256);
+      });
+  const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{});
+  grparse::DocumentParserService parser_service(scheduler, endpoints);
+  grparse::DocumentStreamingService streaming_service(scheduler, endpoints);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "digest test server failed to start");
+  const auto channel =
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials());
+
+  auto stream_client = pipestream::parse::v1::ParseStreamingService::NewStub(channel);
+  std::vector<pipestream::parse::v1::DocumentChunk> chunks;
+  for (size_t offset = 0; offset < streamed.size(); offset += 1500) {
+    pipestream::parse::v1::DocumentChunk part;
+    part.set_document_id("digest-stream");
+    part.set_filename("digest.pdf");
+    part.set_data(streamed.substr(offset, 1500));
+    part.set_complete(offset + 1500 >= streamed.size());
+    chunks.push_back(std::move(part));
+  }
+  require(chunks.size() == 4, "the PDF streams in four chunks");
+  const StreamRun run = run_chunks(stream_client.get(), chunks);
+  require(run.status.ok(), "digest stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete() &&
+              run.events.back().complete().origin().binary_hash() ==
+                  grparse::content_hash(streamed),
+          "the origin's binary_hash is the whole upload's FNV-1a");
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 1 && seen.front() == grparse::targets::sha256_hex(streamed),
+            "the source factory gets the streamed upload's SHA-256, once");
+  }
+  require(backend.probes_with_bytes() == 1 &&
+              backend.probe_upload_hashes().front() == grparse::targets::sha256_hex(streamed),
+          "the backend sees exactly one upload of the streamed PDF, addressed by its digest");
+
+  auto unary_client = pipestream::parse::v1::ParseService::NewStub(channel);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("digest.pdf");
+  source->set_base64_string(grparse::encode_base64(unary.data(), unary.size()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = unary_client->ConvertSource(&context, request, &response);
+  require(status.ok(), "digest unary parse failed: " + status.error_message());
+  {
+    std::lock_guard<std::mutex> lock(seen_mutex);
+    require(seen.size() == 2 && seen.back() == grparse::targets::sha256_hex(unary),
+            "the unary CV leg hands its source the request's SHA-256");
+  }
+  require(backend.probes_with_bytes() == 2 &&
+              backend.probe_upload_hashes().back() == grparse::targets::sha256_hex(unary),
+          "the backend sees exactly one upload of the unary PDF");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
+
+// DocumentChunk.total_bytes: the declared size is checked against the size
+// limit and the in-flight budget before any data is accepted, charged once
+// up front, and binding: an upload that runs past it, or completes short of
+// it, fails INVALID_ARGUMENT naming the field.
+void verify_stream_total_bytes_hint() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<FakeSource>();
+      });
+  constexpr uint64_t kBudget = 4096;
+  const auto inflight = std::make_shared<grparse::InflightBytes>(kBudget);
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}),
+      grparse::RepairOptions{}, inflight);
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "total_bytes test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  const auto declared = [](uint64_t total, std::string data, bool complete) {
+    auto value = chunk(complete);
+    value.set_total_bytes(total);
+    value.set_data(std::move(data));
+    return value;
+  };
+  const auto wait_for_in_use = [&inflight](uint64_t expected) {
+    for (int attempt = 0; attempt < 500 && inflight->in_use() != expected; ++attempt) {
+      std::this_thread::sleep_for(10ms);
+    }
+    return inflight->in_use() == expected;
+  };
+  // A refusal that comes before the data: the client sends the declaring
+  // chunk and nothing else, and the server ends the call on it alone.
+  const auto refused_on_first_chunk = [&client](const pipestream::parse::v1::DocumentChunk& first) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    stream->Write(first);
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    return stream->Finish();
+  };
+
+  {
+    const grpc::Status status =
+        refused_on_first_chunk(declared(501ULL * 1024U * 1024U, "", false));
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("500 MiB") &&
+                status.error_message().contains("total_bytes"),
+            "a declared size over the streaming limit is refused before any data: " +
+                status.error_message());
+  }
+  {
+    const grpc::Status status = refused_on_first_chunk(declared(kBudget + 1, "abc", false));
+    require(status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+                status.error_message().contains("GRPARSE_MAX_INFLIGHT_BYTES") &&
+                status.error_message().contains("total_bytes"),
+            "a declared size over the in-flight budget is refused before its data is accepted: " +
+                status.error_message());
+    require(wait_for_in_use(0), "a refused declaration charges nothing");
+  }
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    stream->Write(declared(8, std::string(16, 'x'), true));
+    stream->WritesDone();
+    pipestream::parse::v1::DocumentStreamEvent ignored;
+    while (stream->Read(&ignored)) {
+    }
+    const grpc::Status status = stream->Finish();
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                status.error_message().contains("total_bytes"),
+            "an upload past its declared total_bytes fails by name: " + status.error_message());
+  }
+  {
+    const StreamRun run =
+        run_chunks(client.get(), {declared(64, std::string(16, 'x'), false),
+                                  declared(64, std::string(16, 'y'), true)});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().contains("total_bytes"),
+            "an upload that completes short of total_bytes fails by name: " +
+                run.status.error_message());
+  }
+  {
+    auto later = chunk(true);
+    later.set_total_bytes(16);
+    const StreamRun run = run_chunks(client.get(), {declared(32, "first-half-bytes", false), later});
+    require(run.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
+                run.status.error_message().contains("total_bytes"),
+            "a total_bytes that changes between chunks fails by name: " + run.status.error_message());
+  }
+  {
+    // The whole declared size is charged on the first chunk, before the
+    // rest of the data arrives, and returned when the parse is done.
+    const std::string payload = "in-memory-source";
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto stream = client->StreamProcessDocument(&context);
+    require(stream->Write(declared(payload.size(), payload.substr(0, 4), false)),
+            "the declaring chunk goes out");
+    require(wait_for_in_use(payload.size()),
+            "the declared size is charged once, up front, got " +
+                std::to_string(inflight->in_use()));
+    auto rest = chunk(true);
+    rest.set_data(payload.substr(4));
+    require(stream->Write(rest), "the rest of the payload goes out");
+    stream->WritesDone();
+    std::vector<pipestream::parse::v1::DocumentStreamEvent> events;
+    pipestream::parse::v1::DocumentStreamEvent event;
+    while (stream->Read(&event)) events.push_back(event);
+    const grpc::Status status = stream->Finish();
+    require(status.ok(), "an upload matching its total_bytes parses: " + status.error_message());
+    require(events.size() == 4 && events.back().has_complete(),
+            "three pages and the complete event");
+    require(events.back().complete().origin().binary_hash() == grparse::content_hash(payload),
+            "the declared upload's origin hash is its bytes' FNV-1a");
+  }
+  require(wait_for_in_use(0), "every declared charge is returned");
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+}
 
 int main() {
   return grparse_test::run_test_main("streaming-service-test", {
@@ -4192,7 +6227,11 @@ int main() {
         verify_ordered_page_stream(&server);
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
+        verify_stream_document_inline_sources(&server);
+        verify_stream_document_refuses_requests(&server);
+        verify_stream_document_cancels_with_the_client();
         verify_unsupported_options_are_rejected(&server);
+        verify_a_calendar_input_is_not_implemented(&server);
         verify_parity_options_and_confidence(&server);
         verify_remote_services_are_opt_in();
         verify_recognition_options_steer_the_cv_leg(&server);
@@ -4215,6 +6254,7 @@ int main() {
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();
         verify_streaming_pdf_ocr_recommendation_takes_the_cv_path();
+        verify_streaming_forced_ocr_starts_before_the_inspector_trailer();
         verify_pdf_mixed_recommendation_stays_on_named_pages();
         verify_pdf_template_form_recommendation_forces_every_page();
         verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
@@ -4230,14 +6270,24 @@ int main() {
         verify_stream_rejects_invalid_collectors(&server);
         verify_document_timeout_bounds_the_cv_leg();
         verify_inflight_byte_budget();
+        verify_incremental_digests_match_the_whole_upload();
+        verify_stream_hands_the_chunk_digest_to_the_source();
+        verify_stream_total_bytes_hint();
         verify_remote_source_is_charged_after_the_fetch();
         verify_remote_fetches_wait_for_a_slot();
+        verify_stream_document_fetches_remote_sources();
+        verify_convert_task_matches_the_unary_conversion(&server);
+        verify_watch_streams_the_task_to_its_end(&server);
+        verify_task_registry_bounds();
         verify_stream_chunks_holds_the_fetched_charge_until_written();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
+        verify_collector_document_moves_into_its_event();
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
         verify_streamed_pages_plus_repair_rebuild_the_document();
+        verify_stream_is_invariant_under_worker_counts();
+        verify_repair_delta_opt_out_keeps_no_fold();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
@@ -4247,13 +6297,16 @@ int main() {
         verify_stream_charge_follows_the_bytes();
         verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();
+        verify_stream_admission_cap();
+        verify_refused_leg_is_a_capacity_failure();
+        verify_stream_threads_stay_bounded_under_load();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
         verify_vlm_pipeline_document_carries_the_parse_identity();
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
-        verify_disabled_embeddings_and_unimplemented_chunk_rpcs(&server);
+        verify_disabled_embeddings_on_every_chunk_rpc(&server);
       },
   });
 }

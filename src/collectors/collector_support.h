@@ -12,6 +12,7 @@
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
+#include <memory>
 #include <mutex>
 #include <string>
 #include <thread>
@@ -46,14 +47,18 @@ CollectorOutcome finish_outcome(const char* name, const grpc::Status& status,
                                 bool trailer_seen, bool document_seen,
                                 CollectorOutcome outcome);
 
-// How often a CancelWatch asks whether the inbound call is still there.
+// How often a polled CancelWatch asks whether the inbound call is still
+// there.
 inline constexpr std::chrono::milliseconds kCancelPoll{100};
 
-// Cancels `context` once `cancelled` answers true, so a collector leg ends
+// Cancels `context` once the inbound call is gone, so a collector leg ends
 // with the inbound call that asked for it instead of running out its own
-// cap. The hook is polled on a helper thread every kCancelPoll; an empty
-// hook watches nothing and costs no thread. Declare it right after the
-// context it cancels, so it stops before the context goes away.
+// cap. A pushed `cancelled` (one with a CancelRegistry behind it) registers
+// the context for the length of the watch and costs no thread: the inbound
+// call's own cancel reaches TryCancel directly. A polled one is asked on a
+// helper thread every kCancelPoll; an empty hook watches nothing. Declare it
+// right after the context it cancels, so it stops before the context goes
+// away.
 class CancelWatch {
  public:
   CancelWatch(grpc::ClientContext& context, CollectorCancelled cancelled);
@@ -62,6 +67,8 @@ class CancelWatch {
   CancelWatch& operator=(const CancelWatch&) = delete;
 
  private:
+  std::shared_ptr<CancelRegistry> registry_;
+  CancelRegistry::Token token_ = 0;
   std::mutex mutex_;
   std::condition_variable stop_;
   bool stopping_ = false;
@@ -109,6 +116,12 @@ class ConcurrentUpload {
                  fill_chunk = std::move(fill_chunk)]() mutable {
           upload_stream(stream, request, bytes, always_send_chunk, fill_chunk);
         }) {}
+  // For a wire whose upload is not one byte payload (page rasters rendered
+  // one at a time): `upload()` runs on the thread, writes its own frames and
+  // half-closes, under the same join and cancel rules.
+  template <typename Upload>
+  ConcurrentUpload(grpc::ClientContext& context, Upload upload)
+      : context_(context), thread_(std::move(upload)) {}
   ~ConcurrentUpload() {
     if (!thread_.joinable()) return;
     context_.TryCancel();

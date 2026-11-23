@@ -11,6 +11,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/markup/v1/markup.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "grparse/collector_cancel.h"
 
 namespace grparse {
 
@@ -25,13 +26,6 @@ using CollectorDeadline = std::chrono::system_clock::time_point;
 // cap. It is the default everywhere a deadline is threaded, so a caller that
 // has none to give keeps exactly today's behaviour.
 inline constexpr CollectorDeadline kNoCollectorDeadline = CollectorDeadline::max();
-
-// Answers true once the inbound call that asked for a parse has gone away
-// (cancelled by its client), so every collector leg it started can cancel
-// its own call instead of running out its cap for nobody. Called from a
-// helper thread while the leg runs; an empty hook (the default everywhere)
-// means nothing to watch.
-using CollectorCancelled = std::function<bool()>;
 
 // The deadline one leg's ClientContext gets: the sooner of the inbound
 // ceiling and the leg's own cap measured from now. A leg never outlives the
@@ -51,6 +45,18 @@ CollectorDeadline deadline_with_document_timeout(CollectorDeadline inbound,
 grpc::Status validate_document_timeout(bool has_timeout, double timeout_seconds,
                                        std::string_view surface);
 
+// Which of its wires a collector leg ended up speaking. A client written for
+// a collector's bidirectional RPC falls back to the collector's older calls
+// only when the collector answers UNIMPLEMENTED, and the fallback is
+// recorded here, never silent.
+enum class CollectorProtocol {
+  // The leg spoke the collector's current wire.
+  kCurrent,
+  // The collector did not implement the current wire; the leg used the
+  // older one.
+  kLegacyFallback,
+};
+
 // One collector's complete output: its projected Document (source-tagged by
 // the collector itself) or the reason it could not contribute.
 struct CollectorOutcome {
@@ -63,6 +69,7 @@ struct CollectorOutcome {
   // The collector's extraction warnings, verbatim.
   std::vector<std::string> warnings;
   ai::pipestream::document::v1::Document document;
+  CollectorProtocol protocol = CollectorProtocol::kCurrent;
 };
 
 // One collector planned into a parse: its wire identity and the callable

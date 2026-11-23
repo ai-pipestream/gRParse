@@ -151,7 +151,8 @@ and Grafana (`grafana/grafana:13.2.4`) under the `observability` profile:
 docker compose -f compose.stack.yaml -f compose.stack.observability.yaml --profile observability up -d
 ```
 
-Prometheus scrapes `grparse:9464` (`job_name: "grparse"`) and
+Prometheus scrapes `grparse:9464` (`job_name: "grparse"`), `asr:9464`
+(`job_name: "grpc-asr"` when `--profile heavy` is active), and
 `host.docker.internal:9465` (`job_name: "grparse-corpus-eval"`) every `5s`
 using `compose/prometheus/prometheus.yml`. Grafana publishes
 `127.0.0.1:${GRAFANA_PORT:-3000}:3000` with anonymous local access and mounts
@@ -164,8 +165,15 @@ and dashboards (`compose/grafana/dashboards/grparse-pipeline-overview.json` and
 
 The `lighton` profile starts the native CPU LightOnOCR-3-0.8B service on the
 compose network at `lighton-ocr:50074`. It is separate from `heavy` and uses
-a local image by default. There is no shell tab or coordinator target; this
-profile does not add an OCR route to gRParse. Native inference has a
+a local image by default. There is no shell tab, and the profile alone does
+not route anything to it: gRParse dials it only when
+`GRPARSE_LIGHTON_TARGET=lighton-ocr:50074` is exported beside the profile.
+Then a `PROCESSING_PIPELINE_VLM` request that names the LightOnOCR model
+(`VLM_MODEL_TYPE_LIGHTONOCR`) goes to this service over its bidirectional
+`ParseDocument` stream instead of to grpc-vlm-convert's LightOnOCR preset,
+and a failure of that leg fails the request rather than falling back.
+`GRPARSE_LIGHTON_MODEL` (`0.8b`, the default, or `4b`) must name the
+checkpoint the service serves. Native inference has a
 committed-source Dockerfile and read-only RPC qualification in the
 [service receipt](https://git.rokkon.com/ai-pipestream/grpc-lighton-ocr/src/branch/main/docs/native-proof.md).
 That receipt covers CPU 0.8B, not 4B, ARM, GPU, or general OCR accuracy.

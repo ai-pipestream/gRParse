@@ -46,7 +46,7 @@ func describePage(page *parsev1.PageData) string {
 	barcodes := 0
 	for _, picture := range page.GetPictures() {
 		for _, annotation := range picture.GetAnnotations() {
-			if annotation.GetMisc().GetKind() == "barcode" {
+			if annotation.GetBarcode() != nil {
 				barcodes++
 			}
 		}

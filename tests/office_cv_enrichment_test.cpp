@@ -140,20 +140,25 @@ void verify_detected_figure_lands_scaled_classified_and_decoded() {
           "the CV leg tags its own source");
 
   bool classified = false;
+  int barcodes = 0;
   bool decoded = false;
   for (const auto& annotation : picture.annotations()) {
+    require(!annotation.has_misc(), "no legacy misc-annotation Struct is written");
     if (annotation.has_classification()) {
       classified = annotation.classification().predicted_classes_size() == 2 &&
                    annotation.classification().predicted_classes(0).class_name() == "qr_code";
     }
-    if (annotation.has_misc() && annotation.misc().kind() == "barcode") {
-      const auto& fields = annotation.misc().content().fields();
-      decoded = fields.count("value") > 0 &&
-                fields.at("value").string_value() == kQrPayload;
+    if (annotation.has_barcode()) {
+      ++barcodes;
+      decoded = annotation.barcode().value() == kQrPayload &&
+                annotation.barcode().provenance() == "zxing-cpp" &&
+                !annotation.barcode().format().empty();
     }
   }
   require(classified, "the classifier's distribution rides the picture");
-  require(decoded, "the class-triggered decode extracts the QR payload");
+  require(picture.annotations_size() == 2 && barcodes == 1,
+          "the decoded QR is exactly one annotation beside the classification");
+  require(decoded, "the class-triggered decode extracts the QR payload on the typed arm");
 }
 
 void verify_class_gate_blocks_decode() {
@@ -166,17 +171,17 @@ void verify_class_gate_blocks_decode() {
   grparse::enrich_office_document(enrichment, &document);
   require(document.pictures_size() == 1, "the figure still lands");
   for (const auto& annotation : document.pictures(0).annotations()) {
-    require(!annotation.has_misc(), "no classifier, no class-triggered decode");
+    require(!annotation.has_barcode() && !annotation.has_misc(),
+            "no classifier, no class-triggered decode");
   }
 
   docv1::Document decode_all = office_document_with_qr_page(222, 2220);
   enrichment.barcode_mode = grparse::PageScheduler::BarcodeMode::kAll;
   grparse::enrich_office_document(enrichment, &decode_all);
-  bool decoded = false;
-  for (const auto& annotation : decode_all.pictures(0).annotations()) {
-    if (annotation.has_misc() && annotation.misc().kind() == "barcode") decoded = true;
-  }
-  require(decoded, "decode-all mode needs no classifier");
+  const auto& annotations = decode_all.pictures(0).annotations();
+  require(annotations.size() == 1 && annotations.Get(0).has_barcode() &&
+              annotations.Get(0).barcode().value() == kQrPayload,
+          "decode-all mode needs no classifier: the QR is exactly one typed barcode annotation");
 }
 
 // One office paragraph on a page, in twips, top-left origin.

@@ -18,6 +18,14 @@ const MIME_BY_EXTENSION: Record<string, string> = {
   eml: "message/rfc822",
   epub: "application/epub+zip",
   png: "image/png",
+  wav: "audio/wav",
+  // Raw records carry no type of their own; the layout decides.
+  ebcdic: "application/octet-stream",
+};
+
+// Suffixes of more than one dot-part, checked before the last extension.
+const MIME_BY_SUFFIX: Record<string, string> = {
+  ".warc.gz": "application/warc",
 };
 
 export interface UploadFile {
@@ -27,6 +35,10 @@ export interface UploadFile {
 }
 
 export function mimeTypeFor(fileName: string): string {
+  const lower = fileName.toLowerCase();
+  for (const [suffix, mimeType] of Object.entries(MIME_BY_SUFFIX)) {
+    if (lower.endsWith(suffix)) return mimeType;
+  }
   const extension = fileName.toLowerCase().split(".").pop() ?? "";
   const mimeType = MIME_BY_EXTENSION[extension];
   if (!mimeType) throw new Error(`no MIME type registered for corpus file ${fileName}; add it to corpus.ts`);
@@ -35,8 +47,10 @@ export function mimeTypeFor(fileName: string): string {
 
 // Loads a corpus file as the payload Playwright's setInputFiles accepts. The
 // MIME type is set explicitly so the browser's own extension guess never
-// decides how the bridge routes the upload.
+// decides how the bridge routes the upload. `fileName` is relative to the
+// corpus root (formats/tone.wav); the upload carries the base name.
 export function corpusFile(fileName: string): UploadFile {
   const filePath = path.join(CORPUS_DIR, fileName);
-  return { name: fileName, mimeType: mimeTypeFor(fileName), buffer: readFileSync(filePath) };
+  const name = path.basename(fileName);
+  return { name, mimeType: mimeTypeFor(name), buffer: readFileSync(filePath) };
 }

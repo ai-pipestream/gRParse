@@ -18,6 +18,7 @@ namespace grparse {
 
 class PageSource;
 class PageSourceWatch;
+class CancelRegistry;
 
 // Longest side of a captured page preview. Rasters render at 200 DPI (a
 // letter page is ~1700x2200); previews exist to be painted under boxes, not
@@ -36,7 +37,8 @@ cv::Mat preview_of(const cv::Mat& raster);
 
 // Renders page previews over a single lazily opened PageSource so a caller
 // that streams a document page by page hashes and probes the PDF at most once
-// instead of once per streamed page.
+// instead of once per streamed page. A non-null `cancel_registry` pushes the
+// request's cancel to the source instead of polling `stop` for it.
 class PagePreviewSession {
  public:
   PagePreviewSession(
@@ -44,7 +46,8 @@ class PagePreviewSession {
       std::function<bool()> stop = {},
       std::chrono::system_clock::time_point deadline =
           std::chrono::system_clock::time_point::max(),
-      DocumentPasswords passwords = {});
+      DocumentPasswords passwords = {},
+      std::shared_ptr<CancelRegistry> cancel_registry = {});
   ~PagePreviewSession();
   PagePreviewSession(const PagePreviewSession&) = delete;
   PagePreviewSession& operator=(const PagePreviewSession&) = delete;
@@ -62,6 +65,7 @@ class PagePreviewSession {
   std::function<bool()> stop_;
   std::chrono::system_clock::time_point deadline_;
   DocumentPasswords passwords_;
+  std::shared_ptr<CancelRegistry> cancel_registry_;
   std::shared_ptr<PageSource> source_;
   std::unique_ptr<PageSourceWatch> watch_;
   int page_count_ = 0;

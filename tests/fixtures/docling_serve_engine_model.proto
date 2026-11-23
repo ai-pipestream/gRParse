@@ -1,0 +1,35 @@
+// Extract of docling-serve commit 16713d5 (docling_serve_types.proto,
+// package ai.docling.serve.v1). EngineModelConfig, TorchDtype, and the
+// ScalarValue the extra_config map names. The wire test compiles this file
+// on its own and compares tag to type with gRParse's EngineModelConfig.
+syntax = "proto3";
+
+package ai.docling.serve.v1;
+
+message ScalarValue {
+  oneof kind {
+    string string_value = 1;
+    int64 int_value = 2;
+    double double_value = 3;
+    bool bool_value = 4;
+    uint64 uint_value = 5;
+  }
+}
+
+// TorchDtype is the closed set named on VLM engine torch_dtype
+// (float32, float16, bfloat16). Any other dtype string stays in torch_dtype_raw.
+enum TorchDtype {
+  TORCH_DTYPE_UNSPECIFIED = 0;
+  TORCH_DTYPE_FLOAT32 = 1;
+  TORCH_DTYPE_FLOAT16 = 2;
+  TORCH_DTYPE_BFLOAT16 = 3;
+}
+
+message EngineModelConfig {
+  optional string repo_id = 1;
+  optional string revision = 2;
+  // Original string field. Carries a dtype this enum does not name.
+  optional string torch_dtype_raw = 3;
+  map<string, ScalarValue> extra_config = 4;
+  optional TorchDtype torch_dtype = 5;
+}

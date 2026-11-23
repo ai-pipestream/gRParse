@@ -1,0 +1,35 @@
+// The recorded timings grparse-bench compares a run against
+// (tests/bench/baseline.textproto, #251). Test-only, like
+// tests/support/storage_plugin_fixture.proto: nothing outside tests/ reads
+// it, and the file is read and written with protobuf's TextFormat.
+syntax = "proto3";
+
+package grparse.test.bench;
+
+// One case's numbers. An "item" is what the case counts: pages for the
+// assembly, fold, render and stream cases, files for the sniff case, MiB for
+// the base64 case.
+message BenchCase {
+  // The case name grparse-bench prints (tests/bench/bench_cases.h).
+  string name = 1;
+  // Nanoseconds per operation, the median over the measured batches. For
+  // ttfp_inspector_fast_path an operation's time is the first PageData's
+  // arrival, measured from the first chunk the client writes.
+  double ns_per_op = 2;
+  // Items per second. For ttfp_inspector_fast_path: pages per second over
+  // the whole stream, first chunk to the stream's status.
+  double items_per_second = 3;
+  // What one item is ("pages", "files", "MiB").
+  string item = 4;
+}
+
+message BenchBaseline {
+  // Why these numbers were recorded: "<commit>: why", as
+  // `grparse-bench --record --reason` takes it.
+  string reason = 1;
+  // The machine the numbers came from, as grparse-bench read it when it
+  // recorded them (CPU model and hardware threads).
+  string host = 2;
+  // One entry per case, in the order the bench runs them.
+  repeated BenchCase cases = 3;
+}

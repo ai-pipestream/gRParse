@@ -34,6 +34,9 @@ export const DOCUMENT_FIXTURES: DocumentFixture[] = [
   // The epub skeleton is completed through markup, so the items carry the
   // markup collector tag (README, COLLECTOR_EPUB row).
   { id: "epub", file: "two-chapters.epub", parser: "epub + markup", collector: "markup", structure: ["headings", "picture"] },
+  // WARC archives route to fastwarc; gRParse folds its record stream into
+  // one group per record, so the items carry the fastwarc collector tag.
+  { id: "warc", file: "commoncrawl-sample.warc.gz", parser: "fastwarc", collector: "fastwarc", structure: [] },
   { id: "png", file: "report_page.png", parser: "grparse OCR", collector: "grparse", structure: ["headings", "table", "picture"], timeoutMs: 150_000 },
   { id: "scanned-pdf", file: "rotated-scan.pdf", parser: "grparse OCR", collector: "grparse", structure: ["headings"], timeoutMs: 150_000 },
 ];

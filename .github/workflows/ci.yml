@@ -4,16 +4,68 @@ on:
   push:
     branches: [main]
   pull_request:
+  # A manual run builds every image leg, like a push to main.
+  workflow_dispatch:
 
 permissions:
   contents: read
 
+# A newer push to a pull request cancels the run it replaces, so superseded
+# runs stop burning runner minutes; pushes to main queue instead, so every
+# main commit keeps a complete run (#242).
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
+  # Whether this run needs the cuda and openvino legs (#241). cpu-image is
+  # the required pull request gate and always runs; the other two image legs
+  # run on a PR only when execution-provider code or the image plumbing
+  # changed (scripts/ci-changes.sh), when the PR carries the `ci:full`
+  # label, and always on main pushes and manual runs.
+  #
+  # On a push to main on GitHub the whole image set is skipped here (#240):
+  # publish.yml builds, tests and smoke-tests every image of that commit
+  # already, so building them twice only made the two workflows queue behind
+  # each other. demo-shell, fuzz-smoke and eval-tests still run on main.
+  # Forgejo skips publish.yml, so its runners keep building on main.
+  changes:
+    if: ${{ github.event_name != 'push' || github.server_url != 'https://github.com' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      ep: ${{ steps.diff.outputs.ep }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: List the paths this pull request changes
+        id: diff
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          if [ -z "$BASE_SHA" ]; then
+            echo "ep=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git diff --name-only "$BASE_SHA"...HEAD | tee changed-paths.txt
+          sh scripts/ci-changes.sh < changed-paths.txt | tee -a "$GITHUB_OUTPUT"
+
   cuda-image:
+    needs: changes
+    if: >-
+      needs.changes.result == 'success' && (
+      needs.changes.outputs.ep == 'true' ||
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full'))
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -30,10 +82,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -63,6 +114,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load cuda amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build full image and run non-GPU tests
         # The full build (not just the build stage) also assembles the
         # runtime stage, so a runtime library missing from the staged
@@ -88,10 +142,20 @@ jobs:
         run: ./scripts/smoke-test.sh grparse-ci-cuda
 
   openvino-image:
+    needs: changes
+    if: >-
+      needs.changes.result == 'success' && (
+      needs.changes.outputs.ep == 'true' ||
+      github.event_name != 'pull_request' ||
+      contains(github.event.pull_request.labels.*.name, 'ci:full'))
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Free runner disk for the seeded build
@@ -100,10 +164,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -133,6 +196,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load openvino amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build Intel/OpenVINO image and run non-GPU tests
         run: |
           docker build --progress=plain -f Dockerfile.openvino \
@@ -182,10 +248,17 @@ jobs:
   # the build context's models/, and GRPARSE_TEST_REQUIRE_MODELS=1 makes a
   # missing model fail the in-build ctest instead of skipping.
   cpu-image:
+    # Skipped with the other image legs on a GitHub main push (see changes).
+    needs: changes
+    if: ${{ needs.changes.result == 'success' }}
     # Heavy image build: the Forgejo `heavy` label exists only on krick-host
     # (64g/20cpu). nas-1/nas-2 cap jobs at 16g/5cpu and openvino-image failed
     # there (run 453). GitHub has no `heavy` runner, so it keeps ubuntu-latest.
     runs-on: ${{ github.server_url == 'https://github.com' && 'ubuntu-latest' || 'heavy' }}
+    # Longest observed leg is 23 min with a cold seed and 58 min when a seed
+    # input changed; 75 min keeps that case green and still ends a hung
+    # build hours before GitHub's 6 h default (#242).
+    timeout-minutes: 75
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -196,13 +269,24 @@ jobs:
           registry: dhi.io
           username: ${{ secrets.DOCKER_USER }}
           password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Restore the pinned model files
+        # Keyed on models/MANIFEST, so a hit is the same pinned files;
+        # --verify below checks every sha256 either way (#245).
+        id: models-cache
+        uses: actions/cache@v6
+        with:
+          path: models
+          key: models-all-tokenizer-${{ hashFiles('models/MANIFEST') }}
       - name: Provide the pinned model files
         run: |
-          docker build --progress=plain -f Dockerfile.models \
-            --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
-          id=$(docker create grparse-ci-models)
-          docker cp "$id:/models/." models/
-          docker rm "$id"
+          if [ "${{ steps.models-cache.outputs.cache-hit }}" != true ]; then
+            echo "::warning::models-all-tokenizer cache miss; building Dockerfile.models, the only step that installs scripts/models-requirements.txt"
+            docker build --progress=plain -f Dockerfile.models \
+              --build-arg MODELS_LAYOUT=all --build-arg MODELS_TOKENIZER=1 -t grparse-ci-models .
+            id=$(docker create grparse-ci-models)
+            docker cp "$id:/models/." models/
+            docker rm "$id"
+          fi
           scripts/fetch-models.sh --verify --dir models --layout all --tokenizer
       - name: Free runner disk for the seeded build
         # GitHub's hosted runner only: the seed image (about 9 GB unpacked
@@ -210,10 +294,9 @@ jobs:
         # into /build and the build outgrow the runner's free space. The
         # preinstalled SDKs removed here are unused by this job.
         if: ${{ github.server_url == 'https://github.com' }}
-        run: |
-          df -h /
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
-          df -h /
+        # In the background (#245): it overlaps the next steps, and the
+        # build waits for it in "Wait for the freed runner disk".
+        run: sh scripts/free-runner-disk.sh start
       - name: Log in to Docker Hub (docker.io)
         # The deps seeds live on Docker Hub; logging in also lifts the
         # anonymous pull rate limit for the public bases.
@@ -243,6 +326,9 @@ jobs:
       - name: Load the compile cache into the build's ccache mount
         if: ${{ github.server_url == 'https://github.com' }}
         run: sh scripts/ccache-mount.sh load cpu amd64 "$RUNNER_TEMP/ccache"
+      - name: Wait for the freed runner disk
+        if: ${{ github.server_url == 'https://github.com' }}
+        run: sh scripts/free-runner-disk.sh wait
       - name: Build CPU image and run the tests, model goldens included
         run: |
           docker build --progress=plain -f Dockerfile.cpu \
@@ -303,6 +389,67 @@ jobs:
         # repo's PRs red; move the tag when the chart contract moves.
         run: scripts/test/chart-outputs-e2e-test.sh grparse-ci-cpu-e2e pipestreamai/grpc-enrich:0.3.0
 
+  # The Dockerfile.models fetch stage installs scripts/models-requirements.txt.
+  # cpu-image, sanitize.yml and publish.yml build that stage only on a
+  # models-all-tokenizer cache miss, so a Python base with no onnxruntime
+  # wheel stays green until the cache misses. This job does not consult that
+  # cache. It runs on every push to main and on a pull request that changes
+  # the fetch pin, the requirements file, or the Renovate rule that guards it.
+  models-fetch:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Run when the fetch pin or its guard changes
+        id: gate
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -eu
+          if [ "$EVENT_NAME" != "pull_request" ]; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git fetch --no-tags --depth=1 origin "$BASE_SHA"
+          # Two-dot: both commits are present after the fetch above, including
+          # on a shallow checkout where the merge base is not.
+          git diff --name-only "$BASE_SHA" HEAD | tee changed-paths.txt
+          if grep -Eq '^(Dockerfile\.models|scripts/models-requirements\.txt|renovate\.json)$' changed-paths.txt; then
+            echo "run=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "Models fetch pin unchanged; skipping the wheel check and the fetch-stage build."
+            echo "run=false" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Install pip when the runner does not have it
+        if: steps.gate.outputs.run == 'true'
+        run: |
+          if command -v pip >/dev/null 2>&1 || command -v pip3 >/dev/null 2>&1 || python3 -m pip --version >/dev/null 2>&1; then
+            exit 0
+          fi
+          if command -v sudo >/dev/null 2>&1; then
+            sudo apt-get -o Acquire::Retries=3 update
+            sudo apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pip
+          else
+            apt-get -o Acquire::Retries=3 update
+            apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3-pip
+          fi
+      - name: Check model requirement wheels
+        if: steps.gate.outputs.run == 'true'
+        run: sh scripts/check-models-requirements.sh
+      - name: Log in to dhi.io
+        if: steps.gate.outputs.run == 'true'
+        uses: docker/login-action@v4
+        with:
+          registry: dhi.io
+          username: ${{ secrets.DOCKER_USER }}
+          password: ${{ secrets.DOCKER_TOKEN }}
+      - name: Build the fetch stage
+        if: steps.gate.outputs.run == 'true'
+        run: docker build -f Dockerfile.models --target fetch .
+
   # The demo shell image carries every peer's proto contract (vendored under
   # examples/web-demo/peer-protos); the Dockerfile's own build gate loads
   # them all, and the unit tests cover the registry, the vendored trees, and
@@ -310,6 +457,7 @@ jobs:
   # diff (sync-peer-protos.sh --check) stays a developer-side step.
   demo-shell:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
       - name: Log in to dhi.io
@@ -330,49 +478,157 @@ jobs:
       - name: Load every peer contract inside the built image
         run: docker run --rm grparse-ci-demo-shell node server.js --check-protos
 
-  # Short fuzz window on the raster ingest door (the only in-process code that
-  # touches attacker-controlled bytes before a model runs; PDFs go to a
-  # PdfBackendService).  The fuzz project builds
-  # standalone in seconds - no gRPC or ONNX Runtime fetch - so this fits in a
-  # PR gate.  Long campaigns run manually; see fuzz/README.md.
+  # Short fuzz window on every in-process door: the code that reads
+  # attacker-controlled request bytes before a model or collector runs (the
+  # raster ingest door, the compound-file walker, the content sniff, the
+  # wiki storage parser, the base64 codec; PDFs go to a PdfBackendService).
+  # The fuzz project builds standalone in about a minute - no gRPC or ONNX
+  # Runtime fetch - so this fits in a PR gate. Every target gets the same
+  # 30 s window (five targets stay inside the cpu-image leg's time, so the
+  # gate waits on neither), and every step after the build runs even when an earlier
+  # target failed, so one finding does not hide another. Long campaigns run
+  # nightly (fuzz-long in nightly.yml); see fuzz/README.md.
   fuzz-smoke:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
-      - name: Install Clang and the ingest-door dependencies
+      - name: Install Clang and the in-process door dependencies
         # The self-hosted runner image runs jobs as root and ships no sudo;
         # GitHub-hosted runners need it. Use sudo only when it exists.
+        # The install takes 34-38 s; it once hung 36 min on a mirror (run
+        # 42319435370), so retries plus a step timeout end that early (#242).
+        timeout-minutes: 5
         run: |
           SUDO=$(command -v sudo || true)
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends \
-            clang libclang-rt-dev ninja-build cmake pkg-config \
-            libopencv-dev
+          $SUDO apt-get -o Acquire::Retries=3 update
+          $SUDO apt-get -o Acquire::Retries=3 install -y --no-install-recommends \
+            clang libclang-rt-dev ninja-build cmake pkg-config git ca-certificates \
+            libopencv-dev libprotobuf-dev protobuf-compiler
       - name: Build the fuzzers
+        id: build
         run: |
           cmake -S fuzz -B build-fuzz -G Ninja -DCMAKE_CXX_COMPILER=clang++
           cmake --build build-fuzz
       - name: Fuzz the raster ingest door
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         env:
           LSAN_OPTIONS: suppressions=tests/lsan.supp
         run: |
           mkdir -p corpus-raster
           ./build-fuzz/raster-source-fuzzer corpus-raster tests/data \
-            -max_total_time=90 -max_len=1048576 -rss_limit_mb=4096 -print_final_stats=1
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=4096 -timeout=25 -print_final_stats=1
+      - name: Fuzz the compound-file walker
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-cfb
+          ./build-fuzz/cfb-fuzzer corpus-cfb fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the content sniff
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-content-sniff
+          ./build-fuzz/content-sniff-fuzzer corpus-content-sniff tests/golden/corpus \
+            fuzz/corpus/cfb fuzz/regressions/cfb-fuzzer \
+            -max_total_time=30 -max_len=1048576 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the wiki storage parser
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-confluence-storage
+          ./build-fuzz/confluence-storage-fuzzer corpus-confluence-storage \
+            fuzz/corpus/confluence-storage fuzz/regressions/confluence-storage-fuzzer \
+            -max_total_time=30 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz base64 against its scalar oracle
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-base64
+          ./build-fuzz/base64-differential-fuzzer corpus-base64 \
+            fuzz/corpus/base64 fuzz/regressions/base64-differential-fuzzer \
+            -max_total_time=30 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Keep any crash input
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: fuzz-smoke-${{ github.run_id }}
+          path: |
+            crash-*
+            leak-*
+            oom-*
+            timeout-*
+            slow-unit-*
+          if-no-files-found: ignore
+
+  # The fleet contracts (#246). buf breaking (FILE category; a field may
+  # leave only with its number and name reserved) fails a
+  # pull request that renumbers, removes or retypes anything in the protos
+  # gRParse stages (document.proto, parse*.proto, office_service.proto,
+  # collectors/, backends/) against its base; buf lint only reports, since
+  # the files predate buf. scripts/stage-protos.py stages both trees with the
+  # same configure_file mapping the build uses. vendored-protos-test.sh then
+  # proves every vendored copy, and every sibling's document.proto, is
+  # byte-identical to its owner at the commit collectors/PINS.tsv names.
+  # Public repositories only; no secrets.
+  proto-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 2
+      - name: Install buf
+        env:
+          BUF_VERSION: 1.59.0
+          BUF_SHA256: d7462609e3814629c642ac10f0e7e27ec7e8e21d1dd75742f4434c31619e986b
+        run: |
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/buf" \
+            "https://github.com/bufbuild/buf/releases/download/v$BUF_VERSION/buf-Linux-x86_64"
+          echo "$BUF_SHA256  $RUNNER_TEMP/buf" | sha256sum -c
+          chmod +x "$RUNNER_TEMP/buf"
+      - name: Stage this tree and its base the way the build does
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+        run: |
+          base=${BASE_SHA:-HEAD~1}
+          git fetch --no-tags --depth=1 origin "$base" 2>/dev/null || true
+          mkdir -p "$RUNNER_TEMP/base-src"
+          git archive "$base" | tar -x -C "$RUNNER_TEMP/base-src"
+          python3 scripts/stage-protos.py . "$RUNNER_TEMP/proto-head"
+          python3 scripts/stage-protos.py "$RUNNER_TEMP/base-src" "$RUNNER_TEMP/proto-base"
+      - name: buf build and lint (lint reports only)
+        run: |
+          "$RUNNER_TEMP/buf" build "$RUNNER_TEMP/proto-head"
+          "$RUNNER_TEMP/buf" lint "$RUNNER_TEMP/proto-head" || echo "buf lint: findings above are reported, not gating"
+      - name: buf breaking against the base (additive only)
+        run: '"$RUNNER_TEMP/buf" breaking "$RUNNER_TEMP/proto-head" --against "$RUNNER_TEMP/proto-base"'
+      - name: Vendored copies match their pinned owners
+        run: |
+          sh scripts/test/vendored-protos-test.sh --self-test
+          sh scripts/test/vendored-protos-test.sh
 
   # The Python under eval/: the corpus runner and drift analyzer, the S3
   # battery checks, the scorecard metrics, ruff, and the one-command corpus
   # eval wrapper's dry run. Stdlib only; no service, no network beyond ruff.
   eval-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
       - name: Install Python
-        # Same sudo rule as fuzz-smoke: the self-hosted image runs as root.
+        # Same sudo rule and apt timeout as fuzz-smoke: the self-hosted
+        # image runs as root.
+        timeout-minutes: 5
         run: |
           SUDO=$(command -v sudo || true)
-          $SUDO apt-get update
-          $SUDO apt-get install -y --no-install-recommends python3 python3-venv
+          $SUDO apt-get -o Acquire::Retries=3 update
+          $SUDO apt-get -o Acquire::Retries=3 install -y --no-install-recommends python3 python3-venv
           python3 -m venv /tmp/eval-venv
           /tmp/eval-venv/bin/pip install --quiet 'ruff==0.17.1'
       - name: eval/corpus tests
@@ -385,3 +641,5 @@ jobs:
         run: /tmp/eval-venv/bin/ruff check eval/
       - name: eval-corpus.sh dry run
         run: scripts/test/eval-corpus-test.sh
+      - name: Which paths pull the cuda and openvino legs into a PR
+        run: sh scripts/test/ci-changes-test.sh
