@@ -576,6 +576,26 @@ void report_retired_settings() {
   }
 }
 
+EngineInventory read_engine_inventory(const BuiltEngines& built,
+                                      const EmbeddingConfig& embeddings) {
+  const auto switched_off = [](const char* setting) {
+    return configured_mode(setting, "auto", {"auto", "on", "off"}) == "off";
+  };
+  const bool layout_off = switched_off("GRPARSE_LAYOUT");
+  const auto state = [](bool was_built, bool off) {
+    return was_built ? EngineState::kLoaded : off ? EngineState::kDisabled : EngineState::kNotLoaded;
+  };
+  return EngineInventory{
+      .ocr = EngineState::kLoaded,
+      .layout = state(built.layout, layout_off),
+      .table_structure =
+          state(built.table_structure, layout_off || switched_off("GRPARSE_TABLE_STRUCTURE")),
+      .figure_classifier =
+          state(built.figure_classifier, layout_off || switched_off("GRPARSE_FIGURE_CLASSES")),
+      .embeddings = state(built.embeddings, embeddings.backend == EmbeddingBackend::disabled),
+  };
+}
+
 std::string openvino_device_setting() { return configured_openvino_device(); }
 
 void report_model_placements() {

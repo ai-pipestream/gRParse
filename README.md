@@ -1077,6 +1077,24 @@ The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
 
+Both health surfaces report what the process holds, not that the port is
+bound. `Health` answers a typed `state` (`SERVING_STATE_NOT_SERVING` until
+startup has built everything the settings ask for, then `SERVING`, or
+`SERVING_DEGRADED` when a part is missing) and one `ComponentHealth` per
+in-process engine (loaded, disabled by its setting, or allowed and not
+built), per `GRPARSE_PDF_BACKEND` target, and per collector and peer target
+(not configured, configured, connected or unreachable, with the connectivity
+state of each channel a parse has already opened). Nothing is probed for the
+answer: `Health` never creates a channel or makes one connect, so a target no
+parse has needed yet reads `COMPONENT_STATE_CONFIGURED`. Degraded means an
+engine was allowed and not built, a configured target's last connection
+attempt failed, or no PDF backend is configured; a switched-off engine and an
+unset collector are deployment choices and do not count. The `status` string
+is the text form of `state` (`starting`, `ready`, `degraded`). `grpc.health.v1`
+answers for the server (`""`) and for `ai.pipestream.parse.v1.ParseService`
+and `ai.pipestream.parse.v1.ParseStreamingService` by name: `NOT_SERVING`
+until startup completes and `SERVING` after, degraded included.
+
 Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
 prints one pipeline metrics line to stdout: document and page counters, queue
 depths, per-stage busy percentages since the previous line, OCR session pool
