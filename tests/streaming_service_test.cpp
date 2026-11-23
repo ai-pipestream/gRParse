@@ -68,6 +68,7 @@ namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 // Field-wise message equality. Serialized bytes are not a stable identity:
 // protobuf map fields (Chunk.metadata, Chunk.typed_metadata) iterate in a
@@ -505,6 +506,9 @@ void verify_stream_document_inline_sources(TestServer* server) {
       require(!result.source_result().success() && result.source_result().has_error_message() &&
                   result.source_result().filename() == "broken.png",
               "its source_result reports the failure");
+      require(result.source_result().status() == parsev1::CONVERSION_STATUS_FAILURE &&
+                  result.source_result().collector_failures_size() == 0,
+              "and types it: status FAILURE, no Document a collector is missing from");
       continue;
     }
     const auto& exporting = envelopes[first[index] + 1];
@@ -523,6 +527,9 @@ void verify_stream_document_inline_sources(TestServer* server) {
     require(result.source_result().success() && result.source_result().filename() == "image.png" &&
                 !result.source_result().has_error_message(),
             label + "'s source_result reports success");
+    require(result.source_result().status() == parsev1::CONVERSION_STATUS_SUCCESS &&
+                result.source_result().collector_failures_size() == 0,
+            label + "'s source_result is a full conversion: status SUCCESS, no failed collector");
   }
   const auto& closing = envelopes.back();
   require(is_status(closing, parsev1::StreamStatus::PHASE_COMPLETED) &&
@@ -541,6 +548,63 @@ void verify_stream_document_inline_sources(TestServer* server) {
               is_status(failed.envelopes.back(), parsev1::StreamStatus::PHASE_FAILED) &&
               failed.envelopes.back().status().num_failed() == 1,
           "and closes FAILED");
+}
+
+// A source one collector failed on while another converted it is a partial
+// conversion, and its source_result says so in typed fields: success stays
+// true (a Document was produced), status is PARTIAL_SUCCESS as the unary
+// ConvertSource reports it for the same request, and collector_failures
+// names the leg with the category the unary ErrorItem carries. The joined
+// error_message stays for readers that predate them.
+void verify_stream_document_types_a_partial_conversion(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  // The email collector is not configured here, so it fails beside CV.
+  auto convert = unary_request();
+  convert.mutable_request()->mutable_options()->add_collectors(parsev1::COLLECTOR_GRPARSE_CV);
+  convert.mutable_request()->mutable_options()->add_collectors(parsev1::COLLECTOR_EMAIL);
+  grpc::ClientContext unary_context;
+  unary_context.set_deadline(std::chrono::system_clock::now() + 10s);
+  parsev1::ConvertSourceResponse unary;
+  require(server->unary_stub()->ConvertSource(&unary_context, convert, &unary).ok(),
+          "the unary conversion the stream is compared with");
+  require(unary.response().status() == parsev1::CONVERSION_STATUS_PARTIAL_SUCCESS &&
+              unary.response().errors_size() == 1 &&
+              unary.response().errors(0).module_name() == "collector:email" &&
+              unary.response().errors(0).category() == parsev1::FAILURE_CATEGORY_BACKEND_FAILURE,
+          "the unary surface reports the failed email leg as a partial success");
+
+  auto client = server->stub();
+  const EnvelopeRun run = run_stream_document(client.get(), stream_document_request(convert));
+  require(run.status.ok(), "a partial conversion still streams: " + run.status.error_message());
+  const parsev1::StreamSourceResult* result = nullptr;
+  bool document_sent = false;
+  for (const auto& envelope : run.envelopes) {
+    if (envelope.has_final_document()) document_sent = true;
+    if (envelope.has_source_result()) result = &envelope.source_result();
+  }
+  require(document_sent && result != nullptr,
+          "the surviving collector's Document and the source_result arrive");
+  require(result->success(), "success says a Document was produced");
+  require_equal(std::string(parsev1::ConversionStatus_Name(result->status())),
+                std::string("CONVERSION_STATUS_PARTIAL_SUCCESS"),
+                "the source_result's status tells the partial conversion from a full one");
+  require_equal(result->collector_failures_size(), 1, "one typed failure for the one failed leg");
+  const auto& failure = result->collector_failures(0);
+  require(failure.collector() == parsev1::COLLECTOR_EMAIL,
+          "the failure names its collector as an enum, not inside a string");
+  require(failure.category() == unary.response().errors(0).category(),
+          "with the category the unary ErrorItem carries: " +
+              parsev1::FailureCategory_Name(failure.category()));
+  require_equal(failure.error(), unary.response().errors(0).error_message(),
+                "and the collector's own error text");
+  require(result->has_error_message() &&
+              result->error_message() == "collector:email: " + failure.error(),
+          "error_message keeps its line for older readers: " + result->error_message());
+  const auto& closing = run.envelopes.back();
+  require(is_status(closing, parsev1::StreamStatus::PHASE_COMPLETED) &&
+              closing.status().num_partially_succeeded() == 1 &&
+              closing.status().num_succeeded() == 0 && closing.status().num_failed() == 0,
+          "the closing counts place the source under partially succeeded");
 }
 
 // What the stream refuses as a whole is refused before any envelope, with
@@ -6360,6 +6424,7 @@ int main() {
         verify_data_after_complete_is_rejected(&server);
         verify_unary_uses_scheduler_and_shared_assembly(&server);
         verify_stream_document_inline_sources(&server);
+        verify_stream_document_types_a_partial_conversion(&server);
         verify_stream_document_refuses_requests(&server);
         verify_stream_document_cancels_with_the_client();
         verify_unsupported_options_are_rejected(&server);
