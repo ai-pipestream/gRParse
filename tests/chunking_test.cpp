@@ -19,6 +19,8 @@
 #include "../src/render/renderer_base.h"
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
+#include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+#include "grparse/pdf_form_widgets.h"
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -1295,6 +1297,81 @@ std::string slice_code_points(const std::string& text, std::uint64_t start, std:
   return grparse::chunking::encode_utf8(points.data() + start, points.data() + end);
 }
 
+// -- form fields --------------------------------------------------------------
+
+// One AcroForm page as the PDF backend reports it: a filled text field and a
+// ticked check box, folded by the same code the parse path runs
+// (fold_pdf_form_widgets), so the tree is the one a real form produces:
+// body -> field region -> field item -> key text, value text.
+docv1::Document form_document() {
+  namespace pdfv1 = ai::protomolt::parse::pdf::v1;
+  docv1::Document document = new_document();
+  auto& page = (*document.mutable_pages())[1];
+  page.set_page_no(1);
+  page.mutable_size()->set_width(612);
+  page.mutable_size()->set_height(792);
+  add_paragraph(&document, "Please complete the form.", 1);
+
+  grparse::PdfPageWidgets widgets;
+  widgets.page_number = 1;
+  widgets.page_info.set_width_pts(612);
+  widgets.page_info.set_height_pts(792);
+  pdfv1::FormField name;
+  name.set_kind(pdfv1::FORM_FIELD_KIND_TEXT);
+  name.set_name("customer_name");
+  name.set_alternate_name("Customer name");
+  name.set_value("Jordan Example");
+  name.mutable_rect()->set_x0(300);
+  name.mutable_rect()->set_y0(300);
+  name.mutable_rect()->set_x1(450);
+  name.mutable_rect()->set_y1(320);
+  pdfv1::FormField agree;
+  agree.set_kind(pdfv1::FORM_FIELD_KIND_CHECK_BOX);
+  agree.set_name("agree");
+  agree.set_alternate_name("I agree to the terms");
+  agree.set_value("Yes");
+  agree.set_appearance_state("/Yes");
+  agree.mutable_rect()->set_x0(300);
+  agree.mutable_rect()->set_y0(250);
+  agree.mutable_rect()->set_x1(315);
+  agree.mutable_rect()->set_y1(265);
+  widgets.fields = {name, agree};
+  grparse::fold_pdf_form_widgets({widgets}, "grpc-pdfium", &document);
+  return document;
+}
+
+// A filled-in form's field names and values are body text: every one of
+// them must land in a chunk, or the form's content is never embedded.
+void verify_form_fields_chunk_their_keys_and_values() {
+  const docv1::Document document = form_document();
+  require(document.field_regions_size() == 1 && document.field_items_size() == 2,
+          "the fold must produce one region with two field items");
+  const auto chunks = chunk_hierarchical(document, {}, {}, "form.pdf");
+  for (const std::string expected :
+       {"Please complete the form.", "Customer name", "Jordan Example", "I agree to the terms",
+        "Yes"}) {
+    require(find_chunk(chunks, expected) != nullptr,
+            "no chunk carries the form text \"" + expected + "\"");
+  }
+  // Each field text is its own item, so the chunk points back at it.
+  const auto* value = find_chunk(chunks, "Jordan Example");
+  require(value->doc_items_size() == 1 && value->doc_items(0).starts_with("#/texts/"),
+          "a field value's chunk references the value's text item");
+}
+
+// A field region the producer put on another layer stays out, like any
+// other subtree: descending into fields must not bypass the layer rule.
+void verify_form_fields_outside_the_body_layer_do_not_chunk() {
+  docv1::Document document = form_document();
+  document.mutable_field_regions(0)->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  const auto chunks = chunk_hierarchical(document, {}, {}, "form.pdf");
+  require(find_chunk(chunks, "Jordan Example") == nullptr &&
+              find_chunk(chunks, "Customer name") == nullptr,
+          "a field region outside the body layer contributes no chunk");
+  require(find_chunk(chunks, "Please complete the form.") != nullptr,
+          "the body text beside it still chunks");
+}
+
 void verify_derived_offsets_index_the_text_export() {
   docv1::Document document = new_document();
   const std::string empty = add_paragraph(&document, "");
@@ -1438,6 +1515,9 @@ const Case kCases[] = {
     {"hybrid digest", verify_hybrid_digest_reports_the_budget},
     {"chunk key", verify_chunk_key_names_bytes_options_build_rules_and_position},
     {"declared chunk language", verify_chunk_language_is_the_declared_one},
+    {"form fields chunk their keys and values", verify_form_fields_chunk_their_keys_and_values},
+    {"form fields outside the body layer do not chunk",
+     verify_form_fields_outside_the_body_layer_do_not_chunk},
     {"derived offsets index the text export", verify_derived_offsets_index_the_text_export},
     {"overlay labels only matching rows", verify_overlay_labels_only_matching_rows},
     {"derived offsets key by arena position", verify_derived_offsets_key_by_arena_position},
