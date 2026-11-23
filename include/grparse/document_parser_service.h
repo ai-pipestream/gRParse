@@ -508,11 +508,12 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
 
   // The source-based entry to the envelope feed: each source of the
-  // ConvertDocumentRequest is fetched and parsed exactly as ConvertSource
-  // parses it, one after another on this service's executor, and the stream
-  // carries status envelopes around each source's final_document and
-  // source_result. Every envelope echoes request_id and carries the next
-  // sequence_number, from 1.
+  // ConvertDocumentRequest is fetched, parsed and exported exactly as
+  // ConvertSource converts it, one after another on this service's
+  // executor, and the stream carries status envelopes around each source's
+  // final_document, source_outputs (the exports, chunks, findings,
+  // confidence and offsets of the unary response) and source_result. Every
+  // envelope echoes request_id and carries the next sequence_number, from 1.
   grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamDocumentResponse>* StreamDocument(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::StreamDocumentRequest* request) override;

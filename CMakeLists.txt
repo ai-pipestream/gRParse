@@ -853,6 +853,7 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/conversion_outputs.cpp
   src/task_registry.cpp
   src/vlm_custom_options.cpp
   src/option_rejection.cpp
