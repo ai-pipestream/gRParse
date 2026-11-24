@@ -10,8 +10,9 @@ namespace grparse {
 OcrRectRenderer::OcrRectRenderer(Opener open, double base_dpi, double ocr_dpi)
     : open_(std::move(open)), scale_(base_dpi > 0.0 ? ocr_dpi / base_dpi : 1.0) {}
 
-cv::Mat OcrRectRenderer::render(int page_number) {
+cv::Mat OcrRectRenderer::render(int page_number, std::string* failure) {
   std::shared_ptr<PageSource> source;
+  std::string why;
   {
     const std::lock_guard<std::mutex> lock(mutex_);
     if (cancelled_) return {};
@@ -19,18 +20,30 @@ cv::Mat OcrRectRenderer::render(int page_number) {
       opened_ = true;
       try {
         source_ = open_ ? open_() : nullptr;
-      } catch (const std::exception&) {
+        if (source_ == nullptr) open_failure_ = "the document did not open at the OCR DPI";
+      } catch (const std::exception& error) {
         source_ = nullptr;
+        open_failure_ = std::string("the document did not open at the OCR DPI: ") + error.what();
       }
     }
     source = source_;
+    why = open_failure_;
   }
-  if (source == nullptr) return {};
-  try {
-    return source->render_page(page_number);
-  } catch (const std::exception&) {
-    return {};
+  if (source != nullptr) {
+    try {
+      cv::Mat image = source->render_page(page_number);
+      if (!image.empty()) return image;
+      why = "the render at the OCR DPI came back empty";
+    } catch (const std::exception& error) {
+      why = std::string("the render at the OCR DPI failed: ") + error.what();
+    }
   }
+  // A cancel that landed while the render was in flight aborted the backend
+  // call, which then failed: that is the request ending, not a weaker read
+  // for the caller to report, so the reason is not handed on.
+  const std::lock_guard<std::mutex> lock(mutex_);
+  if (failure != nullptr && !cancelled_) *failure = std::move(why);
+  return {};
 }
 
 void OcrRectRenderer::cancel() {

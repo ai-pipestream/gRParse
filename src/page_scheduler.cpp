@@ -412,6 +412,7 @@ class PageScheduler::Impl final {
     snapshot.page_latency_ns = latency_sum_ns_.load();
     snapshot.pages_rerecognized = pages_rerecognized_.load();
     snapshot.rerecognition_passes = rerecognition_passes_.load();
+    snapshot.pages_picture_ocr_at_page_resolution = pages_picture_ocr_at_page_resolution_.load();
     for (size_t turn = 0; turn < rotations_applied_.size(); ++turn) {
       snapshot.rotations_applied[turn] = rotations_applied_[turn].load();
     }
@@ -893,8 +894,24 @@ class PageScheduler::Impl final {
             // Rectangles read sharper from a second render at the OCR DPI
             // when one is configured; the page raster otherwise.
             const auto& renderer = job.page->request->ocr_renderer;
-            const cv::Mat sharp = rects.empty() || !renderer ? cv::Mat()
-                                                             : renderer->render(job.page->page_number);
+            std::string sharp_failure;
+            const cv::Mat sharp = rects.empty() || !renderer
+                                      ? cv::Mat()
+                                      : renderer->render(job.page->page_number, &sharp_failure);
+            // A sharper render that was configured and failed leaves the
+            // rectangles to the page raster, where small text reads worse
+            // or not at all. The page and the pictures read that way keep
+            // the fact, and assembly reports it, so the weaker read never
+            // passes for the configured one.
+            if (!sharp_failure.empty()) {
+              pages_picture_ocr_at_page_resolution_.fetch_add(1);
+              assembled.sharper_render_failure =
+                  OcrPage::SharperRenderFailure{std::move(sharp_failure), rects.size()};
+              for (auto& region : regions) {
+                region.read_at_page_resolution = read_as_picture(
+                    region, job.image.cols, job.image.rows, kMinPictureReadSide);
+              }
+            }
             for (const cv::Rect& roi : rects) {
               const StageTimer stage(timings.ocr_ms);
               if (sharp.empty()) {
@@ -1094,6 +1111,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_rerecognized_{0};
   std::atomic<uint64_t> rerecognition_passes_{0};
   std::array<std::atomic<uint64_t>, kRotationDegrees.size()> rotations_applied_{};
+  std::atomic<uint64_t> pages_picture_ocr_at_page_resolution_{0};
 };
 
 PageScheduler::Ticket::Ticket(std::weak_ptr<State> state) : state_(std::move(state)) {}

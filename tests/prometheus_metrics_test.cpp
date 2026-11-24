@@ -63,6 +63,7 @@ void verify_render_counters_and_gauges() {
   metrics.pages_rendered = 13;
   metrics.pages_recognized = 5;
   metrics.pages_layout_labelled = 4;
+  metrics.pages_picture_ocr_at_page_resolution = 12;
   metrics.tables_structured = 1;
   metrics.figures_classified = 6;
   metrics.barcodes_decoded = 2;
@@ -119,6 +120,8 @@ void verify_render_counters_and_gauges() {
   require_contains(text, "grparse_pages_rendered_total 13\n", "rendered pages counter");
   require_contains(text, "grparse_pages_ocr_total 5\n", "ocr pages counter");
   require_contains(text, "grparse_pages_layout_total 4\n", "layout pages counter");
+  require_contains(text, "grparse_pages_picture_ocr_at_page_resolution_total 12\n",
+                   "pages whose sharper picture render failed");
   require_contains(text, "grparse_tables_structured_total 1\n", "tables counter");
   require_contains(text, "grparse_figures_classified_total 6\n", "figures counter");
   require_contains(text, "grparse_barcodes_decoded_total 2\n", "barcodes counter");

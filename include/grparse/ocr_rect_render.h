@@ -34,8 +34,12 @@ class OcrRectRenderer {
   OcrRectRenderer(Opener open, double base_dpi, double ocr_dpi);
 
   // The page at the OCR DPI, or an empty Mat when the source does not open,
-  // the render fails, or the renderer was cancelled.
-  cv::Mat render(int page_number);
+  // the render fails, or the renderer was cancelled. The caller reads the
+  // page raster instead of an empty Mat, a weaker read it has to own up to:
+  // `failure`, when given, receives why the source did not open or the
+  // render failed. It is left as it was on success and after a cancel,
+  // which ends the request and leaves no read to report.
+  cv::Mat render(int page_number, std::string* failure = nullptr);
 
   // The OCR DPI over the base DPI.
   double scale() const { return scale_; }
@@ -50,6 +54,9 @@ class OcrRectRenderer {
   bool opened_ = false;
   bool cancelled_ = false;
   std::shared_ptr<PageSource> source_;
+  // Why the source did not open; the open runs once, so every later render
+  // fails for the same reason and says so.
+  std::string open_failure_;
 };
 
 // The renderer for one document: its PDF reopened through `factory` at

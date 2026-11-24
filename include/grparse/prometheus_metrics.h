@@ -163,7 +163,10 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
 // rate(busy_seconds[1m]) / workers is the same busy fraction the stdout line
 // prints.  Orientation recovery exports as grparse_pages_rerecognized_total,
 // grparse_rerecognition_passes_total and
-// grparse_page_rotations_total{degrees="90"|"180"|"270"}.  The repair totals
+// grparse_page_rotations_total{degrees="90"|"180"|"270"}.  Pages whose
+// sharper picture render failed (the picture regions were read from the
+// page raster) export as grparse_pages_picture_ocr_at_page_resolution_total.
+// The repair totals
 // export as grparse_repair_changes_total{kind=...} (every RepairTotals
 // counter), the office CV enrichment totals as grparse_office_cv_total{kind=...}
 // and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
