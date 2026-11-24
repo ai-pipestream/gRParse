@@ -25,6 +25,7 @@ void DoclingMapper::consume(const officev1::StreamPagesResponse& event) {
     case officev1::StreamPagesResponse::kMetadata:
       return pages_.on_metadata(event.metadata());
     case officev1::StreamPagesResponse::kParagraph:
+      pages_.note_page_number_restart(event.paragraph());
       return writer_.on_paragraph(event.paragraph());
     case officev1::StreamPagesResponse::kTable:
       return writer_.on_table(event.table());
@@ -110,6 +111,7 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   sheets_.resolve_named_range_sheets();
   anchors_.resolve(arena_);
   pages_.resolve_page_styles();
+  pages_.resolve_page_labels();
   // Every held event is folded by now, so every gap that arrived has been
   // reported. The worker counts the events it marked; a different number
   // here means a loss it knows of did not arrive as a gap, and the caller

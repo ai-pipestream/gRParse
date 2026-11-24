@@ -240,7 +240,9 @@ std::string WriterFold::place_embedded_image(
     // A sheet picture comes from the sheet's draw page, page_index being
     // the sheet index; it belongs under that sheet's group.
     for (const docv1::GroupItem& group : arena_.document().groups()) {
-      if (group.label() == docv1::GROUP_LABEL_SHEET
+      // has_sheet tells a sheet of the document from a sheet group of an
+      // embedded workbook, which carries no SheetMeta and no index.
+      if (group.label() == docv1::GROUP_LABEL_SHEET && group.has_sheet()
           && group.sheet().index() == image.page_index()) {
         parent = group.self_ref();
         break;

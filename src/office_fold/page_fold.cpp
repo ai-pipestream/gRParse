@@ -50,17 +50,19 @@ void set_source_meta(const officev1::DocumentMetadata& meta,
                      docv1::DocumentMeta* out) {
   if (!meta.title().empty()) out->set_title(meta.title());
   if (!meta.author().empty()) out->add_authors(meta.author());
-  if (meta.created_epoch_ms() != 0) {
+  // The wire says whether each instant was stored at all, so one stored as
+  // the epoch itself is kept and one that was never stored stays unset.
+  if (meta.has_created_epoch_ms()) {
     set_instant(meta.created_epoch_ms(), out->mutable_created());
   }
-  if (meta.modified_epoch_ms() != 0) {
+  if (meta.has_modified_epoch_ms()) {
     set_instant(meta.modified_epoch_ms(), out->mutable_modified());
   }
   if (!meta.language().empty()) out->set_language(meta.language());
   if (!meta.generator().empty()) out->set_generator(meta.generator());
   if (!meta.subject().empty()) out->set_subject(meta.subject());
   if (!meta.modified_by().empty()) out->set_modified_by(meta.modified_by());
-  if (meta.printed_epoch_ms() != 0) {
+  if (meta.has_printed_epoch_ms()) {
     set_instant(meta.printed_epoch_ms(), out->mutable_printed());
   }
   if (!meta.printed_by().empty()) out->set_printer(meta.printed_by());
@@ -211,6 +213,40 @@ void PageFold::on_page_style(const officev1::PageStyleInfo& style) {
   margins->set_right(static_cast<double>(style.margin_right_twips()));
   margins->set_bottom(static_cast<double>(style.margin_bottom_twips()));
   out->set_columns(style.columns());
+}
+
+void PageFold::note_page_number_restart(const officev1::Paragraph& paragraph) {
+  // The wire says -1 for a paragraph that restarts nothing, and for a
+  // paragraph whose page is not known.
+  if (paragraph.page_number_offset() < 0 || paragraph.page_index() < 0) return;
+  page_number_restarts_.emplace(paragraph.page_index(),
+                                paragraph.page_number_offset());
+}
+
+void PageFold::resolve_page_labels() {
+  if (page_number_restarts_.empty()) return;
+  docv1::Document& document = arena_.document();
+  std::vector<int> page_numbers;
+  for (const auto& entry : document.pages()) page_numbers.push_back(entry.first);
+  std::ranges::sort(page_numbers);
+  bool numbering = false;
+  long long printed = 0;
+  int previous_index = 0;
+  for (int page_no : page_numbers) {
+    const int index = page_no - 1;
+    const auto restart = page_number_restarts_.find(index);
+    if (restart != page_number_restarts_.end()) {
+      numbering = true;
+      printed = restart->second;
+    } else if (numbering) {
+      // A page that was not emitted still advances the printed number.
+      printed += index - previous_index;
+    }
+    previous_index = index;
+    if (numbering) {
+      (*document.mutable_pages())[page_no].set_page_label(std::to_string(printed));
+    }
+  }
 }
 
 void PageFold::resolve_page_styles() {

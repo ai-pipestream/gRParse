@@ -4,6 +4,8 @@
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <tuple>
+#include <utility>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
@@ -1747,6 +1749,448 @@ void verify_incomplete_items_that_do_not_add_up_are_reported() {
   }
 }
 
+// One embedded chart object of the given kind, with categories and series
+// (label, y values, x values, sizes), its tabular projection laid out the
+// way the worker lays it out: a label row on top, categories down the
+// first column, then one column per series y value list, or for scatter
+// and bubble charts an x, a y and (bubble) a size column per series.
+using ChartSeries = std::tuple<std::string, std::vector<double>, std::vector<double>,
+                               std::vector<double>>;
+
+officev1::StreamPagesResponse chart_event(officev1::EmbeddedChartKind kind,
+                                          const std::vector<std::string>& categories,
+                                          const std::vector<ChartSeries>& series,
+                                          const std::vector<std::vector<std::string>>& grid) {
+  officev1::StreamPagesResponse event;
+  officev1::EmbeddedObject* object = event.mutable_embedded_object();
+  object->set_kind(officev1::EMBEDDED_OBJECT_KIND_CHART);
+  object->set_page_index(0);
+  object->set_width_twips(5000);
+  object->set_height_twips(3000);
+  officev1::EmbeddedChart* chart = object->mutable_chart();
+  chart->set_kind(kind);
+  chart->set_title("Growth");
+  for (const std::string& category : categories) chart->add_categories(category);
+  for (const auto& [label, y, x, sizes] : series) {
+    officev1::EmbeddedChartSeries* out = chart->add_series();
+    out->set_label(label);
+    for (double value : y) out->add_values_y(value);
+    for (double value : x) out->add_values_x(value);
+    for (double value : sizes) out->add_sizes(value);
+  }
+  officev1::TableData* tabular = chart->mutable_tabular();
+  tabular->set_rows(static_cast<int32_t>(grid.size()));
+  tabular->set_columns(grid.empty() ? 0 : static_cast<int32_t>(grid[0].size()));
+  for (size_t row = 0; row < grid.size(); row++) {
+    for (size_t column = 0; column < grid[row].size(); column++) {
+      officev1::TableCellData* cell = tabular->add_cells();
+      cell->set_row(static_cast<int32_t>(row));
+      cell->set_column(static_cast<int32_t>(column));
+      cell->set_text(grid[row][column]);
+    }
+  }
+  return event;
+}
+
+// A pie chart with two series keeps both: one pie annotation per series, in
+// series order, where only the first used to survive.
+void verify_every_pie_series_keeps_an_annotation() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(chart_event(
+      officev1::EMBEDDED_CHART_KIND_PIE, {"A", "B"},
+      {ChartSeries{"left", {1.0, 2.0}, {}, {}}, ChartSeries{"right", {3.0, 4.0}, {}, {}}},
+      {{"", "left", "right"}, {"A", "1", "3"}, {"B", "2", "4"}}));
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1, "one chart, one picture");
+  int pies = 0;
+  double right_b = 0;
+  for (const auto& annotation : document.pictures(0).annotations()) {
+    if (!annotation.has_pie_chart()) continue;
+    pies++;
+    if (pies == 2) right_b = annotation.pie_chart().slices(1).value();
+  }
+  require_equal(pies, 2, "every series of a pie chart keeps a pie annotation");
+  require(right_b == 4.0, "the second annotation holds the second series' values");
+}
+
+// A scatter chart with two series keeps two annotations rather than one
+// merged point list, so a point can be told from its neighbour's series;
+// bubble sizes ride ChartPoint.size.
+void verify_every_scatter_series_keeps_its_own_annotation() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(chart_event(
+      officev1::EMBEDDED_CHART_KIND_SCATTER, {},
+      {ChartSeries{"low", {1.0, 2.0}, {10.0, 20.0}, {}},
+       ChartSeries{"high", {7.0, 8.0}, {30.0, 40.0}, {}}},
+      {{"", "low (x)", "low (y)", "high (x)", "high (y)"},
+       {"1", "10", "1", "30", "7"},
+       {"2", "20", "2", "40", "8"}}));
+  mapper.consume(chart_event(
+      officev1::EMBEDDED_CHART_KIND_BUBBLE, {},
+      {ChartSeries{"bubbles", {1.0, 2.0}, {10.0, 20.0}, {0.5, 1.5}}},
+      {{"", "bubbles (x)", "bubbles (y)", "bubbles (size)"},
+       {"1", "10", "1", "0.5"},
+       {"2", "20", "2", "1.5"}}));
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 2, "two charts, two pictures");
+  std::vector<const docv1::PictureScatterChartData*> scatters;
+  for (const auto& annotation : document.pictures(0).annotations()) {
+    if (annotation.has_scatter_chart()) scatters.push_back(&annotation.scatter_chart());
+  }
+  require_equal(scatters.size(), size_t{2}, "each scatter series keeps its own annotation");
+  require(scatters[0]->points_size() == 2 && scatters[1]->points_size() == 2 &&
+              scatters[1]->points(0).value().first() == 30.0 &&
+              scatters[1]->points(0).value().second() == 7.0 &&
+              !scatters[1]->points(0).has_size(),
+          "each scatter annotation holds its own series' points");
+  const docv1::PictureScatterChartData* bubbles = nullptr;
+  for (const auto& annotation : document.pictures(1).annotations()) {
+    if (annotation.has_scatter_chart()) bubbles = &annotation.scatter_chart();
+  }
+  require(bubbles != nullptr && bubbles->points_size() == 2 && bubbles->points(1).has_size() &&
+              bubbles->points(1).size() == 1.5,
+          "bubble sizes are kept on the points");
+}
+
+// The tabular projection of a chart carries every value as a typed number
+// beside its text, with the label row and the category column marked as
+// headers, so a series name is one header cell away and no value is held
+// only as text. The cell list and the grid each hold their own copy of a
+// cell, and both are typed.
+void verify_chart_tabular_projection_is_typed() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(chart_event(
+      officev1::EMBEDDED_CHART_KIND_COLUMN, {"Q1", "Q2"},
+      {ChartSeries{"2023", {1234567.89, 2.5}, {}, {}},
+       ChartSeries{"2024", {3.0, 4.0}, {}, {}},
+       ChartSeries{"2025", {5.0, 6.0}, {}, {}}},
+      {{"", "2023", "2024", "2025"}, {"Q1", "1234567.89", "3", "5"}, {"Q2", "2.5", "4", "6"}}));
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  require(document.pictures_size() == 1, "one chart, one picture");
+  std::vector<const docv1::PictureBarChartData*> bars;
+  const docv1::PictureTabularChartData* tabular = nullptr;
+  for (const auto& annotation : document.pictures(0).annotations()) {
+    if (annotation.has_bar_chart()) bars.push_back(&annotation.bar_chart());
+    if (annotation.has_tabular_chart()) tabular = &annotation.tabular_chart();
+  }
+  require_equal(bars.size(), size_t{3}, "every series of a column chart keeps a bar annotation");
+  require(bars[0]->bars(0).values() == 1234567.89 && bars[1]->bars(1).values() == 4.0 &&
+              bars[2]->bars(0).label() == "Q1" && bars[2]->bars(1).values() == 6.0,
+          "each bar annotation holds its own series' values");
+  require(tabular != nullptr, "the tabular projection is attached");
+  const auto check = [](const docv1::TableCell& cell, bool* exact, bool* headers,
+                        bool* categories) {
+    const int row = cell.start_row_offset_idx();
+    const int column = cell.start_col_offset_idx();
+    if (row == 1 && column == 1) {
+      *exact = cell.has_value() && cell.value().has_number() &&
+               cell.value().number() == 1234567.89 && cell.text() == "1234567.89";
+    }
+    if (row == 0 && column == 3) *headers = cell.column_header() && cell.text() == "2025";
+    if (row == 2 && column == 0) {
+      *categories = cell.row_header() && cell.text() == "Q2" && !cell.has_value();
+    }
+  };
+  bool exact = false;
+  bool headers = false;
+  bool categories = false;
+  for (const docv1::TableCell& cell : tabular->chart_data().table_cells()) {
+    check(cell, &exact, &headers, &categories);
+  }
+  require(exact, "a tabular value cell carries the exact typed number");
+  require(headers, "the label row is a column header naming the series");
+  require(categories, "the category column is a row header, untyped");
+  bool grid_exact = false;
+  bool grid_headers = false;
+  bool grid_categories = false;
+  for (const docv1::TableRow& row : tabular->chart_data().grid()) {
+    for (const docv1::TableCell& cell : row.cells()) {
+      check(cell, &grid_exact, &grid_headers, &grid_categories);
+    }
+  }
+  require(grid_exact && grid_headers && grid_categories,
+          "the grid's copy of each cell is typed the same way");
+}
+
+// A four-page text document, its pages stacked 20000 twips apart.
+officev1::StreamPagesResponse four_page_info_event() {
+  officev1::StreamPagesResponse event;
+  officev1::DocumentInfo* info = event.mutable_document_info();
+  info->set_document_id("report.docx");
+  info->set_source_format("docx");
+  info->set_page_count(4);
+  info->set_document_type("text");
+  for (int page = 0; page < 4; page++) {
+    officev1::PageRect* rect = info->add_page_rects();
+    rect->set_y_twips(page * 20000);
+    rect->set_width_twips(12240);
+    rect->set_height_twips(15840);
+  }
+  return event;
+}
+
+// A paragraph that restarts page numbering labels its page and the pages
+// after it with the numbers they print; pages before the restart print
+// their ordinal, which page_no already says, and keep no label. A paragraph
+// that restarts nothing (the wire's -1) labels nothing.
+void verify_page_number_restart_labels_pages() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(four_page_info_event());
+  // Pages 1 and 2 (indexes 0, 1) number by ordinal; a paragraph on index 2
+  // restarts numbering at 10, so the last two pages print 10 and 11.
+  for (int page : {0, 2}) {
+    officev1::StreamPagesResponse event = paragraph_event("page " + std::to_string(page));
+    event.mutable_paragraph()->set_page_index(page);
+    event.mutable_paragraph()->set_page_number_offset(page == 2 ? 10 : -1);
+    mapper.consume(event);
+  }
+  mapper.consume(status_event());
+  const auto& pages = mapper.document().pages();
+  require(pages.contains(1) && !pages.at(1).has_page_label() && pages.contains(2) &&
+              !pages.at(2).has_page_label(),
+          "pages before the restart keep no printed label");
+  require(pages.contains(3) && pages.contains(4), "the restart page and the next exist");
+  require_equal(pages.at(3).page_label(), std::string("10"), "the restart page prints 10");
+  require_equal(pages.at(4).page_label(), std::string("11"), "the page after it prints 11");
+}
+
+// What the worker reads about where an item lives reaches the Document: an
+// image, an embedded object, a text frame and a shape anchored in a page
+// header or footer are furniture, filed under #/furniture (the frame and
+// the shape through their group); the same kinds anchored in the body stay
+// body.
+void verify_header_footer_objects_are_furniture() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(four_page_info_event());
+  for (bool header : {true, false}) {
+    const std::string where = header ? "Header" : "Body";
+    {
+      officev1::StreamPagesResponse event;
+      officev1::EmbeddedImage* image = event.mutable_embedded_image();
+      image->set_name(where + "Logo");
+      image->set_page_index(0);
+      image->set_mime_type("image/png");
+      image->set_data(where + "PNG");
+      image->set_in_header_footer(header);
+      mapper.consume(event);
+    }
+    {
+      officev1::StreamPagesResponse event;
+      officev1::EmbeddedObject* object = event.mutable_embedded_object();
+      object->set_kind(officev1::EMBEDDED_OBJECT_KIND_FORMULA);
+      object->set_name(where + "Formula");
+      object->set_formula(where + " formula");
+      object->set_page_index(0);
+      object->set_in_header_footer(header);
+      mapper.consume(event);
+    }
+    {
+      officev1::StreamPagesResponse event;
+      officev1::TextFrame* frame = event.mutable_text_frame();
+      frame->set_name(where + "Frame");
+      frame->set_page_index(0);
+      frame->add_runs()->set_text(where + " frame text");
+      frame->set_in_header_footer(header);
+      mapper.consume(event);
+    }
+    {
+      officev1::StreamPagesResponse event;
+      officev1::Shape* shape = event.mutable_shape();
+      shape->set_name(where + "Shape");
+      shape->set_page_index(0);
+      shape->add_runs()->set_text(where + " shape text");
+      shape->set_in_header_footer(header);
+      mapper.consume(event);
+    }
+  }
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+  const auto group_of = [&](const std::string& ref) -> const docv1::GroupItem* {
+    for (const docv1::GroupItem& group : document.groups()) {
+      if (group.self_ref() == ref) return &group;
+    }
+    return nullptr;
+  };
+  const auto text_item = [&](const std::string& text) -> const docv1::TextItemBase* {
+    for (const docv1::BaseTextItem& item : document.texts()) {
+      if (item.has_text() && item.text().base().text() == text) return &item.text().base();
+      if (item.has_formula() && item.formula().base().text() == text) {
+        return &item.formula().base();
+      }
+    }
+    return nullptr;
+  };
+  for (bool header : {true, false}) {
+    const std::string where = header ? "Header" : "Body";
+    const docv1::ContentLayer layer =
+        header ? docv1::CONTENT_LAYER_FURNITURE : docv1::CONTENT_LAYER_BODY;
+    const std::string root = header ? "#/furniture" : "#/body";
+    const docv1::PictureItem* logo = nullptr;
+    for (const docv1::PictureItem& picture : document.pictures()) {
+      if (picture.shape().name() == where + "Logo") logo = &picture;
+    }
+    require(logo != nullptr && logo->content_layer() == layer && logo->parent().ref() == root,
+            where + " image is filed under " + root);
+    const docv1::TextItemBase* formula = text_item(where + " formula");
+    require(formula != nullptr && formula->content_layer() == layer &&
+                formula->parent().ref() == root,
+            where + " formula is filed under " + root);
+    for (const std::string& text : {where + " frame text", where + " shape text"}) {
+      const docv1::TextItemBase* item = text_item(text);
+      require(item != nullptr && item->content_layer() == layer, text + " has its layer");
+      const docv1::GroupItem* group = group_of(item->parent().ref());
+      require(group != nullptr && group->content_layer() == layer &&
+                  group->parent().ref() == root,
+              text + " sits in a group under " + root);
+    }
+  }
+}
+
+// The wire says whether an instant was stored at all. One that was stored
+// is kept, also when it is the epoch itself; one that was not stays unset
+// on the Document and never reads as 1970.
+void verify_a_stored_epoch_is_kept_and_an_unset_one_stays_unset() {
+  {
+    grparse::DoclingMapper mapper;
+    officev1::StreamPagesResponse event;
+    officev1::DocumentMetadata* meta = event.mutable_metadata();
+    meta->set_created_epoch_ms(0);
+    meta->set_modified_epoch_ms(0);
+    meta->set_printed_epoch_ms(0);
+    mapper.consume(event);
+    officev1::StreamPagesResponse comment_event;
+    comment_event.mutable_comment()->set_text("stored at the epoch");
+    comment_event.mutable_comment()->set_char_start(-1);
+    comment_event.mutable_comment()->set_epoch_ms(0);
+    mapper.consume(comment_event);
+    officev1::StreamPagesResponse change_event;
+    change_event.mutable_tracked_change()->set_kind_name("Insert");
+    change_event.mutable_tracked_change()->set_epoch_ms(0);
+    mapper.consume(change_event);
+    mapper.consume(status_event());
+    const docv1::Document& document = mapper.document();
+    const docv1::DocumentMeta& meta_out = document.source_meta();
+    require(meta_out.has_created() && meta_out.created().seconds() == 0,
+            "a creation instant stored as the epoch is kept");
+    require(meta_out.has_modified() && meta_out.has_printed(),
+            "so are the modification and print instants");
+    require(document.texts_size() == 1 &&
+                document.texts(0).text().base().comment_meta().has_timestamp(),
+            "a comment stored at the epoch keeps its timestamp");
+    require(document.changes_size() == 1 && document.changes(0).has_timestamp(),
+            "a tracked change stored at the epoch keeps its timestamp");
+  }
+  {
+    grparse::DoclingMapper mapper;
+    officev1::StreamPagesResponse event;
+    event.mutable_metadata()->set_title("No instants");
+    mapper.consume(event);
+    officev1::StreamPagesResponse comment_event;
+    comment_event.mutable_comment()->set_text("undated");
+    comment_event.mutable_comment()->set_char_start(-1);
+    mapper.consume(comment_event);
+    officev1::StreamPagesResponse change_event;
+    change_event.mutable_tracked_change()->set_kind_name("Insert");
+    mapper.consume(change_event);
+    mapper.consume(status_event());
+    const docv1::Document& document = mapper.document();
+    const docv1::DocumentMeta& meta_out = document.source_meta();
+    require(!meta_out.has_created() && !meta_out.has_modified() && !meta_out.has_printed(),
+            "an instant the wire does not carry stays unset on the Document");
+    require(!document.texts(0).text().base().comment_meta().has_timestamp(),
+            "an undated comment has no timestamp");
+    require(!document.changes(0).has_timestamp(), "an undated change has no timestamp");
+  }
+}
+
+// An embedded workbook with several sheets keeps every sheet in the
+// Document: one group for the object, then one sheet group per sheet,
+// named after it, holding that sheet's table; the object's attachment
+// points at the outer group. A sheet's own gap names that sheet's table.
+// A single-sheet workbook stays one table, as before.
+void verify_embedded_workbook_keeps_every_sheet() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(document_info_event());
+  {
+    officev1::StreamPagesResponse event;
+    officev1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->set_kind(officev1::EMBEDDED_OBJECT_KIND_SPREADSHEET);
+    object->set_name("Book");
+    object->set_page_index(0);
+    object->set_width_twips(1000);
+    object->set_height_twips(500);
+    for (const auto& [name, text] : {std::pair<std::string, std::string>{"Summary", "K"},
+                                     std::pair<std::string, std::string>{"Detail", "M"}}) {
+      officev1::EmbeddedSheet* sheet = object->add_inner_sheets();
+      sheet->set_name(name);
+      sheet->mutable_table()->set_rows(1);
+      sheet->mutable_table()->set_columns(1);
+      sheet->mutable_table()->add_cells()->set_text(text);
+    }
+    *object->mutable_inner_table() = object->inner_sheets(0).table();
+    object->mutable_inner_sheets(1)->mutable_table()->mutable_gap()->add_problems("detail-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->set_kind(officev1::EMBEDDED_OBJECT_KIND_SPREADSHEET);
+    object->set_name("Single");
+    object->set_page_index(0);
+    officev1::EmbeddedSheet* sheet = object->add_inner_sheets();
+    sheet->set_name("Only");
+    sheet->mutable_table()->set_rows(1);
+    sheet->mutable_table()->set_columns(1);
+    sheet->mutable_table()->add_cells()->set_text("S");
+    *object->mutable_inner_table() = sheet->table();
+    mapper.consume(event);
+  }
+  officev1::StreamPagesResponse status = status_event();
+  status.mutable_status()->set_incomplete_items(1);
+  mapper.consume(status);
+  const docv1::Document& document = mapper.document();
+
+  std::string book_ref;
+  for (const docv1::GroupItem& group : document.groups()) {
+    if (group.name() == "Book") book_ref = group.self_ref();
+  }
+  require(!book_ref.empty(), "the workbook is one group named after it");
+  std::string found;
+  std::string detail_table;
+  for (const docv1::GroupItem& group : document.groups()) {
+    if (group.label() != docv1::GROUP_LABEL_SHEET) continue;
+    require(group.parent().ref() == book_ref,
+            "sheet " + group.name() + " sits in the workbook group");
+    for (const docv1::TableItem& table : document.tables()) {
+      if (table.parent().ref() != group.self_ref()) continue;
+      found += group.name() + "=" +
+               (table.data().table_cells_size() > 0 ? table.data().table_cells(0).text()
+                                                    : std::string("?")) +
+               ";";
+      if (group.name() == "Detail") detail_table = table.self_ref();
+    }
+  }
+  require_equal(found, std::string("Summary=K;Detail=M;"), "every sheet keeps its table");
+  bool attached = false;
+  bool single_is_a_table = false;
+  for (const docv1::SubDocumentRef& attachment : document.attachments()) {
+    if (attachment.name() == "Book") attached = attachment.item_ref() == book_ref;
+    if (attachment.name() == "Single") {
+      single_is_a_table = attachment.item_ref().starts_with("#/tables/");
+    }
+  }
+  require(attached, "the workbook's attachment points at its group");
+  require(single_is_a_table, "a single-sheet workbook stays one table");
+  require_gap(mapper, "detail-lost", docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED, 1,
+              detail_table);
+  require_equal(typed_warning_count(mapper), 1, "one gap, one typed warning");
+  require(grparse::docling_integrity_errors(document).empty(),
+          "the workbook's groups and tables stay well formed");
+}
+
 }  // namespace
 
 int main() {
@@ -1785,5 +2229,12 @@ int main() {
       verify_every_extraction_gap_of_a_text_document_is_a_typed_warning,
       verify_sheet_and_slide_gaps_are_typed_warnings,
       verify_incomplete_items_that_do_not_add_up_are_reported,
+      verify_every_pie_series_keeps_an_annotation,
+      verify_every_scatter_series_keeps_its_own_annotation,
+      verify_chart_tabular_projection_is_typed,
+      verify_page_number_restart_labels_pages,
+      verify_header_footer_objects_are_furniture,
+      verify_a_stored_epoch_is_kept_and_an_unset_one_stays_unset,
+      verify_embedded_workbook_keeps_every_sheet,
   });
 }

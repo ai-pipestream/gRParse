@@ -44,6 +44,36 @@ std::string ObjectFold::add_inner_table(const officev1::EmbeddedObject& object,
   return table_ref;
 }
 
+std::string ObjectFold::add_inner_workbook(
+    const officev1::EmbeddedObject& object, const ObjectBox& box,
+    const std::string& parent, docv1::ContentLayer layer) {
+  // One group for the object, then one sheet group per sheet, named after
+  // it, holding that sheet's table. The sheet groups carry no SheetMeta:
+  // that is what tells them from the sheets of the document itself.
+  const std::string book_ref =
+      arena_.add_group(parent, docv1::GROUP_LABEL_UNSPECIFIED, object.name(), layer)
+          ->self_ref();
+  attachments_.register_object(object, book_ref);
+  for (const officev1::EmbeddedSheet& sheet : object.inner_sheets()) {
+    const std::string sheet_ref =
+        arena_.add_group(book_ref, docv1::GROUP_LABEL_SHEET, sheet.name(), layer)
+            ->self_ref();
+    std::string table_ref;
+    docv1::TableItem* item = arena_.add_table(layer, sheet_ref, &table_ref);
+    arena_.fold_table(sheet.table(), item);
+    arena_.add_prov(item->mutable_prov(), object.page_index(), box.page_local,
+                    box.l, box.t, box.r, box.b, 0, 0);
+    arena_.report_gap_of(sheet.table(),
+                         "embedded workbook sheet '" + sheet.name() + "'",
+                         object.page_index(), table_ref);
+  }
+  // inner_table repeats the first sheet and is not folded a second time;
+  // it is still a message that can carry a gap of its own.
+  arena_.report_gap_of(object.inner_table(), "embedded workbook table",
+                       object.page_index(), book_ref);
+  return book_ref;
+}
+
 std::string ObjectFold::add_object_picture(
     const officev1::EmbeddedObject& object, const ObjectBox& box,
     const std::string& parent, docv1::ContentLayer layer) {
@@ -85,7 +115,11 @@ void ObjectFold::emit(const officev1::EmbeddedObject& object,
       item_ref = add_formula(object, box, parent, layer);
       break;
     case officev1::EMBEDDED_OBJECT_KIND_SPREADSHEET:
-      item_ref = add_inner_table(object, box, parent, layer);
+      // A workbook with several sheets keeps every one; a single sheet
+      // stays the one table it always was.
+      item_ref = object.inner_sheets_size() > 1
+                     ? add_inner_workbook(object, box, parent, layer)
+                     : add_inner_table(object, box, parent, layer);
       break;
     default:
       item_ref = add_object_picture(object, box, parent, layer);

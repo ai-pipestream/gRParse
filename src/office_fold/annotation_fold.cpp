@@ -15,7 +15,8 @@ void set_comment_identity(const officev1::Comment& comment,
                           docv1::CommentMeta* identity) {
   if (!comment.author().empty()) identity->set_author(comment.author());
   if (!comment.initials().empty()) identity->set_initials(comment.initials());
-  if (comment.epoch_ms() != 0) {
+  // Presence, not the value: a comment stored at the epoch has a time.
+  if (comment.has_epoch_ms()) {
     set_instant(comment.epoch_ms(), identity->mutable_timestamp());
   }
   identity->set_resolved(comment.resolved());
@@ -77,7 +78,7 @@ void AnnotationFold::on_tracked_change(const officev1::TrackedChange& change) {
                          [](unsigned char c) { return std::tolower(c); });
   record->set_kind(kind);
   record->set_author(change.author());
-  if (change.epoch_ms() != 0) {
+  if (change.has_epoch_ms()) {
     set_instant(change.epoch_ms(), record->mutable_timestamp());
   }
   if (!change.changed_text().empty()) {
