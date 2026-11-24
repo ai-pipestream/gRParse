@@ -32,12 +32,13 @@
 #include "confluence/storage_parser.h"
 #include "grparse/docling_map.h"
 #include "grparse/structure_rules.h"
+#include "grparse/warning.h"
 
 namespace docv1 = ai::pipestream::document::v1;
 
 extern "C" int LLVMFuzzerTestOneInput(const uint8_t* data, size_t size) {
   const std::string bytes(reinterpret_cast<const char*>(data), size);
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   docv1::Document document;
   document.mutable_body()->set_self_ref("#/body");
   document.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
