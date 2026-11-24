@@ -5,8 +5,10 @@
 #include <limits>
 #include <map>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <opencv2/imgcodecs.hpp>
@@ -26,27 +28,39 @@ namespace {
 constexpr const char kPngDataUriPrefix[] = "data:image/png;base64,";
 constexpr size_t kMaxDecodeWorkers = 8;
 
-// The mapped page image back as pixels.  Empty when the page carries no
-// data-URI image or the bytes do not decode.
-cv::Mat decode_page_image(const docv1::PageItem& page) {
+// What became of one page's render on its way back to pixels. `unreadable`
+// is empty when the page had no render (nothing to read) or the render
+// decoded; otherwise it says why the render that was there could not be
+// read, and `raster` is empty.
+struct PageRender {
+  cv::Mat raster;
+  std::string unreadable;
+};
+
+// The mapped page image back as pixels.
+PageRender decode_page_image(const docv1::PageItem& page) {
   const std::string& uri = page.image().uri();
+  // The office fold stores a render as a data URI or stores none.
+  if (uri.empty()) return {};
   const size_t prefix = sizeof(kPngDataUriPrefix) - 1;
-  if (!uri.starts_with(kPngDataUriPrefix)) return {};
+  if (!uri.starts_with(kPngDataUriPrefix)) return {{}, "is not an inline PNG"};
   std::string bytes;
   try {
     bytes = decode_base64(uri.substr(prefix));
   } catch (const std::invalid_argument&) {
-    return {};
+    return {{}, "is not valid base64"};
   }
   // The collector's PNG is held to the raster input's pixel cap before
   // any decoder allocates for it.
   if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||
       !encoded_image_within_pixel_cap(bytes)) {
-    return {};
+    return {{}, "states no readable size or is over the pixel cap (GRPARSE_MAX_IMAGE_PIXELS)"};
   }
   const cv::Mat buffer(1, static_cast<int>(bytes.size()), CV_8UC1,
                        const_cast<char*>(bytes.data()));
-  return cv::imdecode(buffer, cv::IMREAD_COLOR);
+  cv::Mat raster = cv::imdecode(buffer, cv::IMREAD_COLOR);
+  if (raster.empty()) return {{}, "does not decode as an image"};
+  return {std::move(raster), {}};
 }
 
 bool barcode_class(const LayoutRegion& region) {
@@ -179,16 +193,16 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
   for (const auto& [page_number, _] : document->pages()) page_numbers.push_back(page_number);
   std::ranges::sort(page_numbers);
 
-  std::vector<cv::Mat> rasters(page_numbers.size());
+  std::vector<PageRender> renders(page_numbers.size());
   if (page_numbers.size() == 1) {
-    rasters[0] = decode_page_image(document->pages().at(page_numbers[0]));
+    renders[0] = decode_page_image(document->pages().at(page_numbers[0]));
   } else if (page_numbers.size() > 1) {
     std::atomic<size_t> next_slot{0};
     const auto decode_worker = [&] {
       for (;;) {
         const size_t slot = next_slot.fetch_add(1, std::memory_order_relaxed);
         if (slot >= page_numbers.size()) break;
-        rasters[slot] = decode_page_image(document->pages().at(page_numbers[slot]));
+        renders[slot] = decode_page_image(document->pages().at(page_numbers[slot]));
       }
     };
     const size_t worker_count = std::min(page_numbers.size(), kMaxDecodeWorkers);
@@ -221,7 +235,20 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
     const int page_number = page_numbers[page_slot];
     const std::string parent = deck ? slide_groups[page_slot] : "#/body";
     const docv1::PageItem& page = document->pages().at(page_number);
-    const cv::Mat& raster = rasters[page_slot];
+    const cv::Mat& raster = renders[page_slot].raster;
+    if (!renders[page_slot].unreadable.empty()) {
+      // The page has a render and the engines never saw it: its figures,
+      // their classes and their barcodes are missing, which is a loss the
+      // caller has to be able to tell from a page that has none.
+      ++report.pages_unreadable;
+      report.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAGE_RENDER_UNREADABLE,
+                  "office CV enrichment: the render of page " + std::to_string(page_number) +
+                      " " + renders[page_slot].unreadable +
+                      "; the page was not searched for figures")
+              .on_page(page_number));
+      continue;
+    }
     if (raster.empty()) continue;
     // The page's coordinate space (twips for office documents) and the
     // render's pixel space share only their aspect ratio; every typed item's
