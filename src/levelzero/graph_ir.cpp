@@ -477,9 +477,13 @@ class Lowering {
 }  // namespace
 
 IrGraph lower_onnx(const std::filesystem::path& model) {
-  IrGraph graph = Lowering(read_onnx_graph(model), model.string()).run();
-  fuse_merges(&graph);
-  return graph;
+  return lower_onnx_graph(read_onnx_graph(model), model.string());
+}
+
+IrGraph lower_onnx_graph(OnnxGraph graph, const std::string& what) {
+  IrGraph lowered = Lowering(std::move(graph), what).run();
+  fuse_merges(&lowered);
+  return lowered;
 }
 
 }  // namespace grparse::levelzero::graph

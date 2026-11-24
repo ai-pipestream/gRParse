@@ -5,8 +5,10 @@
 # refuses the table structure model rather than run it anywhere else.
 option(GRPARSE_TABLE_LEVEL_ZERO "Build native Level Zero table structure" OFF)
 
-# The ONNX initializer reader builds everywhere so its test runs in every flavor.
-target_sources(grparse_ort_ep PRIVATE src/levelzero/onnx_initializers.cpp)
+# The ONNX reader and the graph lowering have no device in them: they build
+# everywhere, so their tests run in every flavor, on a host with no GPU.
+target_sources(grparse_ort_ep PRIVATE src/levelzero/onnx_initializers.cpp src/levelzero/graph_ir.cpp
+  src/levelzero/graph_fuse.cpp)
 target_include_directories(grparse_ort_ep PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(grparse_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
@@ -73,8 +75,8 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
   # The device and the graph runtime sit in the model-interface library,
   # under make_rapidocr_model (src/inference_model.cpp); table structure in
   # the core library uses the same device.
-  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_ir.cpp src/levelzero/graph_fuse.cpp
-    src/levelzero/graph_runtime.cpp ${embedded_graph_kernels})
+  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_runtime.cpp
+    ${embedded_graph_kernels})
   target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
@@ -92,6 +94,14 @@ if(BUILD_TESTING)
   add_test(NAME onnx-initializers-test COMMAND onnx-initializers-test)
   set_tests_properties(onnx-initializers-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
   add_dependencies(grparse-tests onnx-initializers-test)
+  # The graph lowering on hand-encoded graphs: no model, no device.
+  add_executable(graph-ir-test tests/graph_ir_test.cpp)
+  target_include_directories(graph-ir-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(graph-ir-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+  add_test(NAME graph-ir-test COMMAND graph-ir-test)
+  set_tests_properties(graph-ir-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
+  add_dependencies(grparse-tests graph-ir-test)
   if(GRPARSE_TABLE_LEVEL_ZERO)
     # The GPU path against the CPU path on real table crops.  Needs the
     # models and an Intel GPU; skips (77) without either, so the image build,

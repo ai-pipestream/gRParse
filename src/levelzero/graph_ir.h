@@ -19,6 +19,8 @@
 #include <string>
 #include <vector>
 
+#include "levelzero/onnx_initializers.h"
+
 namespace grparse::levelzero::graph {
 
 // kHardSwish is Paddle's exported pattern, x * clip(x + 3, 0, 6) / 6; kHardSwishOp the ONNX
@@ -95,6 +97,9 @@ struct IrGraph {
 };
 
 IrGraph lower_onnx(const std::filesystem::path& model);
+
+// The same from a graph already read; `what` names it in errors.
+IrGraph lower_onnx_graph(OnnxGraph graph, const std::string& what);
 
 // Rewrites, in place, the launches a feature pyramid with squeeze-excite
 // blocks spends on whole-tensor arithmetic (graph_fuse.cpp): the excite

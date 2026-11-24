@@ -2,13 +2,13 @@
 // data, integer tensors kept out of the float initializers, nodes with their
 // attributes, a Constant node's tensor, and malformed input refused by name.
 #include <cstdint>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <vector>
 
 #include "levelzero/onnx_initializers.h"
 #include "support/check.h"
+#include "support/onnx_bytes.h"
 
 namespace {
 
@@ -17,43 +17,12 @@ using grparse::levelzero::parse_onnx_initializers;
 using grparse_test::require;
 using grparse_test::require_equal;
 
-std::string varint(uint64_t value) {
-  std::string out;
-  do {
-    uint8_t byte = value & 0x7F;
-    value >>= 7;
-    if (value != 0) byte |= 0x80;
-    out.push_back(static_cast<char>(byte));
-  } while (value != 0);
-  return out;
-}
-
-std::string field(uint32_t number, uint32_t type) { return varint((uint64_t(number) << 3) | type); }
-std::string bytes_field(uint32_t number, const std::string& value) {
-  return field(number, 2) + varint(value.size()) + value;
-}
-std::string float_bytes(const std::vector<float>& values) {
-  std::string out(values.size() * sizeof(float), '\0');
-  std::memcpy(out.data(), values.data(), out.size());
-  return out;
-}
-
-// A NodeProto: inputs (1), outputs (2), op_type (4), attributes (5).
-std::string node(const std::string& op, const std::vector<std::string>& inputs, const std::string& output,
-                 const std::vector<std::string>& attributes = {}) {
-  std::string out;
-  for (const std::string& input : inputs) out += bytes_field(1, input);
-  out += bytes_field(2, output) + bytes_field(4, op);
-  for (const std::string& attribute : attributes) out += bytes_field(5, attribute);
-  return out;
-}
-
-std::string model_with(const std::vector<std::string>& tensors, const std::vector<std::string>& nodes = {}) {
-  std::string graph;
-  for (const std::string& one : nodes) graph += bytes_field(1, one);
-  for (const std::string& tensor : tensors) graph += bytes_field(5, tensor);
-  return field(1, 0) + varint(8) + bytes_field(7, graph);  // ir_version, then the graph
-}
+using grparse_test::onnx::bytes_field;
+using grparse_test::onnx::field;
+using grparse_test::onnx::float_bytes;
+using grparse_test::onnx::model_with;
+using grparse_test::onnx::node;
+using grparse_test::onnx::varint;
 
 void reads_raw_and_packed_floats() {
   const std::string raw = field(1, 0) + varint(2) + field(1, 0) + varint(3) + field(2, 0) + varint(1) +
