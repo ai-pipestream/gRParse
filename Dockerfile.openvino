@@ -114,12 +114,13 @@ FROM ${GRPARSE_DEPS_IMAGE} AS build
 # the way an object in a reused build tree can. A hosted CI runner, whose
 # cache mounts start empty, restores and saves it (scripts/ccache-mount.sh).
 # The table structure decoder's toolchain, here too so the seed stays as it
-# is: Intel's offline compiler (ocloc) turns its OpenCL C kernel into SPIR-V,
+# is: Intel's offline compiler (ocloc, with the graphics compiler front end
+# libigdfcl it loads) turns its OpenCL C kernel into SPIR-V,
 # and the Level Zero loader and headers build the code that launches it
 # (cmake/LevelZero.cmake). libze-intel-gpu1 is NEO's Level Zero driver, which
 # the loader opens at run time; it is staged into the runtime below.
 RUN apt-get update && apt-get install -y --no-install-recommends ccache \
-      intel-ocloc libze-dev libze1 libze-intel-gpu1 \
+      intel-ocloc libigdfcl2 libigc2 libze-dev libze1 libze-intel-gpu1 \
     && rm -rf /var/lib/apt/lists/*
 ENV CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G
 ARG GRPARSE_BUILD_JOBS=2

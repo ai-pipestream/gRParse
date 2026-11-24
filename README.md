@@ -1297,17 +1297,24 @@ from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 `GRPARSE_RUNTIME_IMAGE` build arg ("Runtime image" above says why).
 
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
-layout, table structure and figure classification all compile and run on
-the GPU plugin. Table structure runs on native OpenVINO rather than the ONNX
-Runtime provider: `slanet_plus.onnx` decodes inside one ONNX `Loop` whose
-carried tensors grow each step, which OpenVINO's ONNX frontend cannot read,
-so the server runs the same split graphs as TensorRT
-(`slanet_plus_encoder.onnx`, `slanet_plus_step.onnx`, see "Table structure"
-above), read and compiled by OpenVINO itself through its C API
-(`src/openvino/openvino_model.cpp`) at FP32. Its placement series are
-`model="table structure encoder"` and `model="table structure decoder"`
-with `actual="OpenVINO"`; a compile the plugin refuses fails startup and is
-counted like any other refusal.
+layout, table structure and figure classification all run on the GPU.
+Table structure does not run on the ONNX Runtime provider: `slanet_plus.onnx`
+decodes inside one ONNX `Loop` whose carried tensors grow each step, which
+OpenVINO's ONNX frontend cannot read. The server runs it split, as on
+TensorRT ("Table structure" above): the encoder
+(`slanet_plus_encoder.onnx`) on native OpenVINO through its C API at FP32,
+and the decoder on no framework at all. `src/levelzero/slanet_decoder.cl` is
+compiled to SPIR-V at build time by Intel's `ocloc` and launched through
+Level Zero, one cooperative launch per batch of tables that runs every
+decode step on the GPU (a lone table spreads over 16 Xe cores; tables that
+arrive together share a launch), with its weights read from
+`slanet_plus_step.onnx`. Its placement series are
+`model="table structure encoder"` with `actual="OpenVINO"` and
+`model="table structure decoder"` with `actual="LevelZero"`. The decoder
+needs a GPU device (`GRPARSE_OPENVINO_DEVICE=GPU` or `GPU.<n>`, the n-th
+Level Zero GPU); any other device, a missing Level Zero driver or a kernel
+the driver will not build fails startup, counted as a refusal, and nothing
+runs in its place.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `NPU`, `NPU.<n>`
