@@ -37,11 +37,28 @@ const docv1::TextItemBase& base_of(const docv1::BaseTextItem& item) {
   }
 }
 
-template <typename Meta>
-std::string custom_field(const Meta& meta, const std::string& key) {
-  const auto found = meta.custom_fields().find(key);
-  return found == meta.custom_fields().end() ? std::string()
-                                             : found->second.string_value();
+// A fact with a typed field must not also ride in the untyped bag, and one
+// without a typed field must not go there instead.
+template <typename Item>
+void require_no_custom_fields(const Item& item, const std::string& where) {
+  require(!item.has_meta() || item.meta().custom_fields().empty(),
+          where + " carries no custom fields");
+}
+
+void require_link_span(const docv1::InlineSpan& span, int start, int end,
+                       const std::string& url, const std::string& where) {
+  require(span.range().start() == start && span.range().end() == end,
+          where + " covers its own text: " + std::to_string(span.range().start()) +
+              ".." + std::to_string(span.range().end()));
+  require(span.hyperlink() == url, where + " names its target: " + span.hyperlink());
+}
+
+const docv1::GroupItem& group_at(const docv1::Document& document,
+                                 const std::string& ref) {
+  for (const auto& group : document.groups()) {
+    if (group.self_ref() == ref) return group;
+  }
+  throw std::runtime_error("no group at " + ref);
 }
 
 // Every item the handler makes must be attributable, or an additive merge
@@ -139,7 +156,7 @@ void verify_inline_marks_and_scripts() {
           "a script on part of the text is not a script on the item");
 }
 
-void verify_hyperlinks_land_in_slot_and_custom_field() {
+void verify_every_hyperlink_is_a_typed_span() {
   const auto outcome = parse(
       "<p>see <a href=\"https://example.com/one\">one</a> and "
       "<a href=\"https://example.com/two\">two</a></p>");
@@ -147,23 +164,38 @@ void verify_hyperlinks_land_in_slot_and_custom_field() {
   require(base.text() == "see one and two", "link text is part of the paragraph");
   require(base.hyperlink() == "https://example.com/one",
           "the first link takes the hyperlink slot");
-  const auto found = base.meta().custom_fields().find("hyperlinks");
-  require(found != base.meta().custom_fields().end(),
-          "every link is listed in the hyperlinks custom field");
-  const auto& links = found->second.list_value();
-  require(links.values_size() == 2, "both links are listed");
-  const auto& first = links.values(0).struct_value().fields();
-  require(first.at("url").string_value() == "https://example.com/one",
-          "the first link's url");
-  require(first.at("char_start").number_value() == 4 &&
-              first.at("char_end").number_value() == 7,
-          "the first link's character span");
-  const auto& second = links.values(1).struct_value().fields();
-  require(second.at("url").string_value() == "https://example.com/two",
-          "the second link's url");
-  require(second.at("char_start").number_value() == 12 &&
-              second.at("char_end").number_value() == 15,
-          "the second link's character span");
+  require(base.spans_size() == 2, "every link is a span of its own: " +
+                                      std::to_string(base.spans_size()));
+  require_link_span(base.spans(0), 4, 7, "https://example.com/one", "the first link");
+  require_link_span(base.spans(1), 12, 15, "https://example.com/two",
+                    "the second link");
+  require_no_custom_fields(base, "a paragraph with links");
+
+  // Ranges count code points, as every other span in the document does.
+  const auto accented = parse(
+      "<p>caf\xC3\xA9 <a href=\"https://example.com/menu\">men\xC3\xBC</a></p>");
+  const auto& wide = base_of(accented.document.texts(0));
+  require(wide.spans_size() == 1, "one link, one span");
+  require_link_span(wide.spans(0), 5, 9, "https://example.com/menu",
+                    "a link after a two-byte character");
+}
+
+// A link inside a table cell used to keep its text and lose its target.
+void verify_cell_hyperlinks_are_spans() {
+  const auto outcome = parse(
+      "<table><tbody><tr><td><p>the <a href=\"https://example.com/spec\">spec</a>"
+      "</p></td><td><p>plain</p></td></tr></tbody></table>");
+  const auto& data = outcome.document.tables(0).data();
+  const auto& linked = data.table_cells(0);
+  require(linked.text() == "the spec", "the cell's text: " + linked.text());
+  require(linked.spans_size() == 1, "the cell's link is a span: " +
+                                        std::to_string(linked.spans_size()));
+  require_link_span(linked.spans(0), 4, 8, "https://example.com/spec",
+                    "the cell's link");
+  require(data.table_cells(1).spans_size() == 0, "a cell with no link has no span");
+  require(data.grid(0).cells(0).spans_size() == 1 &&
+              data.grid(0).cells(0).spans(0).hyperlink() == "https://example.com/spec",
+          "the grid's copy of the cell keeps the link too");
 }
 
 void verify_entities_and_cdata() {
@@ -384,27 +416,62 @@ void verify_task_list_checkbox_states() {
           "tasks are unenumerated list items");
 }
 
-void verify_panel_macro_marks_items() {
+void verify_panel_macro_is_a_group() {
   const auto outcome = parse(
       "<ac:structured-macro ac:name=\"info\"><ac:rich-text-body>"
       "<p>read this</p><p>and this</p></ac:rich-text-body></ac:structured-macro>");
   const auto& document = outcome.document;
   require(document.texts_size() == 2, "the panel body parses recursively");
+  require(document.groups_size() == 1, "the panel is one group around its body");
+  const auto& panel = document.groups(0);
+  require(panel.name() == "info", "the group is named after the macro: " + panel.name());
+  require(panel.label() == docv1::GROUP_LABEL_UNSPECIFIED,
+          "a panel invents no label of its own");
+  require(panel.parent().ref() == "#/body" &&
+              document.body().children_size() == 1 &&
+              document.body().children(0).ref() == panel.self_ref(),
+          "the group stands where the macro stood");
+  require(panel.children_size() == 2, "and holds the body's two paragraphs");
+  require_stamped(panel.source(), "the panel's group");
   for (int index = 0; index < 2; ++index) {
     const auto& base = base_of(document.texts(index));
-    require(base.label() == docv1::DOC_ITEM_LABEL_TEXT,
-            "a panel invents no label of its own");
-    require(custom_field(base.meta(), "panel") == "info",
-            "every item inside the panel names it");
-    require(base.parent().ref() == "#/body",
-            "panel content stays where the macro stood");
+    require(base.label() == docv1::DOC_ITEM_LABEL_TEXT, "a paragraph stays a paragraph");
+    require(base.parent().ref() == panel.self_ref(),
+            "every item of the body hangs under the panel's group");
+    require(base.admonition_kind() == "info",
+            "a callout's text names its kind: " + base.admonition_kind());
+    require_no_custom_fields(base, "a paragraph inside a panel");
   }
 
   const auto note = parse(
       "<ac:structured-macro ac:name=\"warning\"><ac:rich-text-body>"
       "<h2>careful</h2></ac:rich-text-body></ac:structured-macro>");
-  require(custom_field(base_of(note.document.texts(0)).meta(), "panel") == "warning",
-          "the whole panel family is recognized");
+  require(note.document.groups(0).name() == "warning" &&
+              base_of(note.document.texts(0)).admonition_kind() == "warning",
+          "the whole callout family is recognized");
+
+  // A plain panel is a box, not a callout: it groups and claims no kind.
+  const auto box = parse(
+      "<ac:structured-macro ac:name=\"panel\"><ac:rich-text-body>"
+      "<p>boxed</p></ac:rich-text-body></ac:structured-macro>");
+  require(box.document.groups(0).name() == "panel", "a plain panel is a group too");
+  require(!base_of(box.document.texts(0)).has_admonition_kind(),
+          "a plain panel is not an admonition");
+
+  // What the bag could never say: a table and a picture inside a callout
+  // belong to it as well.
+  const auto mixed = parse(
+      "<ac:structured-macro ac:name=\"tip\"><ac:rich-text-body>"
+      "<table><tbody><tr><td><p>cell</p></td></tr></tbody></table>"
+      "<p><ac:image><ri:url ri:value=\"https://example.com/x.png\" /></ac:image></p>"
+      "</ac:rich-text-body></ac:structured-macro>");
+  const auto& tip = mixed.document.groups(0);
+  require(mixed.document.tables(0).parent().ref() == tip.self_ref(),
+          "a table inside a callout hangs under its group");
+  require(mixed.document.pictures(0).parent().ref() == tip.self_ref(),
+          "a picture inside a callout hangs under its group");
+  require_no_custom_fields(mixed.document.tables(0), "a table inside a callout");
+  require_no_custom_fields(mixed.document.pictures(0), "a picture inside a callout");
 }
 
 void verify_unknown_macro_body_survives() {
@@ -418,20 +485,46 @@ void verify_unknown_macro_body_survives() {
   require(document.texts_size() == 2, "the unknown macro's body is not dropped");
   require(base_of(document.texts(0)).text() == "hidden but present",
           "its text survives");
-  require(custom_field(base_of(document.texts(0)).meta(), "macro") == "expand",
-          "the macro name rides on the items it produced");
+  require(document.groups_size() == 1 && document.groups(0).name() == "expand",
+          "the macro is a group that carries its name");
+  const std::string expand = document.groups(0).self_ref();
+  require(base_of(document.texts(0)).parent().ref() == expand,
+          "the body's text hangs under the macro's group");
+  require(!base_of(document.texts(0)).has_admonition_kind(),
+          "a macro that is not a callout claims no admonition");
   require(document.texts(1).code().code_language() == docv1::CODE_LANGUAGE_LABEL_BASH,
           "a known macro nested inside an unknown one still maps");
-  require(custom_field(document.texts(1).code().meta(), "macro") == "expand",
-          "the enclosing macro name reaches nested items too");
+  require(document.texts(1).code().parent().ref() == expand,
+          "and hangs under the enclosing macro's group");
+  require_no_custom_fields(base_of(document.texts(0)), "text inside a macro");
+  require_no_custom_fields(document.texts(1).code(), "code inside a macro");
+
+  // A callout inside a macro: the nearest enclosing group is the callout's,
+  // and that one's parent is the macro's.
+  const auto nested = parse(
+      "<ac:structured-macro ac:name=\"expand\"><ac:rich-text-body>"
+      "<ac:structured-macro ac:name=\"note\"><ac:rich-text-body><p>inner</p>"
+      "</ac:rich-text-body></ac:structured-macro><p>outer</p>"
+      "</ac:rich-text-body></ac:structured-macro>");
+  const auto& inner = base_of(nested.document.texts(0));
+  const auto& note = group_at(nested.document, inner.parent().ref());
+  require(note.name() == "note" && inner.admonition_kind() == "note",
+          "the inner callout groups its own body");
+  require(group_at(nested.document, note.parent().ref()).name() == "expand",
+          "and sits inside the macro that holds it");
+  require(!base_of(nested.document.texts(1)).has_admonition_kind(),
+          "text after the callout is outside it");
 
   const auto plain = parse(
       "<ac:structured-macro ac:name=\"noformat\"><ac:plain-text-body>"
       "<![CDATA[as written]]></ac:plain-text-body></ac:structured-macro>");
   require(base_of(plain.document.texts(0)).text() == "as written",
           "a plain-text body of an unmapped macro becomes text");
-  require(custom_field(base_of(plain.document.texts(0)).meta(), "macro") == "noformat",
-          "and names its macro");
+  require(plain.document.groups_size() == 1 &&
+              plain.document.groups(0).name() == "noformat" &&
+              base_of(plain.document.texts(0)).parent().ref() ==
+                  plain.document.groups(0).self_ref(),
+          "inside a group that names its macro");
 
   const auto bodiless = grparse::parse_confluence_storage(
       "<ac:structured-macro ac:name=\"toc\"><ac:parameter ac:name=\"maxLevel\">"
@@ -439,8 +532,20 @@ void verify_unknown_macro_body_survives() {
   require(bodiless.success, "a bodiless macro is not a failure");
   require(bodiless.document.texts_size() == 0,
           "a bodiless macro invents no content");
+  require(bodiless.document.groups_size() == 0 &&
+              bodiless.document.body().children_size() == 0,
+          "and leaves no empty group behind");
   require(!bodiless.warnings.empty(),
           "a bodiless macro says out loud that its parameters were not mapped");
+
+  // A body that folds to nothing leaves no group either: docling-core's
+  // EMPTY_GROUP rule rejects one.
+  const auto hollow = parse(
+      "<ac:structured-macro ac:name=\"expand\"><ac:rich-text-body><p> </p>"
+      "</ac:rich-text-body></ac:structured-macro><p>after</p>");
+  require(hollow.document.groups_size() == 0 &&
+              hollow.document.body().children_size() == 1,
+          "a macro whose body is empty leaves no group");
 }
 
 void verify_attachment_and_url_images() {
@@ -455,8 +560,11 @@ void verify_attachment_and_url_images() {
           "an attachment becomes a pointer, never invented bytes");
   require(picture.image().mimetype().empty() && !picture.image().has_size(),
           "nothing beyond the pointer is claimed");
-  require(custom_field(picture.meta(), "alt") == "the diagram",
-          "the alternative text is kept");
+  require(picture.meta().alt_text() == "the diagram",
+          "the alternative text is kept in its own field: " +
+              picture.meta().alt_text());
+  require(picture.meta().custom_fields().empty(),
+          "and not in the custom fields as well");
   require_stamped(picture.source(), "the picture");
 
   const auto external = parse(
@@ -586,8 +694,8 @@ void verify_real_page_fixture_shape() {
   require(outcome.warnings.empty(),
           "a real page body parses without recovering from anything");
   require(document.texts_size() == 14, "the page's text item count");
-  require(document.groups_size() == 3,
-          "the ordered list, its sublist, and the task list");
+  require(document.groups_size() == 4,
+          "the ordered list, its sublist, the task list and the info panel");
   require(document.tables_size() == 1, "the page's one table");
   require(document.pictures_size() == 0, "the page carries no image");
   require(document.body().children_size() == 11, "the body's top-level children");
@@ -605,17 +713,11 @@ void verify_real_page_fixture_shape() {
   require(!intro.has_formatting(),
           "the intro mixes formatting, so the item claims none");
   require(intro.hyperlink() == "https://example.com/spec", "the intro's link");
-  const auto& span = intro.meta()
-                         .custom_fields()
-                         .at("hyperlinks")
-                         .list_value()
-                         .values(0)
-                         .struct_value()
-                         .fields();
-  const auto expected_start = static_cast<double>(intro.text().find("hyperlink"));
-  require(span.at("char_start").number_value() == expected_start &&
-              span.at("char_end").number_value() == expected_start + 9,
-          "the link's character span covers its own text");
+  require(intro.spans_size() == 1, "the intro's one link is one span");
+  const int expected_start = static_cast<int>(intro.text().find("hyperlink"));
+  require_link_span(intro.spans(0), expected_start, expected_start + 9,
+                    "https://example.com/spec", "the intro's link");
+  require_no_custom_fields(intro, "the intro");
 
   require(document.texts(2).section_header().level() == 2 &&
               base_of(document.texts(2)).text() == "Setup steps",
@@ -662,8 +764,11 @@ void verify_real_page_fixture_shape() {
   const auto& panel = base_of(document.texts(13));
   require(panel.text() == "This is an info panel with a bold note.",
           "the info panel's paragraph");
-  require(custom_field(panel.meta(), "panel") == "info",
-          "the panel names itself on the item");
+  require(panel.admonition_kind() == "info", "the callout's text names its kind");
+  const auto& panel_group = group_at(document, panel.parent().ref());
+  require(panel_group.name() == "info" && panel_group.parent().ref() == "#/body",
+          "the info panel is a group in the body");
+  require_no_custom_fields(panel, "the panel's paragraph");
 }
 
 // The confluence-storage fuzzer's finding (its reproducer is
@@ -704,7 +809,8 @@ int main() {
       verify_headings_map_by_level,
       verify_uniform_and_mixed_formatting,
       verify_inline_marks_and_scripts,
-      verify_hyperlinks_land_in_slot_and_custom_field,
+      verify_every_hyperlink_is_a_typed_span,
+      verify_cell_hyperlinks_are_spans,
       verify_entities_and_cdata,
       verify_lists_nest_and_carry_markers,
       verify_table_headers_spans_and_grid,
@@ -714,7 +820,7 @@ int main() {
       verify_code_macro_language_mapping,
       verify_list_item_blocks_attach_to_the_list,
       verify_task_list_checkbox_states,
-      verify_panel_macro_marks_items,
+      verify_panel_macro_is_a_group,
       verify_unknown_macro_body_survives,
       verify_attachment_and_url_images,
       verify_page_link_pointer,
