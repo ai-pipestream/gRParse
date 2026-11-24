@@ -470,7 +470,7 @@ void verify_an_embedded_workbooks_sheet_is_not_adopted_into() {
 
   Workbook calamine("calamine");
   report_calamine(calamine.sheet("Report"));
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   const int adopted =
       grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
   require_equal(adopted, 1, "the sheet under the body is adopted");
