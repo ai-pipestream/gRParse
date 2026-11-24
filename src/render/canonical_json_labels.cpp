@@ -55,6 +55,7 @@ std::optional<std::string_view> doc_item_label_string(docv1::DocItemLabel label)
     case docv1::DOC_ITEM_LABEL_SEAL: return "picture";
     case docv1::DOC_ITEM_LABEL_ASIDE: return "text";
     case docv1::DOC_ITEM_LABEL_ALGORITHM: return "code";
+    case docv1::DOC_ITEM_LABEL_QUOTE: return "text";
     default: return std::nullopt;
   }
 }

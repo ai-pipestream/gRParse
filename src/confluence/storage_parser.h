@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+#include "grparse/warning.h"
 #include "storage_node.h"
 
 namespace grparse::confluence {
@@ -20,7 +21,7 @@ namespace grparse::confluence {
 // what it can and warns) because half a page is worth more than none.
 class StorageParser {
  public:
-  StorageParser(std::string_view input, std::vector<std::string>* warnings)
+  StorageParser(std::string_view input, std::vector<Warning>* warnings)
       : input_(input), warnings_(warnings) {}
 
   Node parse();
@@ -57,7 +58,7 @@ class StorageParser {
   }
 
   std::string_view input_;
-  std::vector<std::string>* warnings_ = nullptr;
+  std::vector<Warning>* warnings_ = nullptr;
   size_t position_ = 0;
   bool saw_element_ = false;
   bool depth_warned_ = false;

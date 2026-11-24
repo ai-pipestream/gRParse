@@ -1308,8 +1308,10 @@ class DocumentStreamReactor final
       if (transfer_observer_ && transfer_observer_->after_transfer) {
         transfer_observer_->after_transfer();
       }
-      for (auto& warning : outcome.warnings) {
-        collector_document->add_warnings(std::move(warning));
+      for (const Warning& warning : outcome.warnings) {
+        collector_document->add_warnings(warning.message);
+        stamp_warning(warning, collector_name(collector),
+                      collector_document->add_typed_warnings());
       }
       collector_document->mutable_structure_findings()->Swap(&findings);
       events_.push_back(std::move(event));
@@ -1360,8 +1362,10 @@ class DocumentStreamReactor final
     *complete->mutable_collector_failures() = collector_failures_;
     complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
     if (!repair_delta_wanted()) complete->set_repair_delta_omitted(true);
-    for (std::string& warning : assembly_warnings_) {
-      complete->add_warnings(std::move(warning));
+    for (const Warning& warning : assembly_warnings_) {
+      complete->add_warnings(warning.message);
+      stamp_warning(warning, collector_name(pipestream::parse::v1::COLLECTOR_GRPARSE_CV),
+                    complete->add_typed_warnings());
     }
     if (const auto confidence = document_confidence(page_scores_)) {
       *complete->mutable_confidence() = *confidence;
@@ -1410,8 +1414,9 @@ class DocumentStreamReactor final
       *event->message.mutable_repair() = std::move(*delta);
       events_.push_back(std::move(event));
     } catch (const std::exception& error) {
-      assembly_warnings_.push_back(std::string("the streamed pages' repair event was skipped: ") +
-                                   error.what());
+      assembly_warnings_.push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_REPAIR_EVENT_SKIPPED,
+                  std::string("the streamed pages' repair event was skipped: ") + error.what()));
     }
   }
 
@@ -1576,7 +1581,7 @@ class DocumentStreamReactor final
   std::vector<PageConfidence> page_scores_;
   // What the page assembly had to approximate rather than map, shipped with
   // the terminal event.
-  std::vector<std::string> assembly_warnings_;
+  std::vector<Warning> assembly_warnings_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
   // Recognition fields resolved from the first chunk that set each one;

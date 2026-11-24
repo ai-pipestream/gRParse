@@ -809,6 +809,7 @@ add_library(grparse_core STATIC
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/workbook_cells.cpp
+  src/warning.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
   src/epub_book.cpp
@@ -1473,7 +1474,8 @@ if(BUILD_TESTING)
     renderer-base-test
     server-config-test
     target-step-test
-    vtt-renderer-test)
+    vtt-renderer-test
+    warning-test)
   foreach(test_name IN LISTS GRPARSE_UNIT_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")

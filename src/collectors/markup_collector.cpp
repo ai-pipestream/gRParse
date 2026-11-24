@@ -39,7 +39,7 @@ CollectorOutcome collect_markup_document(const std::shared_ptr<grpc::Channel>& c
   CollectorOutcome outcome = drain_stream<markupv1::ParseMarkupResponse>(
       "markup", *stream, upload,
       [](const markupv1::ParseMarkupResponse& event,
-         std::vector<std::string>& warnings) {
+         std::vector<Warning>& warnings) {
         if (!event.has_status()) return false;
         for (const auto& warning : event.status().warnings()) {
           std::string text =

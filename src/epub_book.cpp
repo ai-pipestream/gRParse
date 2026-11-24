@@ -285,7 +285,7 @@ std::string data_uri(const std::string& media_type, const std::string& bytes) {
 }
 
 void inline_images(const std::vector<EpubResource>& resources, docv1::Document* book,
-                   std::vector<std::string>* warnings) {
+                   std::vector<Warning>* warnings) {
   std::map<std::string, const EpubResource*> by_href;
   for (const auto& resource : resources) by_href.emplace(resource.href, &resource);
   std::set<std::string> reported;
@@ -350,7 +350,7 @@ std::string resolve_epub_href(const std::string& chapter_href, const std::string
 
 void fold_epub_book(std::vector<ParsedChapter> chapters,
                     const std::vector<EpubResource>& resources, docv1::Document* book,
-                    std::vector<std::string>* warnings) {
+                    std::vector<Warning>* warnings) {
   std::map<std::string, int> chapter_groups;
   for (int index = 0; index < book->groups_size(); ++index) {
     const auto& group = book->groups(index);

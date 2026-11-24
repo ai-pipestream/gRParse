@@ -385,8 +385,11 @@ CollectorOutcome collect_epub_book(const std::shared_ptr<grpc::Channel>& epub,
                                  ") is not XHTML; its group stays empty");
       continue;
     }
-    for (auto& warning : slot.parsed.warnings) {
-      outcome.warnings.push_back(chapter.href + ": " + warning);
+    // The markup leg's warning keeps whatever it typed; only its words gain
+    // the chapter they are about.
+    for (Warning& warning : slot.parsed.warnings) {
+      warning.message = chapter.href + ": " + warning.message;
+      outcome.warnings.push_back(std::move(warning));
     }
     if (!slot.parsed.success) {
       outcome.warnings.push_back("chapter '" + chapter.href +

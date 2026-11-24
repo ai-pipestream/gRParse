@@ -210,7 +210,7 @@ uint64_t utf8_codepoint_count(const std::string& text) {
 
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
                       pipestream::parse::v1::PageData* output,
-                      std::vector<std::string>* warnings) {
+                      std::vector<Warning>* warnings) {
   if (cursor == nullptr || output == nullptr) throw std::invalid_argument("Page assembly output is required");
   output->set_page_number(page_number);
   output->mutable_page_meta()->set_page_no(page_number);
@@ -657,7 +657,7 @@ void append_page_to_document(
     const OcrPage& source, int page_number, AssemblyCursor* cursor,
     pipestream::document::v1::Document* document, std::string* plain_text,
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>* text_offsets,
-    std::vector<std::string>* warnings) {
+    std::vector<Warning>* warnings) {
   if (document == nullptr || plain_text == nullptr) {
     throw std::invalid_argument("Document assembly output is required");
   }
