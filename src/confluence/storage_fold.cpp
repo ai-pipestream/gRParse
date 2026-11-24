@@ -7,8 +7,6 @@
 #include <utility>
 #include <vector>
 
-#include <google/protobuf/struct.pb.h>
-
 #include "storage_blocks.h"
 #include "storage_node.h"
 #include "storage_table.h"
@@ -22,16 +20,37 @@ namespace {
 constexpr char kCollector[] = "confluence-storage";
 constexpr char kModel[] = "native";
 
-google::protobuf::Value str_value(const std::string& text) {
-  google::protobuf::Value value;
-  value.set_string_value(text);
-  return value;
-}
-
-google::protobuf::Value num_value(double number) {
-  google::protobuf::Value value;
-  value.set_number_value(number);
-  return value;
+// One span for each stretch of text that shares a link target, in code
+// points of the text the runs join into. Returns the first target, which
+// the caller keeps in the item's own hyperlink slot.
+std::string add_link_spans(
+    const std::vector<InlineRun>& runs,
+    google::protobuf::RepeatedPtrField<docv1::InlineSpan>* spans) {
+  std::string first;
+  long long local = 0;
+  long long start = 0;
+  std::string url;
+  const auto flush = [&]() {
+    if (url.empty()) return;
+    if (local > start) {
+      docv1::InlineSpan* span = spans->Add();
+      span->mutable_range()->set_start(static_cast<int32_t>(start));
+      span->mutable_range()->set_end(static_cast<int32_t>(local));
+      span->set_hyperlink(url);
+      if (first.empty()) first = url;
+    }
+    url.clear();
+  };
+  for (const InlineRun& run : runs) {
+    if (run.style.hyperlink != url) {
+      flush();
+      url = run.style.hyperlink;
+      start = local;
+    }
+    local += code_points(run.text);
+  }
+  flush();
+  return first;
 }
 
 bool same_formatting(const InlineStyle& left, const InlineStyle& right) {
@@ -96,22 +115,30 @@ void StorageFold::link_child(const std::string& parent_ref,
   group_by_ref(parent_ref)->add_children()->set_ref(child_ref);
 }
 
-void StorageFold::drop_empty_list(const std::string& group_ref,
-                                  const std::string& parent_ref) {
-  if (group_by_ref(group_ref)->children_size() > 0) return;
-  // Every item a list emits hangs under its group, so a group with no
-  // children had nothing added after it: it is the last group and its
-  // parent's last child. Checked anyway, so a wrong guess keeps the group.
+bool StorageFold::drop_empty_group(const std::string& group_ref,
+                                   const std::string& parent_ref) {
+  if (group_by_ref(group_ref)->children_size() > 0) return false;
+  // Every item a list or a macro body emits hangs under its group, so a
+  // group with no children had nothing added after it: it is the last group
+  // and its parent's last child. Checked anyway, so a wrong guess keeps the
+  // group.
   docv1::GroupItem* parent = group_by_ref(parent_ref);
   const int last_group = document_->groups_size() - 1;
   const int last_child = parent->children_size() - 1;
   if (last_group < 0 || document_->groups(last_group).self_ref() != group_ref ||
       last_child < 0 || parent->children(last_child).ref() != group_ref) {
-    return;
+    return false;
   }
   parent->mutable_children()->RemoveLast();
   document_->mutable_groups()->RemoveLast();
-  warn("a list carried no items and was dropped");
+  return true;
+}
+
+void StorageFold::drop_empty_list(const std::string& group_ref,
+                                  const std::string& parent_ref) {
+  if (drop_empty_group(group_ref, parent_ref)) {
+    warn("a list carried no items and was dropped");
+  }
 }
 
 void StorageFold::stamp_source(
@@ -119,13 +146,6 @@ void StorageFold::stamp_source(
   docv1::CollectorSource* collector = source->Add()->mutable_collector();
   collector->set_collector(kCollector);
   collector->set_model(kModel);
-}
-
-template <typename Meta>
-void StorageFold::stamp_meta(Meta* meta) {
-  for (const auto& [key, value] : stamps_) {
-    (*meta->mutable_custom_fields())[key] = str_value(value);
-  }
 }
 
 docv1::GroupItem* StorageFold::add_group(const std::string& parent_ref,
@@ -138,6 +158,7 @@ docv1::GroupItem* StorageFold::add_group(const std::string& parent_ref,
   group->set_label(label);
   group->set_content_layer(docv1::CONTENT_LAYER_BODY);
   if (!name.empty()) group->set_name(name);
+  stamp_source(group->mutable_source());
   link_child(parent_ref, group->self_ref());
   return group;
 }
@@ -164,7 +185,7 @@ StorageFold::TextHandle StorageFold::add_text(TextKind kind,
   handle.base->set_label(label);
   handle.base->set_content_layer(docv1::CONTENT_LAYER_BODY);
   stamp_source(handle.base->mutable_source());
-  if (!stamps_.empty()) stamp_meta(handle.base->mutable_meta());
+  if (!admonitions_.empty()) handle.base->set_admonition_kind(admonitions_.back());
   link_child(parent_ref, handle.ref);
   ++emitted_;
   return handle;
@@ -285,35 +306,10 @@ void StorageFold::apply_inline(const std::vector<InlineRun>& runs,
     formatting->set_script(first.script);
   }
 
-  // The first link lands in the item's own hyperlink slot; every link keeps
-  // its own character span in the "hyperlinks" custom field.
-  google::protobuf::ListValue links;
-  long long local = 0;
-  long long start = 0;
-  std::string url;
-  const auto flush = [&links, &url, &start, &local]() {
-    if (url.empty()) return;
-    google::protobuf::Struct* link = links.add_values()->mutable_struct_value();
-    (*link->mutable_fields())["url"] = str_value(url);
-    (*link->mutable_fields())["char_start"] = num_value(static_cast<double>(start));
-    (*link->mutable_fields())["char_end"] = num_value(static_cast<double>(local));
-    url.clear();
-  };
-  for (const InlineRun& run : runs) {
-    if (run.style.hyperlink != url) {
-      flush();
-      url = run.style.hyperlink;
-      start = local;
-    }
-    local += code_points(run.text);
-  }
-  flush();
-  if (links.values_size() == 0) return;
-  base->set_hyperlink(
-      links.values(0).struct_value().fields().at("url").string_value());
-  google::protobuf::Value value;
-  *value.mutable_list_value() = std::move(links);
-  (*base->mutable_meta()->mutable_custom_fields())["hyperlinks"] = std::move(value);
+  // The first link lands in the item's own hyperlink slot, the house
+  // convention; every link is a span with its own range.
+  const std::string first_link = add_link_spans(runs, base->mutable_spans());
+  if (!first_link.empty()) base->set_hyperlink(first_link);
 }
 
 void StorageFold::flush_inline(std::vector<InlineRun>* runs,
@@ -509,7 +505,6 @@ docv1::TableItem* StorageFold::add_table(const std::string& parent_ref,
   table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
   table->set_content_layer(docv1::CONTENT_LAYER_BODY);
   stamp_source(table->mutable_source());
-  if (!stamps_.empty()) stamp_meta(table->mutable_meta());
   link_child(parent_ref, ref);
   ++emitted_;
   table->mutable_data()->set_num_rows(num_rows);
@@ -557,6 +552,7 @@ void StorageFold::place_table_row(const TableRowNode& row, int row_index,
     out->set_row_span(row_span);
     out->set_col_span(col_span);
     out->set_text(runs_text(runs));
+    add_link_spans(runs, out->mutable_spans());
     out->set_column_header(header_cell && (row.head || row_index == 0));
     out->set_row_header(header_cell && !out->column_header());
     column += col_span;
@@ -610,35 +606,47 @@ void StorageFold::emit_macro(const Node& node, const std::string& parent_ref) {
     emit_code_macro(node, parent_ref);
     return;
   }
-  // The panel family is a container with a body, not a construct of its own:
-  // the body maps to whatever it contains, and the macro's own name rides
-  // along on the items so nothing has to invent a label for it.
-  static constexpr std::string_view kPanels[] = {"info", "note", "warning",
-                                                 "tip", "panel"};
-  const bool panel = std::ranges::find(kPanels, name) != std::end(kPanels);
-  StampScope scope(this, panel ? "panel" : "macro", name);
-
-  bool folded = false;
-  for (const Node& child : node.children) {
-    if (element_is(child, "ac", "rich-text-body")) {
-      fold_blocks(child, parent_ref);
-      folded = true;
-      continue;
-    }
-    if (element_is(child, "ac", "plain-text-body")) {
-      const std::string text = raw_text(child);
-      if (!blank(text)) {
-        std::vector<InlineRun> runs{{text, InlineStyle{}}};
-        flush_inline(&runs, parent_ref);
-      }
-      folded = true;
-    }
-  }
-  if (!folded) {
+  const std::string shown = name.empty() ? std::string("unnamed") : name;
+  const bool has_body = std::ranges::any_of(node.children, [](const Node& child) {
+    return element_is(child, "ac", "rich-text-body") ||
+           element_is(child, "ac", "plain-text-body");
+  });
+  if (!has_body) {
     // A bodiless macro (a table of contents, a status lozenge) carries only
     // its parameters, which are configuration rather than page content.
-    warn("macro '" + (name.empty() ? std::string("unnamed") : name) +
-         "' carried no body; its parameters were not mapped");
+    warn("macro '" + shown + "' carried no body; its parameters were not mapped");
+    return;
+  }
+
+  // Every other macro is a container with a body, not a construct of its
+  // own: the body maps to whatever it contains, inside a group that carries
+  // the macro's name, so a table or a picture in it belongs to it as much
+  // as a paragraph does and nothing has to invent a label for it. The four
+  // callouts are also what the schema calls an admonition, and their text
+  // says which.
+  static constexpr std::string_view kCallouts[] = {"info", "note", "warning", "tip"};
+  const bool callout = std::ranges::find(kCallouts, name) != std::end(kCallouts);
+  const std::string group_ref =
+      add_group(parent_ref, docv1::GROUP_LABEL_UNSPECIFIED, name)->self_ref();
+  {
+    AdmonitionScope scope(this, callout ? name : std::string());
+    for (const Node& child : node.children) {
+      if (element_is(child, "ac", "rich-text-body")) {
+        fold_blocks(child, group_ref);
+        continue;
+      }
+      if (element_is(child, "ac", "plain-text-body")) {
+        const std::string text = raw_text(child);
+        if (!blank(text)) {
+          std::vector<InlineRun> runs{{text, InlineStyle{}}};
+          flush_inline(&runs, group_ref);
+        }
+      }
+    }
+  }
+  if (drop_empty_group(group_ref, parent_ref)) {
+    // docling-core's EMPTY_GROUP rule rejects a group with no children.
+    warn("macro '" + shown + "' had an empty body and was dropped");
   }
 }
 
@@ -665,7 +673,6 @@ void StorageFold::emit_code_macro(const Node& node,
   code->set_text(text);
   code->set_orig(text);
   stamp_source(code->mutable_source());
-  if (!stamps_.empty()) stamp_meta(code->mutable_meta());
   link_child(parent_ref, ref);
   ++emitted_;
 
@@ -703,14 +710,11 @@ void StorageFold::emit_image(const Node& node, const std::string& parent_ref) {
   picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
   picture->set_content_layer(docv1::CONTENT_LAYER_BODY);
   stamp_source(picture->mutable_source());
-  if (!stamps_.empty()) stamp_meta(picture->mutable_meta());
   link_child(parent_ref, ref);
   ++emitted_;
   if (!uri.empty()) picture->mutable_image()->set_uri(uri);
   const std::string alt = attribute_or_empty(node, "ac", "alt");
-  if (!alt.empty()) {
-    (*picture->mutable_meta()->mutable_custom_fields())["alt"] = str_value(alt);
-  }
+  if (!alt.empty()) picture->mutable_meta()->set_alt_text(alt);
 }
 
 }  // namespace grparse::confluence
