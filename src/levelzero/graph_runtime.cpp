@@ -49,6 +49,9 @@ struct ConvArgs {
   int n, ci, ih, iw, co, oh, ow, kh, kw, sh, sw, ph, pw, groups, act;
   float alpha, beta;
 };
+struct ImageArgs {
+  float mean[3], norm[3];
+};
 struct MergeArgs {
   int c, c_total, c_off, oh, ow, xh, xw, fx, yh, yw, fy, has_s, has_y;
 };
@@ -84,7 +87,7 @@ struct GraphModel::Kernels {
       pack_patches, pack_tokens;
   // kernels_detector.cl
   ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1, conv_planes_xmx,
-      shift_copy, conv_few_terms;
+      shift_copy, conv_few_terms, image_to_real;
   // kernels_mobile.cl
   ze_kernel_handle_t channel_scale, binary_same;
 };
@@ -121,7 +124,7 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
       k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
       fp16_ ? k("conv_planes_xmx", 64, 1) : nullptr, fp16_ ? k("shift_copy", 256, 1) : nullptr,
-      k("conv_few_terms", 16, 4),
+      k("conv_few_terms", 16, 4), k("image_to_real", 256, 1),
       k("channel_scale", 16, 16), k("binary_same", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
@@ -210,6 +213,16 @@ std::vector<HostTensor> GraphModel::run(const float* input, const std::vector<in
   return outputs;
 }
 
+std::vector<HostTensor> GraphModel::run_image(const uint8_t* pixels, int height, int width, const float mean[3],
+                                              const float norm[3]) {
+  std::lock_guard lock(mutex_);
+  std::vector<HostTensor> outputs;
+  const Image image{pixels, {mean[0], mean[1], mean[2]}, {norm[0], norm[1], norm[2]}};
+  record(nullptr, {1, 3, height, width}, &outputs, &image);
+  execute();
+  return outputs;
+}
+
 std::vector<HostTensor> GraphModel::run_profiled(const float* input, const std::vector<int64_t>& shape,
                                                  std::vector<double>* node_microseconds) {
   std::lock_guard lock(mutex_);
@@ -249,7 +262,7 @@ void GraphModel::execute() {
 }
 
 void GraphModel::record(const float* input, const std::vector<int64_t>& input_shape,
-                        std::vector<HostTensor>* outputs) {
+                        std::vector<HostTensor>* outputs, const Image* image) {
   std::vector<Value> values(ir_.values.size());
   for (size_t id = 0; id < ir_.values.size(); ++id) {
     const IrValue& v = ir_.values[id];
@@ -950,17 +963,25 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
   grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float));
   grow(&io_out_, &io_out_floats_, output_floats, sizeof(float));
   ze_check(zeCommandListReset(list_), "command list reset");
-  ze_check(zeCommandListAppendMemoryCopy(list_, io_in_, input, numel(input_shape) * sizeof(float), nullptr, 0,
-                                         nullptr),
-           "input upload");
+  const void* upload = image != nullptr ? static_cast<const void*>(image->pixels) : input;
+  const size_t upload_bytes = numel(input_shape) * (image != nullptr ? 1 : sizeof(float));
+  ze_check(zeCommandListAppendMemoryCopy(list_, io_in_, upload, upload_bytes, nullptr, 0, nullptr), "input upload");
   ze_check(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr), "graph barrier");
   {
     const char* src = io_in_;
     char* dst = arena_ + input_offset * esize_;
-    const int count = int(numel(input_shape));
     current_node_ = 0;
-    args(kernels_->to_real, {P(src), P(dst), P(count)});
-    launch(kernels_->to_real, {groups_for(size_t(count), 256), 1, 1});
+    if (image != nullptr) {
+      const int pixels = int(input_shape[2] * input_shape[3]);
+      const ImageArgs scale{{image->mean[0], image->mean[1], image->mean[2]},
+                            {image->norm[0], image->norm[1], image->norm[2]}};
+      args(kernels_->image_to_real, {P(src), P(dst), P(pixels), P(scale)});
+      launch(kernels_->image_to_real, {groups_for(size_t(pixels), 256), 1, 1});
+    } else {
+      const int count = int(numel(input_shape));
+      args(kernels_->to_real, {P(src), P(dst), P(count)});
+      launch(kernels_->to_real, {groups_for(size_t(count), 256), 1, 1});
+    }
   }
   for (const auto& [node_index, body] : launches) {
     current_node_ = node_index;

@@ -47,6 +47,14 @@ class GraphModel {
   // InferenceDeviceError; a shape the graph cannot take, std::invalid_argument.
   std::vector<HostTensor> run(const float* input, const std::vector<int64_t>& shape);
 
+  // Runs the graph on an image the device normalizes: `pixels` is height x
+  // width x 3 bytes, interleaved, and the graph's input is [1, 3, height,
+  // width] with input[c][y][x] = pixel * norm[c] - mean[c] * norm[c] in
+  // float, the expression RapidOCR computes on the host.  The upload is a
+  // quarter of the float tensor's and no host pass touches the pixels.
+  std::vector<HostTensor> run_image(const uint8_t* pixels, int height, int width, const float mean[3],
+                                    const float norm[3]);
+
   // The same, with each node's GPU time: per IR node, microseconds summed
   // over its launches.  For benchmarks.
   std::vector<HostTensor> run_profiled(const float* input, const std::vector<int64_t>& shape,
@@ -58,7 +66,13 @@ class GraphModel {
   struct Kernels;
   struct Value;
 
-  void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs);
+  struct Image {
+    const uint8_t* pixels;
+    float mean[3], norm[3];
+  };
+  // `image`, when given, is the input in place of `input`.
+  void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs,
+              const Image* image = nullptr);
   void execute();
   void build_fp16_weights();
   void build_plane_weights();

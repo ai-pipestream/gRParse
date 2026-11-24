@@ -106,6 +106,24 @@ __kernel void scale_merge(__global const real* x, __global const real* s, __glob
 CONV_TRANSPOSE2(conv_transpose2_8, 8)
 CONV_TRANSPOSE2(conv_transpose2_1, 1)
 
+// An interleaved 3-channel byte image into the graph's first buffer,
+// normalized as RapidOCR's substractMeanNormalize does on the host:
+// pixel * norm - mean * norm in float, each product rounded before the
+// subtraction (no contraction), so the FP32 module stores the host's bits.
+typedef struct {
+  float mean[3], norm[3];
+} image_t;
+#pragma OPENCL FP_CONTRACT OFF
+__kernel void image_to_real(__global const uchar* in, __global real* out, int pixels, image_t p) {
+  const int index = get_global_id(0);
+  if (index >= pixels) return;
+  for (int c = 0; c < 3; ++c) {
+    const float scaled = (float)in[(size_t)index * 3 + c] * p.norm[c], offset = p.mean[c] * p.norm[c];
+    RSTORE(out, (size_t)c * pixels + index, scaled - offset);
+  }
+}
+#pragma OPENCL FP_CONTRACT DEFAULT
+
 // A dense convolution with few terms an output (ci * kh * kw up to 32, the
 // network's first layer over an image's three channels): a work item takes
 // one output pixel and 8 output channels and reads each term once.  A patch
