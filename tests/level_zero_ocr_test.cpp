@@ -2,8 +2,10 @@
 // Runtime's CPU provider, in process, on inputs cut from a real image: the
 // float module must reproduce the reference within float noise, and the
 // recognizer's reduced output must name the reference's best class at every
-// time step, in float and in half.  Needs the models and an Intel GPU (skip
-// 77 without either).
+// time step, in float and in half.  Each model runs with poison_arena on (the
+// arena is NaN before a call), so a kernel that reads memory it was not given
+// fails here instead of passing on stale data.  Needs the models and an
+// Intel GPU (skip 77 without either).
 #include <algorithm>
 #include <cmath>
 #include <cstdlib>
@@ -26,6 +28,8 @@ namespace {
 namespace fs = std::filesystem;
 namespace lz = grparse::levelzero;
 using grparse_test::require;
+
+constexpr lz::graph::GraphOptions kPoisoned{.poison_arena = true};
 
 struct Reference {
   std::vector<int64_t> shape;
@@ -115,7 +119,7 @@ int main() {
       "level-zero-ocr-test", "the native OCR nets match ONNX Runtime on CPU",
       {[&] {
          // Detection at two sizes through one model: the second shape needs nothing rebuilt.
-         lz::graph::GraphModel model(*device, det);
+         lz::graph::GraphModel model(*device, det, kPoisoned);
          for (const auto& [h, w] : {std::pair{320, 480}, std::pair{352, 288}}) {
            const std::vector<int64_t> shape{1, 3, h, w};
            const std::vector<float> input = crops(image, 1, h, w);
@@ -125,7 +129,7 @@ int main() {
          }
        },
        [&] {
-         lz::graph::GraphModel model(*device, cls);
+         lz::graph::GraphModel model(*device, cls, kPoisoned);
          const std::vector<int64_t> shape{5, 3, 48, 192};
          const std::vector<float> input = crops(image, 5, 48, 192);
          const float worst =
@@ -140,12 +144,12 @@ int main() {
          const size_t classes = static_cast<size_t>(want.shape[2]);
          const size_t steps = want.values.size() / classes;
          {
-           lz::graph::GraphModel model(*device, rec);
+           lz::graph::GraphModel model(*device, rec, kPoisoned);
            const float worst = max_difference(want, model.run(input.data(), shape)[0], "recognition");
            require(worst < 1e-4F, std::format("recognition: max difference {}", worst));
          }
          for (const bool fp16 : {false, true}) {
-           lz::graph::GraphModel model(*device, rec, lz::graph::GraphOptions{.fp16 = fp16, .reduce_rows = true});
+           lz::graph::GraphModel model(*device, rec, lz::graph::GraphOptions{.fp16 = fp16, .reduce_rows = true, .poison_arena = true});
            const lz::graph::HostTensor got = model.run(input.data(), shape)[0];
            require(got.count() == steps * 4, "the reduced output holds four floats a time step");
            size_t agree = 0;
