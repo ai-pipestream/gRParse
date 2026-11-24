@@ -102,6 +102,17 @@ if(BUILD_TESTING)
   add_test(NAME graph-ir-test COMMAND graph-ir-test)
   set_tests_properties(graph-ir-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
   add_dependencies(grparse-tests graph-ir-test)
+  # What the lowering produces for the real models, pinned.  Needs the model
+  # files and nothing else; skips (77) without them.
+  add_executable(graph-lowering-model-test tests/graph_lowering_model_test.cpp)
+  target_include_directories(graph-lowering-model-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(graph-lowering-model-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+  add_test(NAME graph-lowering-model-test COMMAND graph-lowering-model-test)
+  set_tests_properties(graph-lowering-model-test PROPERTIES
+    LABELS "grparse;models" TIMEOUT ${GRPARSE_TEST_TIMEOUT} SKIP_RETURN_CODE 77
+    ENVIRONMENT "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models")
+  add_dependencies(grparse-tests graph-lowering-model-test)
   if(GRPARSE_TABLE_LEVEL_ZERO)
     # The GPU path against the CPU path on real table crops.  Needs the
     # models and an Intel GPU; skips (77) without either, so the image build,
