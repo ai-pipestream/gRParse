@@ -192,7 +192,8 @@ message JavaScriptChunk {
 }
 
 // A warning attached to the parse, for content the engine skipped or
-// repaired without failing the stream.
+// repaired without failing the stream. Parse carries them in its trailer,
+// Render beside the raster of the page they are about.
 message ParseWarning {
   // The page the warning is about, when page-scoped.
   optional uint32 page_index = 1;
@@ -312,6 +313,15 @@ message RenderResponse {
   // success a server may omit head entirely and send only rasters, so a
   // message with raster set is the success signal.
   RenderHeader head = 2;
+  // What the engine skipped or repaired while it drew the page in raster:
+  // an image whose samples did not decode, a damaged content stream it
+  // drew as far as it could read. A raster with warnings is not the whole
+  // page, and says so here instead of passing for one. Set only on a
+  // message with raster set; each warning is about that page and carries
+  // its page_index. A page the server cannot draw at all still fails the
+  // call. A server that predates this field sends none, which a client
+  // cannot tell from a clean page.
+  repeated ParseWarning warnings = 3;
 }
 
 // The first ParseStream message: what the document is and what the open's
