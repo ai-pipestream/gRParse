@@ -872,6 +872,38 @@ void verify_backend_warnings_reach_the_converted_document() {
   require_equal(said, 1, "the widget fetch hears the same warning and does not repeat it");
 }
 
+// The same way out for what the engine says on a raster: a scanned page the
+// backend drew around an image it could not decode is recognized from that
+// raster, and the Document says the raster was not the whole page.
+void verify_render_warnings_reach_the_converted_document() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  grparse_test::FakePdfPage scan;
+  scan.render_warnings = {{"image 9 0 R: samples did not decode; drawn blank"}};
+  // "%PDF-1.4\n", the bytes the request below carries.
+  pdf_backend.backend().add_document("%PDF-1.4\n", {scan});
+
+  ParseServer server{grparse::PageSourceFactory{}};
+  parsev1::ConvertSourceResponse response;
+  const grpc::Status status = server.convert("scan.pdf", "JVBERi0xLjQK", std::nullopt, &response);
+  require(status.ok(), "the scanned PDF still converts: " + status.error_message());
+  const auto& document = response.response().document().doc();
+  const docv1::CollectorWarning* skipped = nullptr;
+  int said = 0;
+  for (const auto& warning : document.warnings()) {
+    if (warning.code() != docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED) continue;
+    skipped = &warning;
+    ++said;
+  }
+  require(skipped != nullptr,
+          "Document.warnings carries the raster's WARNING_CODE_BACKEND_CONTENT_SKIPPED (" +
+              std::to_string(document.warnings_size()) + " warnings)");
+  require_equal(said, 1, "the raster's warning is said once");
+  require(skipped->has_page_no() && skipped->page_no() == 1, "on the page that was drawn");
+  require(skipped->source().collector() == "grparse-cv" &&
+              skipped->message().contains("samples did not decode"),
+          "from the collector that read the PDF, in the engine's words: " + skipped->message());
+}
+
 // The whole way out for a vote that did not happen: GRPARSE_PDF_BACKEND
 // names two backends and one of them cannot open the document. The PDF
 // still converts, from the other backend alone, and the Document says so,
@@ -920,5 +952,6 @@ int main() {
        verify_unsupported_form_fields_are_not_a_formless_pdf,
        verify_form_field_gaps_reach_the_converted_document,
        verify_backend_warnings_reach_the_converted_document,
+       verify_render_warnings_reach_the_converted_document,
        verify_a_dropped_consensus_backend_reaches_the_converted_document});
 }

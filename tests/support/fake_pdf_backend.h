@@ -87,6 +87,9 @@ struct FakePdfPage {
   // carried: items lost between the engine and the client.
   uint64_t lost_cells = 0;
   uint64_t lost_form_fields = 0;
+  // What the engine says on the page's raster about content it skipped or
+  // repaired while drawing: RenderResponse.warnings on every Render of it.
+  std::vector<FakeParseWarning> render_warnings = {};
 };
 
 // Lines of 24pt text from the top of a Letter page down, one cell per line,
@@ -555,6 +558,12 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
       raster->set_pixel_format(pdfv1::PIXEL_FORMAT_BGR8);
       raster->set_dpi(request->dpi());
       raster->set_pixels(std::string(static_cast<size_t>(width) * height * 3, '\xFF'));
+      for (const FakeParseWarning& said : page.render_warnings) {
+        auto* warning = message.add_warnings();
+        warning->set_page_index(index);
+        if (said.family != pdfv1::PDF_FAMILY_UNSPECIFIED) warning->set_family(said.family);
+        warning->set_message(said.message);
+      }
       emit(message);
     }
     return grpc::Status::OK;

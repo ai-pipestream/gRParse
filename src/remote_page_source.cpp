@@ -422,8 +422,14 @@ class RemotePdfPageSource final : public PageSource {
 
   std::vector<Warning> page_warnings(int page_number) const override {
     const std::lock_guard<std::mutex> lock(warnings_mutex_);
-    const auto found = page_warnings_.find(page_number);
-    return found == page_warnings_.end() ? std::vector<Warning>{} : found->second;
+    std::vector<Warning> said;
+    // The Parse answer's first, then the raster's: the order the page was
+    // read in.
+    for (const auto* kept : {&page_warnings_, &render_warnings_}) {
+      const auto found = kept->find(page_number);
+      if (found != kept->end()) said.insert(said.end(), found->second.begin(), found->second.end());
+    }
+    return said;
   }
 
   // Families a page's digital text needs: cells, the font table, and image
@@ -462,6 +468,23 @@ class RemotePdfPageSource final : public PageSource {
       page_warnings_.erase(page_number);
     } else {
       page_warnings_[page_number] = std::move(warnings);
+    }
+  }
+
+  // Keeps what the page's Render answer said about its raster (content the
+  // engine skipped or repaired while drawing) for page_warnings(), beside
+  // what the page's Parse answer said. A later render of the same page
+  // replaces what an earlier one left.
+  void keep_render_warnings(
+      int page_number,
+      const google::protobuf::RepeatedPtrField<pdfv1::ParseWarning>& said) const {
+    std::vector<Warning> warnings =
+        render_warnings(backend_name_.empty() ? target_ : backend_name_, page_number, said);
+    const std::lock_guard<std::mutex> lock(warnings_mutex_);
+    if (warnings.empty()) {
+      render_warnings_.erase(page_number);
+    } else {
+      render_warnings_[page_number] = std::move(warnings);
     }
   }
 
@@ -579,6 +602,7 @@ class RemotePdfPageSource final : public PageSource {
       const StreamAnswer answer =
           stream_call(std::move(request), kRenderDeadline, "PDF backend render failed");
       cv::Mat rendered;
+      google::protobuf::RepeatedPtrField<pdfv1::ParseWarning> said;
       for (const auto& message : answer.messages) {
         if (!message.has_render()) continue;
         const auto& frame = message.render();
@@ -588,11 +612,17 @@ class RemotePdfPageSource final : public PageSource {
               pdfv1::LoadStatus_Name(frame.head().load_status()) +
               (frame.head().load_detail().empty() ? "" : " (" + frame.head().load_detail() + ")"));
         }
-        if (frame.has_raster()) rendered = page_raster(frame.raster(), page_number);
+        if (!frame.has_raster()) continue;
+        cv::Mat page = page_raster(frame.raster(), page_number);
+        if (page.empty()) continue;
+        rendered = std::move(page);
+        // The raster kept is the one whose warnings are kept.
+        said = frame.warnings();
       }
       if (rendered.empty()) {
         throw InvalidDocument("PDF page could not be rendered by the backend");
       }
+      keep_render_warnings(page_number, said);
       return rendered;
     }
     bool sent_bytes = !handshake_;
@@ -609,6 +639,7 @@ class RemotePdfPageSource final : public PageSource {
 
       pdfv1::RenderResponse message;
       cv::Mat rendered;
+      google::protobuf::RepeatedPtrField<pdfv1::ParseWarning> said;
       std::optional<pdfv1::LoadStatus> head_load_status;
       std::string head_load_detail;
       while (reader->Read(&message)) {
@@ -620,7 +651,10 @@ class RemotePdfPageSource final : public PageSource {
           continue;
         }
         cv::Mat page = page_raster(message.raster(), page_number);
-        if (!page.empty()) rendered = std::move(page);
+        if (page.empty()) continue;
+        rendered = std::move(page);
+        // The raster kept is the one whose warnings are kept.
+        said = message.warnings();
       }
       const grpc::Status status = reader->Finish();
       if (!status.ok()) {
@@ -645,6 +679,7 @@ class RemotePdfPageSource final : public PageSource {
       if (rendered.empty()) {
         throw InvalidDocument("PDF page could not be rendered by the backend");
       }
+      keep_render_warnings(page_number, said);
       return rendered;
     }
   }
@@ -1106,6 +1141,9 @@ class RemotePdfPageSource final : public PageSource {
   // page number; pages are read from several threads.
   mutable std::mutex warnings_mutex_;
   mutable std::map<int, std::vector<Warning>> page_warnings_;
+  // What each page's latest Render answer said about its raster, same key
+  // and same mutex.
+  mutable std::map<int, std::vector<Warning>> render_warnings_;
 };
 
 }  // namespace

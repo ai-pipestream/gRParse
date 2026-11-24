@@ -121,4 +121,21 @@ std::vector<Warning> PdfParseTally::warnings(std::string_view backend,
   return out;
 }
 
+std::vector<Warning> render_warnings(
+    std::string_view backend, int32_t page_number,
+    const google::protobuf::RepeatedPtrField<pdfv1::ParseWarning>& said) {
+  std::vector<Warning> out;
+  out.reserve(static_cast<size_t>(said.size()));
+  for (const pdfv1::ParseWarning& warning : said) {
+    std::string text = "PDF backend " + std::string(backend) +
+                       " skipped or repaired content while rendering page " +
+                       std::to_string(page_number);
+    if (names_family(warning)) text += " (" + family_label(warning.family()) + ")";
+    text += ": " + (warning.message().empty() ? std::string("no detail given") : warning.message());
+    out.push_back(
+        Warning(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED, std::move(text)).on_page(page_number));
+  }
+  return out;
+}
+
 }  // namespace grparse

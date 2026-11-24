@@ -995,6 +995,52 @@ int main() {
     unary_server->Shutdown();
   }
 
+  // --- Render warnings ------------------------------------------------------
+  // A raster the engine drew around something it could not read says so on
+  // the Render answer. The source keeps that for page_warnings(), typed and
+  // on the page, beside what the page's Parse said, on both wires.
+  for (const bool on_stream : {false, true}) {
+    const std::string wire = on_stream ? "ParseStream" : "Render";
+    grparse_test::FakePdfBackend drawing;
+    if (on_stream) drawing.enable_parse_stream();
+    grparse_test::FakePdfPage damaged = grparse_test::text_page({"a line above the picture"});
+    damaged.warnings = {{"content stream 7 0 R is damaged; 2 text objects skipped",
+                         pdfv1::PDF_FAMILY_TEXT_CELLS}};
+    damaged.render_warnings = {{"image 9 0 R: samples did not decode; drawn blank"}};
+    const auto drawn = std::make_shared<const std::string>("%PDF-render-warnings-" + wire);
+    drawing.add_document(*drawn, {damaged, grparse_test::text_page({"a clean page"})});
+    std::unique_ptr<grpc::Server> drawing_server;
+    const std::string drawing_target = serve(drawing, drawing_server);
+    const auto source = grparse::open_remote_pdf_document(drawn, drawing_target, dpi);
+
+    static_cast<void>(source->extract_digital_page(1));
+    require(source->page_warnings(1).size() == 1,
+            wire + ": before the render only the page's Parse answer has spoken");
+    require(!source->render_page(1).empty(), wire + ": the damaged page still renders");
+    std::vector<grparse::Warning> said = source->page_warnings(1);
+    require(said.size() == 2, wire + ": the render's warning joins the Parse answer's, got " +
+                                  std::to_string(said.size()));
+    require(said.front().message.contains("2 text objects skipped"),
+            wire + ": the Parse answer's warning is still there, first");
+    const grparse::Warning& render = said.back();
+    require(render.code == ai::pipestream::document::v1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+            wire + ": the render warning is typed BACKEND_CONTENT_SKIPPED");
+    require(render.page_no == 1, wire + ": the render warning is on the page drawn");
+    require(render.message.contains("image 9 0 R: samples did not decode; drawn blank") &&
+                render.message.contains("rendering page 1"),
+            wire + ": it says what the engine said, and that it was said of the raster: " +
+                render.message);
+
+    // A second render of the page replaces what the first left; it is not
+    // said twice.
+    require(!source->render_page(1).empty() && source->page_warnings(1).size() == 2,
+            wire + ": a page rendered again reports its raster once");
+    static_cast<void>(source->extract_digital_page(2));
+    require(!source->render_page(2).empty() && source->page_warnings(2).empty(),
+            wire + ": a raster drawn whole says nothing");
+    drawing_server->Shutdown(std::chrono::system_clock::now() + std::chrono::seconds(2));
+  }
+
   // --- Target configuration edge cases ------------------------------------
   {
     const auto config_bytes = std::make_shared<const std::string>("%PDF-fake");
