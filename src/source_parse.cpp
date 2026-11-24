@@ -76,16 +76,6 @@ void stamp_origin_mimetype(const std::string& declared_content_type,
   }
 }
 
-const char* pdf_class_name(PdfClass pdf_class) {
-  switch (pdf_class) {
-    case PdfClass::kTextBased: return "text-based";
-    case PdfClass::kScanned: return "scanned";
-    case PdfClass::kImageBased: return "image-based";
-    case PdfClass::kMixed: return "mixed";
-    default: return "unknown";
-  }
-}
-
 std::vector<pipestream::parse::v1::Collector> requested_collectors(
     const google::protobuf::RepeatedField<int>& raw) {
   std::vector<pipestream::parse::v1::Collector> collectors;
@@ -2054,30 +2044,6 @@ void lend_source_meta(const CollectorOutcome& inspector, CollectorOutcome* cv) {
   }
 }
 
-// Why the routed PDF went to the CV path instead of the inspector's
-// extraction, and how recognition was scoped there.
-std::string cv_route_warning(const PdfClassification& classification,
-                             const PdfRouteDecision& route, bool forced) {
-  return "pdf inspector classified the document as " +
-         std::string(pdf_class_name(classification.pdf_class)) +
-         (classification.encoding_issues
-              ? " with encoding issues in the text layer, so its extraction was not taken"
-              : "") +
-         (classification.empty_body
-              ? "; its extraction carried no body text, so it was not taken"
-              : "") +
-         (!classification.ocr_recommended ? ""
-          : route.force_ocr
-              ? "; it recommended OCR over the text layer, so its extraction was not taken"
-              : "; it recommended OCR for the scanned pages it named, and the other pages "
-                "keep their text layers") +
-         (forced ? "; recognition was forced on every page in place of the embedded layer"
-          : route.ocr_pages.empty()
-              ? "; the CV path's own per-page heuristic decided recognition"
-              : "; recognition restricted to the " + std::to_string(route.ocr_pages.size()) +
-                    " page(s) needing OCR");
-}
-
 // The inspector's own extraction as the leg's result: the fast path, or
 // pipeline NATIVE taking it whatever the classification said.
 CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
@@ -2172,8 +2138,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                         collector_call_status_for(outcome.success, outcome.code),
                         cv_elapsed_ns, 0);
   lend_source_meta(parsed.outcome, &outcome);
-  outcome.warnings.push_back(Warning(pipestream::document::v1::WARNING_CODE_ROUTED_TO_CV,
-                                     cv_route_warning(parsed.classification, route, forced)));
+  outcome.warnings.push_back(cv_route_warning(parsed.classification, route, forced));
   return outcome;
 }
 

@@ -4082,7 +4082,8 @@ StreamPdfRun run_stream_pdf(
     const std::string& pdf_target, bool capture_page_images = false,
     const std::string& pdf_bytes = "%PDF-in-memory",
     const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {},
-    bool slim_collector_documents = false, std::optional<bool> repair_delta = std::nullopt) {
+    bool slim_collector_documents = false, std::optional<bool> repair_delta = std::nullopt,
+    const std::string& enrich_target = {}) {
   FakeRecognizer recognizer;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
@@ -4093,6 +4094,7 @@ StreamPdfRun run_stream_pdf(
       });
   grparse::CollectorTargets targets;
   targets.pdf = pdf_target;
+  targets.derender.target = enrich_target;
   grparse::DocumentStreamingService streaming_service(
       scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
   int port = 0;
@@ -6810,6 +6812,145 @@ void verify_streaming_pdf_mixed_recommendation_stays_on_named_pages() {
           "page three keeps its embedded layer");
 }
 
+// The steps DocumentComplete.omitted_steps names, in wire order.
+std::vector<pipestream::parse::v1::StreamOmittedStep> omitted_steps(
+    const pipestream::parse::v1::DocumentComplete& complete) {
+  std::vector<pipestream::parse::v1::StreamOmittedStep> steps;
+  for (const int step : complete.omitted_steps()) {
+    steps.push_back(static_cast<pipestream::parse::v1::StreamOmittedStep>(step));
+  }
+  return steps;
+}
+
+// One routed PDF through both surfaces: the inspector classifies it for the
+// CV path, and a PDF backend reads one AcroForm widget in it. What
+// ConvertSource puts on the Document beside the CV path's items (the
+// inspector's source metadata, the route's typed warning) must reach the
+// stream's reader as the same typed data on the complete event, and the
+// widget step the stream does not run must be named there, typed. Both
+// routes are covered: the one settled by the inspector's trailer, and the
+// one the info event settles while the inspector still reads.
+void verify_streamed_cv_route_carries_what_the_unary_route_does() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  grparse_test::FakePdfPage form_page = grparse_test::text_page({"Form"});
+  grparse_test::pdfv1::FormField field;
+  field.set_kind(grparse_test::pdfv1::FORM_FIELD_KIND_TEXT);
+  field.set_name("customer_name");
+  field.set_value("Jordan Example");
+  field.mutable_rect()->set_x0(300);
+  field.mutable_rect()->set_y0(300);
+  field.mutable_rect()->set_x1(450);
+  field.mutable_rect()->set_y1(320);
+  form_page.form_fields.push_back(field);
+  pdf_backend.backend().add_document(
+      "%PDF-in-memory",
+      {form_page, grparse_test::text_page({"Two"}), grparse_test::text_page({"Three"})});
+
+  for (const bool settled_on_info : {false, true}) {
+    const std::string route =
+        settled_on_info ? "route settled on the info event" : "route settled on the trailer";
+    FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+    // A recommendation that gives no reason covers the whole document, so
+    // the stream submits the CV run before the inspector's trailer.
+    if (settled_on_info) inspector.set_ocr_recommended(true);
+    PdfInspectorServer inspector_server(&inspector);
+    const UnaryPdfRun unary = run_unary_pdf(inspector_server.target());
+    require(unary.status.ok(), route + ": unary parse failed: " + unary.status.error_message());
+    const StreamPdfRun stream = run_stream_pdf(inspector_server.target());
+    require(stream.status.ok(), route + ": stream failed: " + stream.status.error_message());
+    require_equal(stream.recognizer_calls, unary.recognizer_calls,
+                  route + ": both surfaces recognize the same pages");
+    require(!stream.events.empty() && stream.events.back().has_complete(),
+            route + ": the stream closes with the complete event");
+    for (const auto& event : stream.events) {
+      require(!event.has_collector_document(),
+              route + ": no collector document stands for the CV pages");
+    }
+    const docv1::Document& document = unary.response.response().document().doc();
+    const auto& complete = stream.events.back().complete();
+
+    require(document.source_meta().language() == "fr-FR",
+            route + ": the unary Document takes the inspector's source metadata");
+    require(complete.has_source_meta(),
+            route + ": the complete event carries the inspector's source metadata");
+    require_equal(complete.source_meta().ShortDebugString(),
+                  document.source_meta().ShortDebugString(),
+                  route + ": the stream's source metadata is the unary Document's");
+
+    require(std::ranges::any_of(document.warnings(),
+                                [](const docv1::CollectorWarning& warning) {
+                                  return warning.code() == docv1::WARNING_CODE_ROUTED_TO_CV;
+                                }),
+            route + ": the unary Document says the inspector routed it to the CV path");
+    require_equal(complete.typed_warnings_size(), document.warnings_size(),
+                  route + ": the complete event carries as many typed warnings as the unary "
+                          "Document");
+    require_equal(complete.warnings_size(), complete.typed_warnings_size(),
+                  route + ": the string list stays in step with the typed one");
+    for (int index = 0; index < document.warnings_size(); ++index) {
+      // The one field that differs by design is the source: the unary
+      // Document files a routed leg's warnings under the planned collector
+      // (pdf), the complete event files all of its warnings under the CV
+      // collector whose pages it closes.
+      docv1::CollectorWarning expected = document.warnings(index);
+      require_equal(expected.source().collector(), "pdf",
+                    route + ": the unary Document files the routed leg's warnings under pdf");
+      expected.mutable_source()->set_collector("grparse-cv");
+      require_equal(complete.typed_warnings(index).ShortDebugString(),
+                    expected.ShortDebugString(),
+                    route + ": typed warning " + std::to_string(index) +
+                        " is the unary Document's, code and message included");
+      require_equal(complete.warnings(index), document.warnings(index).message(),
+                    route + ": the string list carries the same message");
+    }
+
+    require_equal(document.field_items_size(), 1,
+                  route + ": the unary Document holds the AcroForm widget");
+    require(omitted_steps(complete) ==
+                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS},
+            route + ": the complete event names the widget step the stream did not run, "
+                    "and no other");
+  }
+}
+
+// omitted_steps follows what ConvertSource would have run for the same
+// document on the same deployment: nothing when neither a PDF backend nor
+// the enrichment peer is configured, each step once its peer is, and on
+// every route a PDF takes, the inspector's fast path included.
+void verify_stream_names_the_unary_steps_it_does_not_run() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  PdfInspectorServer inspector_server(&inspector);
+  {
+    const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+    require(run.status.ok(), "plain stream failed: " + run.status.error_message());
+    require(run.events.back().complete().omitted_steps_size() == 0,
+            "a deployment with neither peer has no step for the stream to leave out");
+  }
+  {
+    // Nothing dials the enrichment peer on a stream, so no fake serves it.
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                       std::nullopt, "127.0.0.1:1");
+    require(run.status.ok(), "enrich-configured stream failed: " + run.status.error_message());
+    require(omitted_steps(run.events.back().complete()) ==
+                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
+            "with the enrichment peer configured the stream names the leg it did not run");
+  }
+  {
+    grparse_test::ScopedPdfBackend pdf_backend;
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                       std::nullopt, "127.0.0.1:1");
+    require(run.status.ok(), "fully configured stream failed: " + run.status.error_message());
+    require(run.events.front().has_collector_document(),
+            "the text PDF takes the inspector's fast path");
+    require(omitted_steps(run.events.back().complete()) ==
+                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS,
+                            pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
+            "a fast-path PDF names both steps, in enum order");
+  }
+}
+
 // One real parse through the chunking RPCs: the same source ConvertSource
 // takes, chunked instead of exported.
 void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server) {
@@ -7776,6 +7917,8 @@ int main() {
         verify_pdf_template_form_recommendation_forces_every_page();
         verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
         verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
+        verify_streamed_cv_route_carries_what_the_unary_route_does();
+        verify_stream_names_the_unary_steps_it_does_not_run();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
         verify_remote_legs_get_a_per_call_document_id();

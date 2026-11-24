@@ -292,6 +292,18 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 // False leaves the routing to the trailer.
 bool pdf_info_forces_ocr(const PdfClassification& info);
 
+// The class as the route's warnings spell it.
+const char* pdf_class_name(PdfClass pdf_class);
+
+// What a routed PDF's result says once the CV path read it in place of the
+// inspector's extraction: why the extraction was not taken and how
+// recognition was scoped. `forced` is true when the route turned selective
+// recognition into recognition of every page. One function for the unary
+// leg and the streaming leg, so both surfaces state the decision in the
+// same words under the same code.
+Warning cv_route_warning(const PdfClassification& classification,
+                         const PdfRouteDecision& route, bool forced);
+
 // One page's share of the inspector's fold (its page_document event): the
 // items folding that page made, under the refs they carry in the whole
 // Document, plus the page count the info event reported.

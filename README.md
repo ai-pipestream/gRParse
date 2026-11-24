@@ -472,6 +472,17 @@ asks for `structure_validation` keeps the fold either way, since the fold
 is the document the check reads; `repair_delta = false` then only drops
 the repair event.
 
+A PDF the inspector classifies for the CV path has no collector document,
+so the complete event carries what `ConvertSource` puts on that Document
+from the inspector's read: `source_meta` (title, authors, dates, language)
+and, last in `typed_warnings`, the route's `WARNING_CODE_ROUTED_TO_CV`
+statement. Two steps of the unary path do not run on a stream: the
+AcroForm widgets of a PDF and the enrichment leg (`GRPARSE_ENRICH_TARGET`).
+`DocumentComplete.omitted_steps` names each one the deployment is
+configured for, so a stream's reader can tell that the field items and
+enrichment annotations are absent because of the surface, not the
+document.
+
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
 asynchronous gRPC write completes. Protobuf Arena does not own OpenCV or ONNX Runtime buffers;
