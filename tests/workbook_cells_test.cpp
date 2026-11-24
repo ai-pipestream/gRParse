@@ -365,6 +365,38 @@ void verify_formatted_values_and_formula_caches() {
                 "calamine-only formula retained");
 }
 
+// A formula the file stores with no cached result (a workbook a library
+// wrote and no spreadsheet program ever saved): calamine reads the source
+// and nothing else, libreoffice computed the result when it loaded the file.
+// calamine's empty reading is not a stored value to prefer, so the computed
+// text and value stand, in both shapes the libreoffice fold gives a formula.
+void verify_uncached_formula_keeps_libreoffice_result() {
+  Workbook libre("libreoffice");
+  auto* left = libre.sheet("S");
+  number(left, 0, 0, 1, "1");
+  number(left, 1, 0, 2, "2");
+  number(left, 2, 0, 3, "3")->mutable_value()->set_formula_source("SUM(A1:A2)");
+  text(left, 2, 1, "3")->mutable_value()->set_formula("SUM(A1:A2)");
+  Workbook calamine("calamine");
+  auto* right = calamine.sheet("S");
+  number(right, 0, 0, 1, "1");
+  number(right, 1, 0, 2, "2");
+  text(right, 2, 0, "")->mutable_value()->set_formula_source("SUM(A1:A2)");
+  text(right, 2, 1, "")->mutable_value()->set_formula_source("SUM(A1:A2)");
+  std::vector<grparse::Warning> warnings;
+  grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
+  const auto& result = libre.document().tables(0).data();
+  require_equal(at(result, 2, 0)->text(), std::string("3"),
+                "the computed text of a formula calamine has no result for");
+  require_equal(at(result, 2, 0)->value().number(), 3.0, "its computed value");
+  require_equal(at(result, 2, 0)->value().formula_source(), std::string("SUM(A1:A2)"),
+                "its source");
+  require_equal(at(result, 2, 1)->text(), std::string("3"),
+                "the computed text of a formula on the legacy arm");
+  require_equal(at(result, 2, 1)->value().formula_source(), std::string("SUM(A1:A2)"),
+                "its source, beside the legacy arm");
+}
+
 void verify_declared_headers_survive_adoption() {
   Workbook libre("libreoffice");
   auto* left = libre.sheet("S");
@@ -403,6 +435,7 @@ int main() {
       verify_values_and_text_are_calamine,
       verify_formatted_values_and_formula_caches,
       verify_declared_headers_survive_adoption,
+      verify_uncached_formula_keeps_libreoffice_result,
       verify_libre_merges_fill_in_for_calamine,
       verify_calamine_merges_win,
       verify_apply_merged_areas,

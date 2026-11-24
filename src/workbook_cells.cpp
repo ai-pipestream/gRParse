@@ -53,7 +53,8 @@ std::map<std::string, int> sheet_tables(const docv1::Document& document) {
 // libreoffice cell at the same place when there is one, which keeps that
 // cell's presentation (alignment, a cell's anchored ref, a number format,
 // a formula's source). Inline runs index into libreoffice's text, so they
-// survive only when the two texts agree.
+// survive only when the two texts agree. The one cell calamine does not
+// override is a formula it read no result for.
 docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
                               const docv1::TableCell* libre) {
   if (libre == nullptr) return calamine;
@@ -75,7 +76,14 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
       && libre->value().kind_case() == docv1::CellValue::kNumber
       && calamine.value().kind_case() == docv1::CellValue::kNumber
       && libre->value().number() == calamine.value().number();
-  if (!same_formatted_number) {
+  // A formula calamine has no result for is one the file stores with no
+  // cached value. That is not a stored value to prefer over libreoffice's:
+  // libreoffice computed the result when it loaded the file, and an empty
+  // text here would erase it.
+  const bool uncached_formula = calamine.text().empty() && calamine.has_value()
+      && calamine.value().kind_case() == docv1::CellValue::KIND_NOT_SET
+      && calamine.value().has_formula_source();
+  if (!same_formatted_number && !uncached_formula) {
     if (cell.text() != calamine.text()) cell.clear_spans();
     cell.set_text(calamine.text());
   }
@@ -88,7 +96,10 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
       formula = libre->value().formula();
     }
   }
-  if (calamine.has_value()) *cell.mutable_value() = calamine.value();
+  // The computed result stays in `kind`; calamine's account of the cell (its
+  // source, its style) joins it.
+  if (uncached_formula) cell.mutable_value()->MergeFrom(calamine.value());
+  else if (calamine.has_value()) *cell.mutable_value() = calamine.value();
   else cell.clear_value();
   if (number_format && !cell.value().has_number_format()) {
     cell.mutable_value()->set_number_format(*number_format);
