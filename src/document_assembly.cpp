@@ -314,8 +314,34 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       fill_table_data(source, region, table->mutable_data());
-      add_collector_source(assign_table_lines(source, region).structured ? "slanet-plus" : "geometry",
-                           region.confidence, table->mutable_source());
+      const bool structured = assign_table_lines(source, region).structured;
+      add_collector_source(structured ? "slanet-plus" : "geometry", region.confidence,
+                           table->mutable_source());
+      // The structure model's decode stopped before the end of this table.
+      // Its cells alone read like a complete decode, so the cut is said
+      // here, typed, on the page and on the item; and a table whose rows
+      // past the cut were built from line geometry names that producer
+      // beside the model.
+      if (region.structure_cut.has_value()) {
+        const bool extended = region.structured_cells.size() > *region.structure_cut;
+        if (structured && extended) {
+          add_collector_source("geometry", region.confidence, table->mutable_source());
+        }
+        if (warnings != nullptr) {
+          const char* outcome =
+              !structured ? "it placed no cell, so the table is read from line geometry alone"
+              : extended  ? "the rows past its last cell were placed by line geometry, not by "
+                            "the model"
+                          : "no row was added past its last cell";
+          warnings->push_back(
+              Warning(pipestream::document::v1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED,
+                      "page " + std::to_string(page_number) + ": table " + self_ref +
+                          ": the structure model's decode was cut off before the end of the "
+                          "table; " + outcome)
+                  .on_page(page_number)
+                  .on_item(self_ref));
+        }
+      }
       floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children(),
                         table->mutable_parent()});
       body_order.push_back(self_ref);

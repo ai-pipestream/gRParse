@@ -936,7 +936,13 @@ class PageScheduler::Impl final {
                 cell.top += roi.y;
                 cell.bottom += roi.y;
               }
-              if (structure.truncated) extend_truncated_table(region, assembled.lines);
+              if (structure.truncated) {
+                // The cut is kept on the region before the rows under it
+                // are built from the page's lines: assembly reports it, and
+                // the cells past it are not the model's.
+                region.structure_cut = region.structured_cells.size();
+                extend_truncated_table(region, assembled.lines);
+              }
             }
           }
           // Classification also runs on picture crops only, same grouping.

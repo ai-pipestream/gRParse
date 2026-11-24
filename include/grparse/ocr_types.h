@@ -1,5 +1,6 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
@@ -87,6 +88,15 @@ struct LayoutRegion {
   // filled beside them; absent on geometry fallback. Feeds the document's
   // ConfidenceScores.table_score (confidence.h).
   std::optional<float> structure_score = std::nullopt;
+  // Set when the structure model's decode ran out of steps before the end
+  // of the table (TableStructure::truncated): how many of
+  // `structured_cells`, from the front, the model placed. The cells from
+  // that index on were built from line geometry (extend_truncated_table),
+  // which adds none when no text lies under the model's last cell. Absent
+  // when the decode reached its end or no structure model ran. Assembly
+  // turns it into the table's typed warning, so a cut-off decode never
+  // reads like a complete one.
+  std::optional<size_t> structure_cut = std::nullopt;
   // Classifier output sorted by confidence, filled only for figure regions
   // when the figure classifier is active.
   std::vector<FigureClass> figure_classes = {};
