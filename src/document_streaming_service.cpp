@@ -34,6 +34,7 @@
 #include "grparse/document_merge.h"
 #include "grparse/document_passwords.h"
 #include "grparse/document_repair.h"
+#include "grparse/image_ref.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
 #include "grparse/pdf_form_widgets.h"
@@ -1314,6 +1315,11 @@ class DocumentStreamReactor final
     // Streamed pages went out before the pass; the renumbering it applies
     // is what lets the repair event name renamed refs instead of resending
     // every item after a retired one.
+    //
+    // The same goes for the spelling of held images: a collector that still
+    // writes a base64 data: URI is read here, once, as the unary surface
+    // reads it at the merge, so the stream answers with bytes too.
+    hold_image_bytes(&outcome.document);
     std::map<std::string, std::string> renamed;
     if (outcome.success && repair_.has_value()) {
       const ReferenceRenameLog log;

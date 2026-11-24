@@ -19,6 +19,12 @@ namespace grparse {
 // keeps the target's entry for a key both carry. Nothing already in target
 // is modified, which is the scatter-gather rule: sources never overwrite
 // each other.
+//
+// One thing about the source is brought to the schema's current spelling
+// on the way in: an image whose bytes a collector still spells as a base64
+// data: URI is held as bytes (hold_image_bytes in image_ref.h), so the
+// merged Document carries held images one way whichever collector sent
+// them.
 void merge_documents(ai::pipestream::document::v1::Document&& source,
                      ai::pipestream::document::v1::Document* target);
 

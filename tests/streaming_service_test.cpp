@@ -5552,7 +5552,7 @@ void verify_streaming_pdf_fast_path_projects_pages() {
 constexpr std::size_t kLargePictureImageBytes = 4U << 20U;
 constexpr int kLargePictureTexts = 2000;
 
-// A collector Document dominated by one picture: a 4 MiB data URI on its
+// A collector Document dominated by one picture: 4 MiB of image bytes on its
 // PictureItem.image beside 2,000 short texts. Nothing is placed on a page,
 // so the stream carries it as the collector-document event alone.
 docv1::Document large_picture_document() {
@@ -5574,8 +5574,7 @@ docv1::Document large_picture_document() {
   picture->mutable_parent()->set_ref("#/body");
   picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
   picture->mutable_image()->set_mimetype("image/png");
-  picture->mutable_image()->set_uri("data:image/png;base64," +
-                                    std::string(kLargePictureImageBytes, 'A'));
+  picture->mutable_image()->set_data(std::string(kLargePictureImageBytes, 'A'));
   document.mutable_body()->add_children()->set_ref("#/pictures/0");
   return document;
 }
@@ -5635,6 +5634,72 @@ class LargeDocumentInspector final : public pdfv1::PdfParseService::Service {
   bool written_ = false;
   bool released_ = false;
 };
+
+// A collector that still spells a picture's bytes as a base64 data: URI.
+class DataUriPictureInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(1);
+    stream->Write(event);
+    docv1::Document document;
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    // Body text, or the inspector's reading is not taken at all.
+    auto* text = document.add_texts()->mutable_text()->mutable_base();
+    text->set_self_ref("#/texts/0");
+    text->mutable_parent()->set_ref("#/body");
+    text->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    text->set_text("A figure follows.");
+    document.mutable_body()->add_children()->set_ref("#/texts/0");
+    auto* picture = document.add_pictures();
+    picture->set_self_ref("#/pictures/0");
+    picture->mutable_parent()->set_ref("#/body");
+    picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+    // "\x89PNG\x00\xff" in base64.
+    picture->mutable_image()->set_uri("data:image/png;base64,iVBORwD/");
+    document.mutable_body()->add_children()->set_ref("#/pictures/0");
+    event.Clear();
+    *event.mutable_document() = std::move(document);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status();
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// The stream answers with held image bytes spelled one way, as the unary
+// surface does: a collector Document whose picture still carries a base64
+// data: URI goes out with the bytes in ImageRef.data and no URI.
+void verify_stream_holds_a_collectors_data_uri_image_as_bytes() {
+  DataUriPictureInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(inspector_server.target());
+  require(run.status.ok(), "data URI picture stream failed: " + run.status.error_message());
+  int pictures = 0;
+  for (const auto& event : run.events) {
+    if (!event.has_collector_document()) continue;
+    for (const auto& picture : event.collector_document().document().pictures()) {
+      ++pictures;
+      require(picture.image().data() == std::string("\x89PNG\x00\xff", 6),
+              "the streamed picture holds the data URI's bytes in ImageRef.data, got " +
+                  std::to_string(picture.image().data().size()) + " bytes");
+      require(picture.image().uri().empty() && picture.image().mimetype() == "image/png",
+              "the data URI is gone and its media type rides beside the bytes, got uri '" +
+                  picture.image().uri() + "'");
+    }
+  }
+  require(pictures == 1, "the collector's picture reached the stream, got " +
+                             std::to_string(pictures));
+}
 
 // A collector Document moves into its collector-document event; it is not
 // copied. The peak resident set is reset once the coordinator holds the
@@ -5728,7 +5793,7 @@ void verify_collector_document_moves_into_its_event() {
       ++collector_documents;
       const auto& document = event.collector_document().document();
       texts = document.texts_size();
-      if (document.pictures_size() == 1) image_bytes = document.pictures(0).image().uri().size();
+      if (document.pictures_size() == 1) image_bytes = document.pictures(0).image().data().size();
     }
   }
   const grpc::Status status = stream->Finish();
@@ -5737,8 +5802,7 @@ void verify_collector_document_moves_into_its_event() {
   require(status.ok(), "large document stream failed: " + status.error_message());
   require(collector_documents == 1 && pages == 0 && complete,
           "a Document placed on no page streams as one collector-document event, then complete");
-  require(texts == kLargePictureTexts &&
-              image_bytes == kLargePictureImageBytes + std::string_view("data:image/png;base64,").size(),
+  require(texts == kLargePictureTexts && image_bytes == kLargePictureImageBytes,
           "the collector-document event carries the whole Document");
   require(transfer_observations.load() == 1, "the collector transfer was observed exactly once");
 #if defined(__SANITIZE_ADDRESS__)
@@ -8529,6 +8593,7 @@ int main() {
         verify_unary_cancellation_finishes_without_wedging();
         verify_pdf_fast_path_skips_the_cv_pipeline();
         verify_unary_parse_says_when_enrichment_crops_are_missing();
+        verify_stream_holds_a_collectors_data_uri_image_as_bytes();
         verify_pdf_searchable_scan_takes_the_cv_path();
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();

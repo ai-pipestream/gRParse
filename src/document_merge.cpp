@@ -10,6 +10,8 @@
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/message.h>
 
+#include "grparse/image_ref.h"
+
 namespace docv1 = ai::pipestream::document::v1;
 
 namespace grparse {
@@ -493,6 +495,7 @@ void retain_claims_only(docv1::Document* source) {
 }
 
 void merge_documents(docv1::Document&& source, docv1::Document* target) {
+  hold_image_bytes(&source);
   merge_arenas(std::move(source), target);
   merge_message(std::move(source), target, Tracking{});
 }
@@ -504,6 +507,7 @@ void merge_documents(docv1::Document&& source, docv1::Document* target,
     return;
   }
   std::optional<docv1::CollectorClaim> claim = claim_of(source, claimant);
+  hold_image_bytes(&source);
   merge_arenas(std::move(source), target);
   Tracking tracking;
   tracking.claimant = &claimant;

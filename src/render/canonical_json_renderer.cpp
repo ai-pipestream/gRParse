@@ -55,11 +55,13 @@ constexpr std::string_view kSchemaVersion = kUpstreamSchemaVersion;
 class CanonicalJsonRenderer : public render::CanonicalJsonParts {
  public:
   std::string render(const docv1::Document& document) {
-    // The JSON is a constant factor larger than the wire form (field names
-    // and indentation on top of 1:1 payloads); reserving up front keeps the
-    // multi-megabyte page-image URIs from forcing repeated buffer growth.
+    // The JSON is a constant factor larger than the wire form: field names
+    // and indentation on top of 1:1 payloads, and a third more for image
+    // bytes, which this dialect spells as base64 data URIs. Reserving up
+    // front keeps multi-megabyte page images from forcing repeated buffer
+    // growth.
     const std::size_t wire_bytes = document.ByteSizeLong();
-    writer_.reserve(wire_bytes + wire_bytes / 4 + 4096);
+    writer_.reserve(wire_bytes + wire_bytes / 2 + 4096);
     emit_document(document);
     return writer_.take();
   }

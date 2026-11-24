@@ -623,6 +623,85 @@ void verify_generation_traces_survive_the_merge() {
 
 }  // namespace
 
+// A collector that still spells an image's bytes as a base64 data: URI is
+// read once, where its Document joins the merged one: the bytes move to
+// ImageRef.data, the media type the URI stated moves to mimetype, and the
+// URI goes. Every item kind that can hold an image is covered, and a URI
+// that is a reference, or that does not decode, is left exactly as it came.
+void verify_merge_holds_data_uri_images_as_bytes() {
+  // "\x89PNG\x00\xff" in base64.
+  const std::string uri = "data:image/png;base64,iVBORwD/";
+  const std::string bytes("\x89PNG\x00\xff", 6);
+  docv1::Document source = base_document();
+  source.add_pictures()->mutable_image()->set_uri(uri);
+  // A picture that already holds bytes keeps them, and its reference.
+  auto* held = source.add_pictures()->mutable_image();
+  held->set_data("already here");
+  held->set_mimetype("image/jpeg");
+  held->set_uri("https://example.org/figure.jpg");
+  source.add_pictures()->mutable_image()->set_uri("epub:OPS/images/a.jpg");
+  source.add_pictures()->mutable_image()->set_uri("data:image/png;base64,@@@");
+  // The URI's own media type wins over a stale one on the ref.
+  auto* mistyped = source.add_pictures()->mutable_image();
+  mistyped->set_mimetype("image/gif");
+  mistyped->set_uri("data:IMAGE/PNG;base64,iVBORwD/");
+  for (int index = 0; index < source.pictures_size(); ++index) {
+    source.mutable_pictures(index)->set_self_ref("#/pictures/" + std::to_string(index));
+    source.mutable_pictures(index)->mutable_parent()->set_ref("#/body");
+    source.mutable_body()->add_children()->set_ref("#/pictures/" + std::to_string(index));
+  }
+  auto* table = source.add_tables();
+  table->set_self_ref("#/tables/0");
+  table->mutable_parent()->set_ref("#/body");
+  table->mutable_image()->set_uri(uri);
+  auto* key_value = source.add_key_value_items();
+  key_value->set_self_ref("#/key_value_items/0");
+  key_value->mutable_parent()->set_ref("#/body");
+  key_value->mutable_image()->set_uri(uri);
+  auto* form = source.add_form_items();
+  form->set_self_ref("#/form_items/0");
+  form->mutable_parent()->set_ref("#/body");
+  form->mutable_image()->set_uri(uri);
+  auto* code = source.add_texts()->mutable_code();
+  code->set_self_ref("#/texts/0");
+  code->mutable_parent()->set_ref("#/body");
+  code->mutable_image()->set_uri(uri);
+  auto& page = (*source.mutable_pages())[1];
+  page.set_page_no(1);
+  page.mutable_image()->set_uri(uri);
+
+  docv1::Document merged = base_document();
+  grparse::merge_documents(std::move(source), &merged);
+
+  const auto holds = [&](const docv1::ImageRef& image, const std::string& what) {
+    require(image.data() == bytes,
+            what + ": the data URI's bytes are held in ImageRef.data, got " +
+                std::to_string(image.data().size()) + " bytes");
+    require(image.uri().empty(), what + ": the data URI goes, got '" + image.uri() + "'");
+    require(image.mimetype() == "image/png",
+            what + ": the media type the URI stated rides beside the bytes, got '" +
+                image.mimetype() + "'");
+  };
+  require(merged.pictures_size() == 5, "every picture merged");
+  holds(merged.pictures(0).image(), "picture");
+  require(merged.pictures(1).image().data() == "already here" &&
+              merged.pictures(1).image().mimetype() == "image/jpeg" &&
+              merged.pictures(1).image().uri() == "https://example.org/figure.jpg",
+          "a picture that holds bytes beside a reference keeps both");
+  require(merged.pictures(2).image().uri() == "epub:OPS/images/a.jpg" &&
+              !merged.pictures(2).image().has_data(),
+          "a reference stays a reference");
+  require(merged.pictures(3).image().uri() == "data:image/png;base64,@@@" &&
+              !merged.pictures(3).image().has_data(),
+          "a data URI that does not decode is left as it came, for its readers to report");
+  holds(merged.pictures(4).image(), "picture with a stale mimetype");
+  holds(merged.tables(0).image(), "table");
+  holds(merged.key_value_items(0).image(), "key-value item");
+  holds(merged.form_items(0).image(), "form item");
+  holds(merged.texts(0).code().image(), "code item");
+  holds(merged.pages().at(1).image(), "page");
+}
+
 int main() {
   return grparse_test::run_test_main("document-merge-test", {
       verify_merge_renumbers_and_rewrites,
@@ -638,5 +717,6 @@ int main() {
       verify_unnamed_merge_records_nothing,
       verify_retain_claims_only_keeps_the_document_account,
       verify_generation_traces_survive_the_merge,
+      verify_merge_holds_data_uri_images_as_bytes,
   });
 }

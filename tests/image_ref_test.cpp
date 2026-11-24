@@ -115,6 +115,52 @@ void verify_image_uri() {
 
 }  // namespace
 
+// hold_bytes brings the old spelling to the new one, and touches nothing
+// else.
+void verify_hold_bytes() {
+  docv1::ImageRef spelled;
+  spelled.set_mimetype("image/jpeg");
+  spelled.mutable_size()->set_width(3);
+  spelled.set_uri(data_uri("image/png;base64", kBytes));
+  require(grparse::hold_bytes(&spelled), "a base64 data: URI moves");
+  require(spelled.data() == kBytes && spelled.uri().empty(),
+          "the bytes are in data and the URI is gone");
+  require(spelled.mimetype() == "image/png" && spelled.size().width() == 3,
+          "the URI's media type replaces a disagreeing one; the rest stays");
+  require(!grparse::hold_bytes(&spelled), "a second pass has nothing to do");
+
+  docv1::ImageRef untyped;
+  untyped.set_mimetype("Image/JPEG; q=1");
+  untyped.set_uri(data_uri(";base64", kBytes));
+  require(grparse::hold_bytes(&untyped) && untyped.mimetype() == "Image/JPEG; q=1",
+          "a URI that states no type leaves the ref's own spelling alone");
+
+  docv1::ImageRef reference;
+  reference.set_uri("https://example.org/a.png");
+  docv1::ImageRef undecodable;
+  undecodable.set_uri("data:image/png;base64,@@@");
+  docv1::ImageRef both;
+  both.set_data(kBytes);
+  both.set_uri(data_uri("image/png;base64", "other bytes"));
+  docv1::ImageRef nothing;
+  for (docv1::ImageRef* untouched : {&reference, &undecodable, &both, &nothing}) {
+    const std::string before = untouched->SerializeAsString();
+    require(!grparse::hold_bytes(untouched) && untouched->SerializeAsString() == before,
+            "a reference, an undecodable URI, a ref that holds bytes and an empty ref are "
+            "left as they are");
+  }
+
+  docv1::Document document;
+  document.add_pictures()->mutable_image()->set_uri(data_uri("image/png;base64", kBytes));
+  document.add_pictures();
+  (*document.mutable_pages())[1].mutable_image()->set_uri(data_uri("image/png;base64", kBytes));
+  require(grparse::hold_image_bytes(&document) == 2 &&
+              document.pictures(0).image().data() == kBytes &&
+              !document.pictures(1).has_image() &&
+              document.pages().at(1).image().data() == kBytes,
+          "the Document pass moves each one and invents no image where there was none");
+}
+
 int main() {
   return grparse_test::run_test_main("image-ref-test", "all checks passed", {
       verify_data_field_is_the_bytes,
@@ -123,5 +169,6 @@ int main() {
       verify_references_and_nothing,
       verify_undecodable_data_uris,
       verify_image_uri,
+      verify_hold_bytes,
   });
 }
