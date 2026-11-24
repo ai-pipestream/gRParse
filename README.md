@@ -462,7 +462,10 @@ sets `repair_delta_omitted` on the complete event. The page events,
 collector documents and `section_header_levels` are unchanged, so pages
 that streamed before the whole-document passes stay unrepaired; combined
 with `slim_collector_documents`, nothing on the stream carries the
-repaired items. Unset or `true` keeps the repair event.
+repaired items. Unset or `true` keeps the repair event. A stream that
+asks for `structure_validation` keeps the fold either way, since the fold
+is the document the check reads; `repair_delta = false` then only drops
+the repair event.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
@@ -697,7 +700,15 @@ code: the `exports` `to_formats` asked for, the `chunks`, the
 for every converted source, so an empty field means the conversion
 produced nothing for it. A source whose outputs fail to render, or whose
 `final_document` or `source_outputs` is past the message limit, fails as a
-whole. Every
+whole. Every `source_result` types how its source ended in `status`, with
+the `ConversionStatus` the unary response uses: `SUCCESS`,
+`PARTIAL_SUCCESS` when a collector failed while another produced the
+Document, or `FAILURE`. A partial conversion lists each failed collector in
+`collector_failures` (its `Collector`, error and `FailureCategory`, the
+classification the unary `ErrorItem` carries). `success` says only that a
+Document was produced, so it is true for a partial conversion too, and
+`error_message` repeats the typed fields as one line for older readers.
+Every
 envelope echoes `request_id` and carries `sequence_number`, counting from 1
 with no gaps, and `timestamp_ms`; source-scoped envelopes set
 `source_index`. The `part` arm is not sent: what streams is each source's
@@ -951,7 +962,15 @@ unset, so existing output does not change; `REPORT` returns one typed
 `ConvertDocumentResponse.structure_findings`, and `ENFORCE` fails the
 request with `FAILED_PRECONDITION` listing them (docling-core's
 `raise_on_error`). `structure_validation_rules` narrows the check to the
-named rules (a list with validation off is rejected). The rules: the
+named rules (a list with validation off is rejected).
+`StreamProcessDocument` takes the same options on `DocumentChunk`: each
+collector `Document` is checked as it lands (`REPORT` on
+`CollectorDocument.structure_findings`), and pages that stream with no
+collector `Document` behind them (the CV path) are checked once the last one
+is out, as the `Document` they fold to with the heading levels and the repair
+event applied (`REPORT` on `DocumentComplete.structure_findings`); `ENFORCE`
+ends the stream with the same `FAILED_PRECONDITION` either way, and
+`repair_delta = false` does not switch the check off. The rules: the
 deprecated furniture tree lists children; a key-value or form item exists
 (docling-core migrates both to field regions); a list group (`LIST` or
 `ORDERED_LIST`) lists a child that is not a list item; a list item's parent
