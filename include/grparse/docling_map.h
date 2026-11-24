@@ -19,6 +19,7 @@
 #include "grparse/office_fold/shape_fold.h"
 #include "grparse/office_fold/sheet_fold.h"
 #include "grparse/office_fold/writer_fold.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -58,6 +59,13 @@ namespace grparse {
 // unknown layout region label falls back to TEXT with the raw spelling
 // kept on label_raw (that one is the CV assembly path, which reports
 // through its own warnings channel).
+//
+// Reported by the worker as typed data, and passed on typed: an item the
+// office core failed part way through reading carries an ExtractionGap on
+// its own event. Each gap becomes one typed warning (typed_warnings()) on
+// the page and the item the fold made of the event, also when the fold made
+// no item of it, and the worker's own count of them
+// (RenderStatus.incomplete_items) is held against the gaps that arrived.
 //
 // Geometry honesty: Writer anchors and LineBox rectangles are document-
 // absolute; the mapper subtracts the containing page's origin (from
@@ -99,6 +107,15 @@ class DoclingMapper {
   // happened.
   const std::vector<std::string>& warnings() const {
     return arena_.warnings();
+  }
+
+  // The same warnings, in the same order, in the form the collector hands
+  // on: a loss the worker reported as typed data (an ExtractionGap, an
+  // incomplete_items count that does not add up) states its WarningCode,
+  // its page and its item; one that came as words keeps
+  // WARNING_CODE_UNSPECIFIED.
+  const std::vector<Warning>& typed_warnings() const {
+    return arena_.typed_warnings();
   }
 
   // The accumulated document. Structurally valid at any point in the

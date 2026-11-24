@@ -178,8 +178,10 @@ void ShapeFold::on_slide_shape(const officev1::SlideShape& shape,
   // A table shape carries its content in a cell grid, not in shape text, so
   // it folds into a real table under the slide rather than a placeholder.
   if (shape.has_table()) {
-    docv1::TableItem* item = arena_.add_table(layer, parent, nullptr);
+    std::string table_ref;
+    docv1::TableItem* item = arena_.add_table(layer, parent, &table_ref);
     arena_.fold_table(shape.table(), item);
+    arena_.report_gap_of(shape.table(), "slide table", prov_page, table_ref);
     arena_.add_prov(item->mutable_prov(), prov_page, true, box.l, box.t, box.r,
                     box.b, 0, 0);
     return;

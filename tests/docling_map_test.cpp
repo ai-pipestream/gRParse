@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -16,6 +17,7 @@ namespace officev1 = ai::pipestream::office::v1;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 officev1::TextRun make_run(const std::string& text, long long offset = 0) {
   officev1::TextRun run;
@@ -1392,6 +1394,359 @@ void verify_sheet_header_rows_are_marked() {
   require(grparse::docling_integrity_errors(document).empty(), "header marking stays well formed");
 }
 
+// The typed warning raised for the gap whose problem line is `problem`:
+// every gap in these tests names a different one, so the line finds it.
+grparse::Warning gap_warning(const grparse::DoclingMapper& mapper,
+                             const std::string& problem) {
+  const grparse::Warning* found = nullptr;
+  int matches = 0;
+  for (const grparse::Warning& warning : mapper.typed_warnings()) {
+    if (warning.code == docv1::WARNING_CODE_UNSPECIFIED) continue;
+    if (!warning.message.contains(problem)) continue;
+    found = &warning;
+    ++matches;
+  }
+  require(matches == 1, "the gap '" + problem + "' is one typed warning, got " +
+                            std::to_string(matches));
+  return *found;
+}
+
+int typed_warning_count(const grparse::DoclingMapper& mapper) {
+  int count = 0;
+  for (const grparse::Warning& warning : mapper.typed_warnings()) {
+    if (warning.code != docv1::WARNING_CODE_UNSPECIFIED) ++count;
+  }
+  return count;
+}
+
+// The self_ref of the text item holding exactly `text`; empty when none does.
+std::string text_ref(const docv1::Document& document, const std::string& text) {
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    const docv1::TextItemBase* base = nullptr;
+    switch (item.item_case()) {
+      case docv1::BaseTextItem::kTitle: base = &item.title().base(); break;
+      case docv1::BaseTextItem::kSectionHeader: base = &item.section_header().base(); break;
+      case docv1::BaseTextItem::kListItem: base = &item.list_item().base(); break;
+      case docv1::BaseTextItem::kFormula: base = &item.formula().base(); break;
+      case docv1::BaseTextItem::kText: base = &item.text().base(); break;
+      default: break;
+    }
+    if (base != nullptr && base->text() == text) return base->self_ref();
+  }
+  return std::string();
+}
+
+void require_gap(const grparse::DoclingMapper& mapper, const std::string& problem,
+                 docv1::WarningCode code, std::optional<int32_t> page_no,
+                 const std::string& item_ref) {
+  const grparse::Warning warning = gap_warning(mapper, problem);
+  require_equal(docv1::WarningCode_Name(warning.code), docv1::WarningCode_Name(code),
+                "the code of gap '" + problem + "'");
+  require(warning.page_no == page_no,
+          "gap '" + problem + "' names page " +
+              (page_no.has_value() ? std::to_string(*page_no) : std::string("none")) +
+              ", got " +
+              (warning.page_no.has_value() ? std::to_string(*warning.page_no)
+                                           : std::string("none")));
+  require_equal(warning.item_ref, item_ref, "the item of gap '" + problem + "'");
+}
+
+// What the office core failed part way through reading arrives marked with
+// an ExtractionGap on the item's own event. Each one reaches the caller as
+// its own typed warning, on the page and the item the fold made of the
+// event; an event the fold makes no item of (a blank paragraph) still has
+// its gap reported, on its page. Nothing is merged: the object and its
+// inner table are two gaps and two warnings.
+void verify_every_extraction_gap_of_a_text_document_is_a_typed_warning() {
+  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+  grparse::DoclingMapper mapper;
+  mapper.consume(document_info_event());
+  {
+    officev1::StreamPagesResponse event = paragraph_event("cut paragraph");
+    event.mutable_paragraph()->set_page_index(1);
+    event.mutable_paragraph()->mutable_gap()->add_problems("paragraph-lost");
+    event.mutable_paragraph()->mutable_gap()->add_problems("second-line");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event = paragraph_event("  ");
+    event.mutable_paragraph()->set_page_index(0);
+    event.mutable_paragraph()->mutable_gap()->add_problems("blank-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::Footnote* note = event.mutable_footnote();
+    note->set_page_index(0);
+    *note->add_runs() = make_run("cut note");
+    note->mutable_gap()->add_problems("note-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::DocumentIndex* index = event.mutable_document_index();
+    index->set_page_index(0);
+    *index->add_runs() = make_run("cut contents");
+    index->mutable_gap()->add_problems("index-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::TableData* table = event.mutable_table();
+    table->set_rows(1);
+    table->set_columns(1);
+    table->set_page_index(1);
+    table->add_cells()->set_text("cut table");
+    table->mutable_gap()->add_problems("body-table-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event = image_event(0, 0, 100, 200, 300);
+    event.mutable_embedded_image()->set_name("Half read");
+    event.mutable_embedded_image()->mutable_gap()->add_problems("image-properties-lost");
+    mapper.consume(event);
+  }
+  {
+    // An image the office core could not encode at all: no bytes, no type.
+    officev1::StreamPagesResponse event = image_event(1, 1, 100, 21000, 300);
+    event.mutable_embedded_image()->set_name("No bytes");
+    event.mutable_embedded_image()->clear_data();
+    event.mutable_embedded_image()->clear_mime_type();
+    event.mutable_embedded_image()->mutable_gap()->add_problems("image-not-encoded");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::TextFrame* frame = event.mutable_text_frame();
+    frame->set_name("Frame1");
+    frame->set_page_index(0);
+    *frame->add_runs() = make_run("cut frame");
+    frame->mutable_gap()->add_problems("frame-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->set_kind(officev1::EMBEDDED_OBJECT_KIND_FORMULA);
+    object->set_formula("E = m c^2");
+    object->set_page_index(0);
+    object->mutable_gap()->add_problems("formula-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->set_kind(officev1::EMBEDDED_OBJECT_KIND_SPREADSHEET);
+    object->set_name("Book");
+    object->set_page_index(1);
+    object->mutable_inner_table()->set_rows(1);
+    object->mutable_inner_table()->set_columns(1);
+    object->mutable_inner_table()->add_cells()->set_text("cut workbook");
+    object->mutable_inner_table()->mutable_gap()->add_problems("inner-table-lost");
+    object->mutable_gap()->add_problems("book-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event = chart_object_event(0, "Cut chart", 0, 0);
+    officev1::EmbeddedObject* object = event.mutable_embedded_object();
+    object->clear_position();
+    object->mutable_anchor()->set_x(1000);
+    object->mutable_anchor()->set_y(2000);
+    object->mutable_gap()->add_problems("chart-lost");
+    object->mutable_chart()->mutable_tabular()->mutable_gap()->add_problems("tabular-lost");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::HeaderFooter* block = event.mutable_header_footer();
+    block->set_page_style("Default");
+    officev1::Paragraph* line = block->add_paragraphs();
+    line->set_page_index(-1);
+    *line->add_runs() = make_run("cut header");
+    line->mutable_gap()->add_problems("header-lost");
+    // A blank header line makes no item; its gap is still a gap.
+    officev1::Paragraph* blank = block->add_paragraphs();
+    blank->set_page_index(-1);
+    blank->add_runs()->set_text(" ");
+    blank->mutable_gap()->add_problems("blank-line-lost");
+    mapper.consume(event);
+  }
+  officev1::StreamPagesResponse status = status_event();
+  status.mutable_status()->set_incomplete_items(15);
+  mapper.consume(status);
+
+  const docv1::Document& document = mapper.document();
+  require_equal(typed_warning_count(mapper), 15,
+                "one typed warning per gap, and nothing else typed");
+  require_equal(mapper.typed_warnings().size(), mapper.warnings().size(),
+                "the typed list and the words are the same warnings");
+  for (size_t i = 0; i < mapper.warnings().size(); i++) {
+    require_equal(mapper.typed_warnings()[i].message, mapper.warnings()[i],
+                  "the typed list and the words are in the same order");
+  }
+
+  const grparse::Warning paragraph = gap_warning(mapper, "paragraph-lost");
+  require(paragraph.message.contains("second-line"),
+          "every problem line of one gap is in its one warning: " + paragraph.message);
+  require_gap(mapper, "paragraph-lost", kCut, 2, text_ref(document, "cut paragraph"));
+  require(!paragraph.item_ref.empty(), "the cut paragraph is an item");
+  require_gap(mapper, "blank-lost", kCut, 1, "");
+  require_gap(mapper, "note-lost", kCut, 1, text_ref(document, "cut note"));
+  require_gap(mapper, "index-lost", kCut, 1, text_ref(document, "cut contents"));
+
+  std::string body_table;
+  std::string book_table;
+  for (const docv1::TableItem& table : document.tables()) {
+    if (table.data().table_cells_size() != 1) continue;
+    if (table.data().table_cells(0).text() == "cut table") body_table = table.self_ref();
+    if (table.data().table_cells(0).text() == "cut workbook") book_table = table.self_ref();
+  }
+  require(!body_table.empty() && !book_table.empty(), "both cut tables are items");
+  require_gap(mapper, "body-table-lost", kCut, 2, body_table);
+  require_gap(mapper, "inner-table-lost", kCut, 2, book_table);
+  require_gap(mapper, "book-lost", kCut, 2, book_table);
+
+  std::string half_read;
+  std::string no_bytes;
+  std::string chart;
+  for (const docv1::PictureItem& picture : document.pictures()) {
+    if (picture.shape().name() == "Half read") half_read = picture.self_ref();
+    if (picture.shape().name() == "No bytes") no_bytes = picture.self_ref();
+    if (picture.shape().name() == "Cut chart") chart = picture.self_ref();
+  }
+  require(!half_read.empty() && !no_bytes.empty() && !chart.empty(),
+          "the two pictures and the chart are items");
+  require_gap(mapper, "image-properties-lost", kCut, 1, half_read);
+  // A picture that arrived without its bytes is the loss a consumer already
+  // has a code for.
+  require_gap(mapper, "image-not-encoded", docv1::WARNING_CODE_PICTURE_IMAGES_SKIPPED, 2,
+              no_bytes);
+  require_gap(mapper, "chart-lost", kCut, 1, chart);
+  require_gap(mapper, "tabular-lost", kCut, 1, chart);
+  require_gap(mapper, "frame-lost", kCut, 1, text_ref(document, "cut frame"));
+  require_gap(mapper, "formula-lost", kCut, 1, text_ref(document, "E = m c^2"));
+  require(!text_ref(document, "cut header").empty(), "the cut header line is an item");
+  require_gap(mapper, "header-lost", kCut, std::nullopt, text_ref(document, "cut header"));
+  require_gap(mapper, "blank-line-lost", kCut, std::nullopt, "");
+}
+
+// A cell the office core failed on names its sheet's table and its place in
+// the grid; a row of a sheet the stream never declared folds into nothing,
+// and its cell's gap is still reported. A slide's table and a deck object
+// no shape claimed report theirs once they are placed.
+void verify_sheet_and_slide_gaps_are_typed_warnings() {
+  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+  {
+    grparse::DoclingMapper mapper;
+    mapper.consume(spreadsheet_info_event());
+    mapper.consume(sheet_event(0, "Sales", 3, 2));
+    officev1::StreamPagesResponse row = row_event(0, 2);
+    text_cell(row.mutable_sheet_row(), 0, "whole");
+    text_cell(row.mutable_sheet_row(), 1, "cut")->mutable_gap()->add_problems("cell-lost");
+    mapper.consume(row);
+    officev1::StreamPagesResponse orphan = row_event(7, 0);
+    text_cell(orphan.mutable_sheet_row(), 0, "x")->mutable_gap()->add_problems("orphan-lost");
+    mapper.consume(orphan);
+    officev1::StreamPagesResponse status = status_event();
+    status.mutable_status()->set_incomplete_items(2);
+    mapper.consume(status);
+    require_equal(typed_warning_count(mapper), 2, "two cell gaps, two typed warnings");
+    require(mapper.document().tables_size() == 1, "the sheet is one table");
+    require_gap(mapper, "cell-lost", kCut, 1, mapper.document().tables(0).self_ref());
+    const std::string words = gap_warning(mapper, "cell-lost").message;
+    require(words.contains("Sales") && words.contains("row 2") && words.contains("column 1"),
+            "the warning says which cell in words: " + words);
+    require_gap(mapper, "orphan-lost", kCut, 8, "");
+  }
+  {
+    grparse::DoclingMapper mapper;
+    officev1::StreamPagesResponse info_event;
+    officev1::DocumentInfo* info = info_event.mutable_document_info();
+    info->set_document_id("deck.pptx");
+    info->set_source_format("pptx");
+    info->set_page_count(2);
+    info->set_document_type("presentation");
+    info->add_page_rects()->set_width_twips(14400);
+    info->add_page_rects()->set_width_twips(14400);
+    mapper.consume(info_event);
+    {
+      // A deck's object streams ahead of its slide and waits for it.
+      officev1::StreamPagesResponse event;
+      officev1::EmbeddedObject* object = event.mutable_embedded_object();
+      object->set_kind(officev1::EMBEDDED_OBJECT_KIND_OLE_OTHER);
+      object->set_name("Waiting object");
+      object->set_page_index(1);
+      object->mutable_gap()->add_problems("deck-object-lost");
+      mapper.consume(event);
+    }
+    for (int index : {0, 1}) {
+      officev1::StreamPagesResponse slide_event;
+      slide_event.mutable_slide()->set_index(index);
+      slide_event.mutable_slide()->set_name("Slide " + std::to_string(index + 1));
+      mapper.consume(slide_event);
+    }
+    {
+      officev1::StreamPagesResponse event;
+      officev1::SlideShape* shape = event.mutable_slide_shape();
+      shape->set_slide_index(0);
+      shape->set_shape_type("com.sun.star.drawing.TableShape");
+      shape->mutable_table()->set_rows(1);
+      shape->mutable_table()->set_columns(1);
+      shape->mutable_table()->add_cells()->set_text("cut slide table");
+      shape->mutable_table()->mutable_gap()->add_problems("slide-table-lost");
+      mapper.consume(event);
+    }
+    officev1::StreamPagesResponse status = status_event();
+    status.mutable_status()->set_incomplete_items(2);
+    mapper.consume(status);
+    const docv1::Document& document = mapper.document();
+    require_equal(typed_warning_count(mapper), 2, "two deck gaps, two typed warnings");
+    require(document.tables_size() == 1, "the slide table is one table");
+    require_gap(mapper, "slide-table-lost", kCut, 1, document.tables(0).self_ref());
+    std::string waiting;
+    for (const docv1::PictureItem& picture : document.pictures()) {
+      if (picture.shape().name() == "Waiting object") waiting = picture.self_ref();
+    }
+    require(!waiting.empty(), "the unclaimed object is placed under its slide");
+    require_gap(mapper, "deck-object-lost", kCut, 2, waiting);
+  }
+}
+
+// RenderStatus.incomplete_items is the worker's own count of the events it
+// marked. When it is not the number of gaps that arrived, a loss went
+// unreported somewhere between the worker and this fold, and the caller is
+// told so under its own code instead of trusting the gaps it can see.
+void verify_incomplete_items_that_do_not_add_up_are_reported() {
+  {
+    grparse::DoclingMapper mapper;
+    mapper.consume(document_info_event());
+    officev1::StreamPagesResponse event = paragraph_event("cut paragraph");
+    event.mutable_paragraph()->mutable_gap()->add_problems("paragraph-lost");
+    mapper.consume(event);
+    officev1::StreamPagesResponse status = status_event();
+    status.mutable_status()->set_incomplete_items(3);
+    mapper.consume(status);
+    const grparse::Warning* mismatch = nullptr;
+    for (const grparse::Warning& warning : mapper.typed_warnings()) {
+      if (warning.code == docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH) mismatch = &warning;
+    }
+    require(mismatch != nullptr,
+            "three items reported cut short and one gap arrived: the mismatch is a warning");
+    require(mismatch->message.contains("3") && mismatch->message.contains("1"),
+            "the warning gives both counts in words: " + mismatch->message);
+    require_equal(typed_warning_count(mapper), 2, "the gap itself is still reported");
+  }
+  {
+    // A worker older than the count sends neither gaps nor a count.
+    grparse::DoclingMapper mapper;
+    mapper.consume(document_info_event());
+    mapper.consume(paragraph_event("whole paragraph"));
+    mapper.consume(status_event());
+    require_equal(typed_warning_count(mapper), 0,
+                  "a stream with no gaps and no count raises nothing typed");
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -1427,5 +1782,8 @@ int main() {
       verify_inline_pictures_take_their_anchor_paragraphs_place,
       verify_unanchored_picture_still_trails_the_body,
       verify_slide_titles_after_the_first_are_section_headings,
+      verify_every_extraction_gap_of_a_text_document_is_a_typed_warning,
+      verify_sheet_and_slide_gaps_are_typed_warnings,
+      verify_incomplete_items_that_do_not_add_up_are_reported,
   });
 }

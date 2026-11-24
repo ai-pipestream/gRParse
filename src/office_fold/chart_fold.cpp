@@ -518,6 +518,17 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
                         has_geometry);
   const bool typed = object != nullptr && object->has_chart();
   if (typed) add_annotations(object->chart(), picture);
+  if (object != nullptr) {
+    // What the office core could not finish reading of the chart: the
+    // object itself, and its tabular projection, which is a message of its
+    // own on the wire. Both are about this picture.
+    const std::string what = "chart '" + (name.empty() ? "untitled" : name) + "'";
+    arena_.report_gap_of(*object, what, object->page_index(), picture_ref);
+    if (typed) {
+      arena_.report_gap_of(object->chart().tabular(), "data table of " + what,
+                           object->page_index(), picture_ref);
+    }
+  }
 
   // The data, bound as the chart's own table.
   std::string table_ref;

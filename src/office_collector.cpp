@@ -76,7 +76,7 @@ CollectorOutcome collect_office_document(
     outcome.code = grpc::StatusCode::UNAVAILABLE;
     return outcome;
   }
-  outcome.warnings.assign(mapper.warnings().begin(), mapper.warnings().end());
+  outcome.warnings = mapper.typed_warnings();
   outcome.document = mapper.take();
   // The worker echoes the request's document_id on document_info, and the
   // fold names the document after it. That id is a per-call correlation
