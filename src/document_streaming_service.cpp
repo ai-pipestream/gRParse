@@ -1414,14 +1414,22 @@ class DocumentStreamReactor final
     ++pending_parts_;
   }
 
+  // An inspector that fails is a failure entry on the complete event, and
+  // a typed warning there too (WARNING_CODE_COLLECTOR_FALLBACK, as on the
+  // unary Document): the pages were read without the inspector's result,
+  // and a client learns how a document was read from its warnings.
   void release_inspector_hold(const CollectorOutcome& outcome) {
     std::lock_guard<std::mutex> lock(mutex_);
     if (!outcome.success) {
+      static constexpr std::string_view kAlreadyReading =
+          "the CV path was already reading the document on the inspector's OCR recommendation";
       record_part_failure_locked(
           pipestream::parse::v1::COLLECTOR_PDF,
-          grpc::Status(outcome.code, outcome.error +
-                                         "; the CV path was already reading the document on "
-                                         "the inspector's OCR recommendation"));
+          grpc::Status(outcome.code, outcome.error + "; " + std::string(kAlreadyReading)));
+      route_warnings_.push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_COLLECTOR_FALLBACK,
+                  "pdf collector failed (" + outcome.error + "); " +
+                      std::string(kAlreadyReading)));
     }
     part_done_locked();
     pump_locked();
@@ -1432,6 +1440,7 @@ class DocumentStreamReactor final
     record_part_failure_locked(
         pipestream::parse::v1::COLLECTOR_PDF,
         grpc::Status(outcome.code, outcome.error + "; fell back to the in-process CV path"));
+    route_warnings_.push_back(pdf_fallback_warning(outcome.error));
   }
 
   // An in-process collector runs on a stream worker for the same reason a

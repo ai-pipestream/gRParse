@@ -304,6 +304,11 @@ const char* pdf_class_name(PdfClass pdf_class);
 Warning cv_route_warning(const PdfClassification& classification,
                          const PdfRouteDecision& route, bool forced);
 
+// What a PDF's result says when the inspector failed (`error` is its
+// failure) and the CV path read the document without it. One function for
+// the unary leg and the streaming leg, like cv_route_warning.
+Warning pdf_fallback_warning(const std::string& error);
+
 // One page's share of the inspector's fold (its page_document event): the
 // items folding that page made, under the refs they carry in the whole
 // Document, plus the page count the info event reported.

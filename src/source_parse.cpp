@@ -2197,10 +2197,7 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
     record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                           collector_call_status_for(outcome.success, outcome.code),
                           cv_elapsed_ns, 0);
-    outcome.warnings.push_back(
-        Warning(pipestream::document::v1::WARNING_CODE_COLLECTOR_FALLBACK,
-                "pdf collector failed (" + parsed.outcome.error +
-                    "); fell back to the in-process CV path"));
+    outcome.warnings.push_back(pdf_fallback_warning(parsed.outcome.error));
     return outcome;
   }
   PageScheduler::OcrTuning routed_tuning = inputs.tuning;
