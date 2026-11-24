@@ -104,7 +104,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # A backend that reduces the recognizer's scores on the device hands
         # back each time step's best class and score; the decode reads those
         # (grparse::ocr_rec_reduced).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch"
+        # The direction net batches by grparse::ocr_direction_batch_size: a
+        # page's crops per call where the backend takes any batch as it comes.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-batch.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -167,6 +170,14 @@ if(GRPARSE_CRNN_BATCH_AT EQUAL -1)
 endif()
 unset(GRPARSE_CRNN_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/src/AngleNet.cpp" GRPARSE_ANGLE_SOURCE)
+# A tree cached before the direction-batch patch would classify one crop per
+# call on the Level Zero runtime, paying its launch latency per crop.
+string(FIND "${GRPARSE_ANGLE_SOURCE}" "grparse::ocr_direction_batch_size" GRPARSE_ANGLE_BATCH_AT)
+if(GRPARSE_ANGLE_BATCH_AT EQUAL -1)
+  message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-direction-batch.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
 string(FIND "${GRPARSE_ANGLE_SOURCE}" "kFlipScore" GRPARSE_ANGLE_VOTE_AT)
 if(GRPARSE_ANGLE_VOTE_AT EQUAL -1)
   message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "

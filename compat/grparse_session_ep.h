@@ -77,6 +77,15 @@ int ort_intra_op_threads();
 // malformed value throws std::invalid_argument.
 size_t ocr_batch_size();
 
+// How many crops the direction net classifies per call
+// (patches/rapidocr-direction-batch.patch).  Every crop is resized to the
+// same 192 x 48, so a batch needs no padding and classifies each crop as a
+// single call would.  GRPARSE_OCR_BATCH sets it when present; otherwise 256
+// on the Level Zero runtime, which takes any batch without compiling for
+// it and pays its launch latency once per call, and ocr_batch_size()
+// elsewhere.
+size_t ocr_direction_batch_size();
+
 // True when this build runs the cuda flavor's models on native TensorRT
 // (src/tensorrt/) instead of ONNX Runtime's CUDA provider.  In such a build
 // a CUDA selection never creates an ONNX Runtime session for an image model.

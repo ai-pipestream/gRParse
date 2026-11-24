@@ -112,6 +112,22 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::set_ort_ep_selection(kept);
 }
 
+// The direction net's batch is the line batch on backends that run through
+// ONNX Runtime or TensorRT; the Level Zero runtime, which these selections
+// do not place the nets on, is the one that raises it.
+void verify_direction_batch_follows_line_batch() {
+  require(std::getenv("GRPARSE_OCR_BATCH") == nullptr, "the test runs without GRPARSE_OCR_BATCH");
+  const grparse::OrtEpSelection kept = grparse::ort_ep_selection();
+  grparse::OrtEpSelection other = kept;
+  for (const grparse::OrtEp ep : {grparse::OrtEp::kCpu, grparse::OrtEp::kCuda}) {
+    other.ep = ep;
+    grparse::set_ort_ep_selection(other);
+    require_equal(grparse::ocr_direction_batch_size(), grparse::ocr_batch_size(),
+                  "the direction batch is the line batch off Level Zero");
+  }
+  grparse::set_ort_ep_selection(kept);
+}
+
 // Runs `build` and returns the message of the exception it must throw.
 template <typename Build>
 std::string refusal_message(Build&& build) {
@@ -424,6 +440,7 @@ int main() {
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
       verify_ocr_batch_size_follows_provider,
+      verify_direction_batch_follows_line_batch,
       verify_make_session_refuses_and_counts,
       verify_cpu_selection_failure_does_not_count,
       verify_make_session_retries_on_openvino_then_refuses,
