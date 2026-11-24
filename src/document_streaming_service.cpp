@@ -156,11 +156,13 @@ class DocumentStreamReactor final
   }
 
   // Bytes never handed to a leg return their charge with the call; bytes
-  // that were handed off return it when their last holder drops them.
+  // that were handed off return it when their last holder drops them. The
+  // stream slot went back when the call was finished (pump_locked); the
+  // call here only covers a reactor torn down without ever finishing.
   ~DocumentStreamReactor() override {
     record_stream_completion_locked();
     if (inflight_ != nullptr) inflight_->release(charged_bytes_);
-    if (active_streams_ != nullptr) active_streams_->fetch_sub(1, std::memory_order_acq_rel);
+    return_slot();
   }
 
   void OnReadDone(bool ok) override {
@@ -237,6 +239,15 @@ class DocumentStreamReactor final
                                                     std::memory_order_acq_rel));
     active_streams_ = std::move(active_streams);
     return true;
+  }
+
+  // Gives the stream's slot back, once: the count is let go of with it, so
+  // a second call returns nothing. Called with mutex_ held, or from the
+  // destructor, where nothing else can reach the reactor.
+  void return_slot() {
+    if (const auto slots = std::exchange(active_streams_, nullptr)) {
+      slots->fetch_sub(1, std::memory_order_acq_rel);
+    }
   }
 
   // The client half-closed. True when the stream ended with a document to
@@ -1498,6 +1509,16 @@ class DocumentStreamReactor final
     if (finish_requested_ && !write_in_flight_ && events_.empty() && !finish_started_) {
       finish_started_ = true;
       record_stream_completion_locked();
+      // The slot goes back before the status is handed to gRPC, not when
+      // OnDone deletes the reactor: the client sees the stream end in
+      // between, and one that opens its next stream at once must not be
+      // refused for a stream it no longer has. Every finish passes through
+      // here, whatever ended the stream. A stream that ran to its end has
+      // no leg left by now (every one reported before the last event was
+      // queued); the legs a cancelled or failed stream leaves behind were
+      // told to stop and are bounded by the stream pool, as they were when
+      // the slot went back in the destructor.
+      return_slot();
       Finish(finish_status_);
     }
   }
@@ -1510,7 +1531,7 @@ class DocumentStreamReactor final
   // when the stream ends early. Legs hold it weakly through the gate.
   const std::shared_ptr<CancelRegistry> cancel_registry_ = std::make_shared<CancelRegistry>();
   // The server's stream count this call holds a slot of; null when it was
-  // refused at the cap.
+  // refused at the cap, and again once the slot has been returned.
   std::shared_ptr<std::atomic<size_t>> active_streams_;
   std::shared_ptr<CollectorEndpoints> endpoints_;
   // The server's repair pass, and the one this stream runs once its

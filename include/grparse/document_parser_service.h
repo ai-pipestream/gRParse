@@ -549,7 +549,8 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
                           ai::pipestream::parse::v1::DocumentStreamEvent>*
   StreamProcessDocument(grpc::CallbackServerContext* context) override;
 
-  // Streams admitted and not yet done. Sampled; for tests and gauges.
+  // Streams admitted and not yet finished: a stream's slot is back before
+  // its final status is handed to gRPC. Sampled; for tests and gauges.
   size_t active_streams() const { return active_streams_->load(); }
   // Tasks waiting for a stream worker. Sampled, like CallExecutor::queued.
   size_t queued_stream_tasks() const { return executor_.queued(); }

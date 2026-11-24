@@ -236,6 +236,10 @@ std::expected<TaskRegistry::Subscription, grpc::Status> TaskRegistry::watch(
   sweep_locked(Clock::now());
   const auto found = tasks_.find(task_id);
   if (found == tasks_.end()) return std::unexpected(not_found(task_id));
+  // A finished task has nothing left to say: answered, never subscribed.
+  if (terminal(found->second.status.task_status())) {
+    return Subscription{snapshot_locked(found->second), 0};
+  }
   if (watchers_.size() >= options_.max_watchers) {
     return std::unexpected(grpc::Status(
         grpc::StatusCode::RESOURCE_EXHAUSTED,
@@ -304,6 +308,13 @@ TaskRegistry::Status TaskRegistry::snapshot_locked(const Task& task) const {
 void TaskRegistry::finish_locked(Task& task, const std::string& task_id) {
   task.finished = Clock::now();
   notify_locked(task_id, task);
+  // The terminal status is the last these watchers hear, so their places
+  // under GRPARSE_MAX_WATCHERS return here, under the lock they were told
+  // under, not when each one's call is torn down: that happens after its
+  // client has seen the end and may already be asking again.
+  std::erase_if(watchers_, [&task_id](const auto& entry) {
+    return entry.second.task_id == task_id;
+  });
   // The sweeper may be asleep with no deadline, or a later one.
   sweeper_wake_.notify_all();
 }

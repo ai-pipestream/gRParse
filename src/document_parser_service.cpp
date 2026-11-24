@@ -357,6 +357,12 @@ int task_rank(pipestream::parse::v1::TaskStatus status) {
 // its own lock, so unwatch in OnDone returning means no listener is
 // running into this reactor or ever will again. Finish runs from the
 // constructor or a reaction only, never from the listener.
+//
+// The watcher's place under GRPARSE_MAX_WATCHERS is returned before Finish
+// on every path, so a client that has seen its watch end can open the next:
+// the registry drops it with the terminal status, and a watch that ends
+// early leaves the registry first. Only a cancel the client itself made is
+// known to the client before the server, and so before the place is back.
 template <typename Response>
 class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
  public:
@@ -378,6 +384,7 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
   }
 
   void OnWriteDone(bool ok) override {
+    if (!ok) leave();
     std::lock_guard<std::mutex> lock(mutex_);
     write_in_flight_ = false;
     if (!pending_.empty()) pending_.pop_front();
@@ -389,16 +396,25 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
   }
 
   void OnCancel() override {
+    leave();
     std::lock_guard<std::mutex> lock(mutex_);
     finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "watch cancelled"));
   }
 
   void OnDone() override {
-    if (tasks_ != nullptr) tasks_->unwatch(token_);
+    // Nearly always a no-op by now. What it still buys is the wait: once it
+    // returns no listener is running into the reactor being deleted.
+    leave();
     delete this;
   }
 
  private:
+  // Ends the subscription, if the task's end has not already. Never called
+  // under mutex_: the listener takes that under the registry's lock.
+  void leave() {
+    if (tasks_ != nullptr) tasks_->unwatch(token_);
+  }
+
   void queue_locked(const TaskRegistry::Status& status) {
     const int rank = task_rank(status.task_status());
     if (rank <= last_rank_ || finished_) return;
@@ -446,6 +462,12 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
 // (a registry listener and a callback alarm). Finish runs once, under the
 // reactor's lock; OnDone first detaches the alarm and unwatches, which
 // waits out a listener or an alarm callback already running.
+//
+// The poll's place under GRPARSE_MAX_WATCHERS is returned before Finish on
+// every path, so a client that has its answer can poll again at once: the
+// registry drops the subscription with the terminal status, a task that had
+// already finished never took one, and a wait that ran out or was cancelled
+// unwatches before it answers.
 class TaskPollReactor final : public grpc::ServerUnaryReactor {
  public:
   TaskPollReactor(TaskRegistry& tasks, const std::string& task_id,
@@ -468,10 +490,13 @@ class TaskPollReactor final : public grpc::ServerUnaryReactor {
     timer_->reactor = this;
     timer_->fallback = subscribed->current;
     alarm_.Set(std::chrono::system_clock::now() + wait,
-               [timer = timer_, tasks = tasks_, task_id](bool fired) {
+               [timer = timer_, tasks = tasks_, token = token_, task_id](bool fired) {
                  if (!fired) return;
-                 // Read before the timer's lock: the registry's lock is
-                 // never taken under it.
+                 // Unwatched and read before the timer's lock: the
+                 // registry's lock is never taken under it. From here the
+                 // listener cannot answer, so the status read next is the
+                 // one this poll answers with unless it already did.
+                 tasks->unwatch(token);
                  const auto status = tasks->status(task_id);
                  std::lock_guard<std::mutex> lock(timer->mutex);
                  if (timer->reactor == nullptr) return;
@@ -480,6 +505,8 @@ class TaskPollReactor final : public grpc::ServerUnaryReactor {
   }
 
   void OnCancel() override {
+    // Before mutex_, which the listener takes under the registry's lock.
+    if (tasks_ != nullptr) tasks_->unwatch(token_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (answered_) return;
     answered_ = true;

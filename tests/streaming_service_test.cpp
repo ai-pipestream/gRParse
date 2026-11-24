@@ -15,6 +15,7 @@
 #include <mutex>
 #include <print>
 #include <stdexcept>
+#include <stop_token>
 #include <map>
 #include <optional>
 #include <set>
@@ -68,6 +69,7 @@ namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 // Field-wise message equality. Serialized bytes are not a stable identity:
 // protobuf map fields (Chunk.metadata, Chunk.typed_metadata) iterate in a
@@ -177,6 +179,73 @@ class TestServer final {
   grparse::DocumentStreamingService streaming_service_;
   std::unique_ptr<grpc::Server> server_;
   int port_ = 0;
+};
+
+// Reads a server-side gauge at the moment a call's final status is handed
+// to the transport. gRPC runs a server interceptor's PRE_SEND_STATUS hook
+// inside Finish, before the status is sent, so what the gauge shows there is
+// what the server had done before the client could see the call end: ordered
+// by construction, not by timing. `read` runs on the thread that finishes
+// the call and under whatever locks it holds, so it must take none of them.
+class StatusProbe final {
+ public:
+  // `method` is the bare RPC name; calls to other methods are not probed.
+  StatusProbe(std::string method, std::function<size_t()> read)
+      : state_(std::make_shared<State>(std::move(method), std::move(read))) {}
+
+  void install(grpc::ServerBuilder* builder) const {
+    std::vector<std::unique_ptr<grpc::experimental::ServerInterceptorFactoryInterface>> creators;
+    creators.push_back(std::make_unique<Factory>(state_));
+    builder->experimental().SetInterceptorCreators(std::move(creators));
+  }
+
+  // The gauge as each probed call's status left, in the order they left.
+  std::vector<size_t> readings() const {
+    std::lock_guard<std::mutex> lock(state_->mutex);
+    return state_->readings;
+  }
+
+ private:
+  struct State {
+    State(std::string probed, std::function<size_t()> gauge)
+        : method("/" + std::move(probed)), read(std::move(gauge)) {}
+    const std::string method;
+    const std::function<size_t()> read;
+    std::mutex mutex;
+    std::vector<size_t> readings;
+  };
+
+  class Hook final : public grpc::experimental::Interceptor {
+   public:
+    explicit Hook(std::shared_ptr<State> state) : state_(std::move(state)) {}
+    void Intercept(grpc::experimental::InterceptorBatchMethods* methods) override {
+      if (methods->QueryInterceptionHookPoint(
+              grpc::experimental::InterceptionHookPoints::PRE_SEND_STATUS)) {
+        const size_t reading = state_->read();
+        std::lock_guard<std::mutex> lock(state_->mutex);
+        state_->readings.push_back(reading);
+      }
+      methods->Proceed();
+    }
+
+   private:
+    std::shared_ptr<State> state_;
+  };
+
+  class Factory final : public grpc::experimental::ServerInterceptorFactoryInterface {
+   public:
+    explicit Factory(std::shared_ptr<State> state) : state_(std::move(state)) {}
+    grpc::experimental::Interceptor* CreateServerInterceptor(
+        grpc::experimental::ServerRpcInfo* info) override {
+      if (!std::string_view(info->method()).ends_with(state_->method)) return nullptr;
+      return new Hook(state_);
+    }
+
+   private:
+    std::shared_ptr<State> state_;
+  };
+
+  std::shared_ptr<State> state_;
 };
 
 // Holds page one back so the pages behind it pile up undelivered, which is what
@@ -2615,7 +2684,8 @@ class BudgetedParseServer final {
   BudgetedParseServer(std::shared_ptr<grparse::InflightBytes> inflight,
                       std::shared_ptr<grparse::RemoteFetchSlots> slots,
                       std::chrono::milliseconds inference_delay = 0ms,
-                      std::optional<grparse::TaskRegistryOptions> tasks = std::nullopt)
+                      std::optional<grparse::TaskRegistryOptions> tasks = std::nullopt,
+                      const StatusProbe* probe = nullptr)
       : recognizer_(inference_delay),
         scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
                    [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
@@ -2630,6 +2700,7 @@ class BudgetedParseServer final {
     grpc::ServerBuilder builder;
     builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
     builder.RegisterService(&service_);
+    if (probe != nullptr) probe->install(&builder);
     server_ = builder.BuildAndStart();
     require(server_ && port_ != 0, "budgeted parse server failed to start");
     stub_ = pipestream::parse::v1::ParseService::NewStub(
@@ -2798,7 +2869,11 @@ void verify_remote_fetches_wait_for_a_slot() {
     require(!slots.acquire([&asked] { return ++asked == 3; }).held() && asked == 3,
             "a full set waits, asking stop each time, and gives up when told");
     grparse::RemoteFetchSlots::Slot third;
-    std::thread waiter([&] { third = slots.acquire([] { return false; }); });
+    // Gives up when the thread is asked to stop, so a failed check below is
+    // reported by name instead of leaving a joinable thread to terminate on.
+    std::jthread waiter([&](std::stop_token stop) {
+      third = slots.acquire([&stop] { return stop.stop_requested(); });
+    });
     wait_until([&] { return slots.waiting() == 1; }, "the third acquire waits");
     require(slots.in_use() == 2, "the waiter holds nothing while every slot is taken");
     first.reset();
@@ -2820,7 +2895,9 @@ void verify_remote_fetches_wait_for_a_slot() {
     context.set_deadline(std::chrono::system_clock::now() + 20s);
     pipestream::parse::v1::ConvertSourceResponse response;
     grpc::Status waited;
-    std::thread call([&] {
+    // A stop request cancels the call, so the thread ends on every exit path.
+    std::jthread call([&](std::stop_token stop) {
+      const std::stop_callback cancel(stop, [&context] { context.TryCancel(); });
       waited = server.stub().ConvertSource(&context, origin.request("/image.png"), &response);
     });
     wait_until([&] { return slots->waiting() == 1; }, "the remote source waits for the slot");
@@ -3227,7 +3304,9 @@ void verify_task_registry_bounds() {
 
   // One waiting poll is the one watcher; a watch beside it is refused.
   grpc::Status waited;
-  std::thread waiter([&] { poll_task(client, first.task_id(), 20.0, &waited); });
+  // Joined on every exit path: the poll answers when the task ends, so a
+  // failed check below is reported by name rather than by std::terminate.
+  std::jthread waiter([&] { poll_task(client, first.task_id(), 20.0, &waited); });
   wait_until([&] { return server.service().tasks().watchers() == 1; }, "the poll waits");
   grpc::ClientContext watch_context;
   pipestream::parse::v1::WatchConvertSourceRequest watch;
@@ -3268,6 +3347,195 @@ void verify_task_registry_bounds() {
           "a watcher past the cap is refused naming GRPARSE_MAX_WATCHERS");
   registry.unwatch(watched->token);
   require(registry.watchers() == 0, "unwatch removes the subscription");
+}
+
+// A watcher gives its place under GRPARSE_MAX_WATCHERS back before the
+// client can see its watch or its waiting poll end: the registry drops a
+// task's watchers with the terminal status, a watch of a task that already
+// finished takes no place, and a poll whose wait ran out leaves the registry
+// before it answers. With the cap at 1, watches and waiting polls issued
+// back to back are therefore all served. A cancelled one is known to its
+// client first, so its place is only required to come back, once.
+void verify_finished_watch_frees_its_place_before_its_status_is_sent() {
+  {
+    grparse::TaskRegistryOptions options;
+    options.max_tasks = 2;
+    options.max_watchers = 1;
+    grparse::TaskRegistry registry(options, nullptr);
+    const auto task = registry.create(pipestream::parse::v1::TASK_TYPE_CONVERT);
+    const auto other = registry.create(pipestream::parse::v1::TASK_TYPE_CONVERT);
+    require(task.has_value() && other.has_value(), "two registry tasks");
+    int heard = 0;
+    const auto watched = registry.watch(task->task_id(), [&heard](const auto&) { ++heard; });
+    require(watched.has_value(), "the watcher subscribes");
+    registry.start(task->task_id());
+    require(heard == 1 && registry.watchers() == 1, "a running task keeps its watcher");
+    registry.fail(task->task_id(), grpc::Status(grpc::StatusCode::INTERNAL, "ended"),
+                  pipestream::parse::v1::FAILURE_PHASE_EXECUTION);
+    require_equal(heard, 2, "the watcher hears the terminal status");
+    require_equal(registry.watchers(), size_t{0},
+                  "watchers left in the registry once the task they watched finished");
+    const auto next = registry.watch(other->task_id(), [](const auto&) {});
+    require(next.has_value(), "the freed place goes to the next watcher");
+    // Nothing more will be said about a finished task, so a watch of one is
+    // answered with its status and holds no place, at the cap too.
+    const auto late = registry.watch(task->task_id(), [&heard](const auto&) { ++heard; });
+    require(late.has_value() && grparse::TaskRegistry::terminal(late->current.task_status()),
+            "a watch of a finished task is answered with its status at the cap");
+    require_equal(registry.watchers(), size_t{1}, "a watch of a finished task takes no place");
+    registry.unwatch(late->token);
+    registry.unwatch(watched->token);
+    require_equal(registry.watchers(), size_t{1}, "a spent token removes nobody else's watcher");
+    registry.unwatch(next->token);
+    require_equal(registry.watchers(), size_t{0}, "unwatch removes the subscription");
+  }
+
+  const auto request = unary_request();
+  const auto watch_to_the_end = [&request](pipestream::parse::v1::ParseService::Stub& client) {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 30s);
+    pipestream::parse::v1::WatchConvertSourceRequest watch;
+    *watch.mutable_request() = request.request();
+    auto reader = client.WatchConvertSource(&context, watch);
+    pipestream::parse::v1::WatchConvertSourceResponse message;
+    bool finished = false;
+    while (reader->Read(&message)) {
+      finished = grparse::TaskRegistry::terminal(message.response().task_status());
+    }
+    const grpc::Status status = reader->Finish();
+    require(!status.ok() || finished, "a watch that closes OK ended with a terminal status");
+    return status;
+  };
+  {
+    const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+    grparse::TaskRegistryOptions options;
+    options.max_watchers = 1;
+    // Only watches that run to their task's end are probed: nothing is said
+    // about a finished task, so no listener can be waiting on the reactor
+    // whose Finish reads the registry here.
+    BudgetedParseServer* probed = nullptr;
+    const StatusProbe probe("WatchConvertSource",
+                            [&probed] { return probed->service().tasks().watchers(); });
+    BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4), 0ms,
+                               options, &probe);
+    probed = &server;
+    auto& client = server.stub();
+
+    // Watches back to back: each opens the moment the one before closed.
+    constexpr int kWatches = 30;
+    int refused = 0;
+    std::string refusal;
+    for (int index = 0; index < kWatches; ++index) {
+      const grpc::Status status = watch_to_the_end(client);
+      if (status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED) {
+        ++refused;
+        refusal = status.error_message();
+        continue;
+      }
+      require(status.ok(), "a back-to-back watch closes OK: " + status.error_message());
+    }
+    require(refused == 0, std::to_string(refused) + " of " + std::to_string(kWatches) +
+                              " watches opened right after the one before closed were refused: " +
+                              refusal);
+    const std::vector<size_t> closed = probe.readings();
+    require_equal(closed.size(), static_cast<size_t>(kWatches),
+                  "every watch's status passed the probe");
+    const auto still_held = std::ranges::count_if(closed, [](size_t places) { return places != 0; });
+    require(still_held == 0, std::to_string(still_held) + " of " + std::to_string(closed.size()) +
+                                 " watches still held their place when their status was handed "
+                                 "to gRPC");
+
+    // A waiting poll the task's end answered, and the polls right behind it.
+    for (int round = 0; round < 20; ++round) {
+      const std::string label = "waiting poll round " + std::to_string(round);
+      pipestream::parse::v1::TaskStatusPollResponse accepted;
+      require(convert_async(client, request.request(), &accepted).ok(), label + ": accepted");
+      poll_until_finished(client, accepted.task_id(), label);
+      require_equal(server.service().tasks().watchers(), size_t{0},
+                    label + ": watchers left once the waiting poll has answered");
+      for (int again = 0; again < 10; ++again) {
+        grpc::Status status;
+        poll_task(client, accepted.task_id(), 5.0, &status);
+        require(status.ok(), label + ": a waiting poll of a finished task is answered at once: " +
+                                 status.error_message());
+      }
+    }
+  }
+
+  // The rest needs a task that is still running when its watcher leaves, so
+  // it runs on a server whose pages take long enough to be sure of it.
+  const auto inflight = std::make_shared<grparse::InflightBytes>(64ULL << 20U);
+  grparse::TaskRegistryOptions options;
+  options.max_watchers = 1;
+  BudgetedParseServer server(inflight, std::make_shared<grparse::RemoteFetchSlots>(4), 400ms,
+                             options);
+  auto& client = server.stub();
+
+  // Polls whose wait runs out while the task still runs, back to back.
+  int ran_out = 0;
+  for (int round = 0; round < 2; ++round) {
+    const std::string label = "short poll round " + std::to_string(round);
+    pipestream::parse::v1::TaskStatusPollResponse accepted;
+    require(convert_async(client, request.request(), &accepted).ok(), label + ": accepted");
+    bool finished = false;
+    for (int attempt = 0; attempt < 10000 && !finished; ++attempt) {
+      grpc::Status status;
+      const auto polled = poll_task(client, accepted.task_id(), 0.002, &status);
+      require(status.ok(), label + ": the poll right after one whose wait ran out is served: " +
+                               status.error_message());
+      finished = grparse::TaskRegistry::terminal(polled.task_status());
+      if (!finished) ++ran_out;
+    }
+    require(finished, label + ": the task finishes");
+  }
+  require(ran_out > 0, "some polls ran out their wait while the task still ran");
+  require_equal(server.service().tasks().watchers(), size_t{0}, "no watcher outlives its poll");
+
+  // Cancelled while the task still runs: the client knows first, and the
+  // poll's and the watch's places both come back.
+  pipestream::parse::v1::TaskStatusPollResponse accepted;
+  require(convert_async(client, request.request(), &accepted).ok(), "the slow task is accepted");
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 30s);
+    grpc::Status cancelled;
+    {
+      // The stop request cancels the poll, so the thread ends whichever way
+      // this scope is left.
+      std::jthread waiter([&](std::stop_token stop) {
+        const std::stop_callback cancel(stop, [&context] { context.TryCancel(); });
+        pipestream::parse::v1::PollTaskStatusRequest poll;
+        poll.mutable_request()->set_task_id(accepted.task_id());
+        poll.mutable_request()->set_wait_time(20.0);
+        pipestream::parse::v1::PollTaskStatusResponse response;
+        cancelled = client.PollTaskStatus(&context, poll, &response);
+      });
+      wait_until([&] { return server.service().tasks().watchers() == 1; }, "the poll waits");
+    }
+    require(cancelled.error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled poll ends CANCELLED: " + cancelled.error_message());
+    wait_until([&] { return server.service().tasks().watchers() == 0; },
+               "a cancelled poll returns its place");
+  }
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 30s);
+    pipestream::parse::v1::WatchConvertSourceRequest watch;
+    *watch.mutable_request() = request.request();
+    auto reader = client.WatchConvertSource(&context, watch);
+    pipestream::parse::v1::WatchConvertSourceResponse message;
+    require(reader->Read(&message), "the watch reports its task");
+    require_equal(server.service().tasks().watchers(), size_t{1}, "an open watch holds a place");
+    context.TryCancel();
+    while (reader->Read(&message)) {
+    }
+    require(reader->Finish().error_code() == grpc::StatusCode::CANCELLED,
+            "the cancelled watch ends CANCELLED");
+    wait_until([&] { return server.service().tasks().watchers() == 0; },
+               "a cancelled watch returns its place");
+  }
+  require(watch_to_the_end(client).ok(), "a watch after the cancelled ones is served");
+  require_equal(server.service().tasks().watchers(), size_t{0}, "no watcher is left at the end");
 }
 
 // The chunk RPCs have nowhere to report a delivery, so a target is refused
@@ -3667,6 +3935,150 @@ void verify_stream_admission_cap() {
   server->Wait();
 }
 
+// One in-process stream, as short as a stream gets: a storage body parsed by
+// the compiled-in handler, no collector dialed.
+pipestream::parse::v1::DocumentChunk storage_chunk(const std::string& id) {
+  pipestream::parse::v1::DocumentChunk chunk;
+  chunk.set_document_id(id);
+  chunk.set_filename("page.bin");
+  chunk.set_content_type(grparse::kConfluenceStorageMimetype);
+  chunk.set_data(kStorageBody);
+  chunk.add_collectors(pipestream::parse::v1::COLLECTOR_CONFLUENCE);
+  chunk.set_complete(true);
+  return chunk;
+}
+
+// One single-chunk stream run to its status. Unlike run_chunks the write is
+// not checked: a stream refused at the cap may be finished before its chunk
+// is taken, and the refusal is what the caller wants to read.
+StreamRun run_to_status(pipestream::parse::v1::ParseStreamingService::Stub* client,
+                        const pipestream::parse::v1::DocumentChunk& chunk) {
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  auto stream = client->StreamProcessDocument(&context);
+  stream->Write(chunk);
+  stream->WritesDone();
+  StreamRun run;
+  pipestream::parse::v1::DocumentStreamEvent event;
+  while (stream->Read(&event)) run.events.push_back(event);
+  run.status = stream->Finish();
+  return run;
+}
+
+// A stream gives its GRPARSE_MAX_ACTIVE_STREAMS slot back before its final
+// status is handed to gRPC, so a client that has seen its stream end can
+// always open the next one. With the cap at 1, streams opened back to back
+// are all admitted, whether the one before ended OK or with an error, and
+// the gauge read as each status leaves the server is already zero. A
+// cancelled stream's client learns of the end before the server does, so
+// for it only the server's own order (slot back, then status) is pinned.
+// The cap still holds meanwhile: a stream beside an open one is refused.
+void verify_finished_stream_frees_its_slot_before_its_status_is_sent() {
+  GatedPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<RoutableDigitalSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  grparse::StreamingLimits limits;
+  limits.max_active_streams = 1;
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets), grparse::RepairOptions{},
+      {}, {}, limits);
+  const StatusProbe probe("StreamProcessDocument", [&streaming_service] {
+    return streaming_service.active_streams();
+  });
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  probe.install(&builder);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "slot release stream server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  // Back to back: each stream opens the moment the one before returned its
+  // status, which is all the time the server gets to free the slot.
+  constexpr int kStreams = 200;
+  int refused = 0;
+  std::string refusal;
+  for (int index = 0; index < kStreams; ++index) {
+    const StreamRun run =
+        run_to_status(client.get(), storage_chunk("next-" + std::to_string(index)));
+    if (run.status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED) {
+      ++refused;
+      refusal = run.status.error_message();
+      continue;
+    }
+    require(run.status.ok(), "a back-to-back stream completes: " + run.status.error_message());
+    require(!run.events.empty() && run.events.back().has_complete(),
+            "a back-to-back stream ends with its complete event");
+  }
+  require(refused == 0, std::to_string(refused) + " of " + std::to_string(kStreams) +
+                            " streams opened right after the one before ended were refused: " +
+                            refusal);
+  constexpr int kFailed = 50;
+  for (int index = 0; index < kFailed; ++index) {
+    auto truncated = storage_chunk("truncated-" + std::to_string(index));
+    truncated.set_complete(false);
+    const StreamRun failed = run_to_status(client.get(), truncated);
+    require(failed.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            "a stream without its complete chunk fails as such: " + failed.status.error_message());
+    const StreamRun next =
+        run_to_status(client.get(), storage_chunk("after-error-" + std::to_string(index)));
+    require(next.status.ok(),
+            "the stream opened right after a failed one is admitted: " + next.status.error_message());
+  }
+  const std::vector<size_t> finished = probe.readings();
+  require_equal(finished.size(), static_cast<size_t>(kStreams + 2 * kFailed),
+                "every stream's status passed the probe");
+  const auto still_held = std::ranges::count_if(finished, [](size_t slots) { return slots != 0; });
+  require(still_held == 0, std::to_string(still_held) + " of " + std::to_string(finished.size()) +
+                               " streams still held their slot when their status was handed to gRPC");
+
+  // The cap is still a cap while a stream is open.
+  grpc::ClientContext held_context;
+  held_context.set_deadline(std::chrono::system_clock::now() + 30s);
+  auto held = client->StreamProcessDocument(&held_context);
+  require(held->Write(routed_pdf_chunk("held")), "the held stream could not write its chunk");
+  held->WritesDone();
+  require(inspector.wait_received(1, 5000ms), "the held stream reaches the inspector");
+  require_equal(streaming_service.active_streams(), size_t{1}, "an open stream holds the slot");
+  const StreamRun beside = run_to_status(client.get(), storage_chunk("beside"));
+  require(beside.events.empty(), "a refused stream emits nothing");
+  require(beside.status.error_code() == grpc::StatusCode::RESOURCE_EXHAUSTED &&
+              beside.status.error_message().contains("GRPARSE_MAX_ACTIVE_STREAMS"),
+          "a stream beside an open one is refused at the cap: " + beside.status.error_message());
+  require_equal(probe.readings().back(), size_t{1},
+                "the refused stream's status left while the open one held the slot");
+
+  const size_t before_cancel = probe.readings().size();
+  held_context.TryCancel();
+  pipestream::parse::v1::DocumentStreamEvent ignored;
+  while (held->Read(&ignored)) {
+  }
+  require(held->Finish().error_code() == grpc::StatusCode::CANCELLED,
+          "the cancelled stream ends CANCELLED");
+  require(wait_for([&probe, before_cancel] { return probe.readings().size() > before_cancel; },
+                   5000ms),
+          "the server finishes the cancelled stream");
+  require_equal(probe.readings().back(), size_t{0},
+                "a cancelled stream's slot is back before its status is handed to gRPC");
+  const StreamRun after_cancel = run_to_status(client.get(), storage_chunk("after-cancel"));
+  require(after_cancel.status.ok(), "a stream opened after the cancelled one finished is admitted: " +
+                                        after_cancel.status.error_message());
+  inspector.release();
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  // Every status has left and the server is down: a slot returned twice
+  // on the way would have wrapped the count instead of leaving it at zero.
+  require_equal(streaming_service.active_streams(), size_t{0}, "every slot came back exactly once");
+}
+
 // A leg the full stream queue refuses fails that collector alone: with one
 // worker (running the plan) and a queue of one (taken by the first leg),
 // the second leg is a capacity failure on the complete event while the
@@ -3802,10 +4214,11 @@ void verify_stream_threads_stay_bounded_under_load() {
   }
   const size_t baseline = process_threads();
   require(baseline > 0, "the thread count is readable");
-  std::atomic<bool> sampling{true};
   std::atomic<size_t> peak{baseline};
-  std::thread sampler([&sampling, &peak] {
-    while (sampling.load()) {
+  // Stopped and joined on every exit path, so a failed check below is
+  // reported by name rather than by std::terminate.
+  std::jthread sampler([&peak](std::stop_token stop) {
+    while (!stop.stop_requested()) {
       const size_t now = process_threads();
       size_t seen = peak.load();
       while (now > seen && !peak.compare_exchange_weak(seen, now)) {
@@ -3850,7 +4263,7 @@ void verify_stream_threads_stay_bounded_under_load() {
     require(status.ok(), "a load stream completes: " + status.error_message());
     if (complete) ++completed;
   }
-  sampling.store(false);
+  sampler.request_stop();
   sampler.join();
   require(completed == kStreams, "every load stream ends with its complete event");
   require(email.calls.load() == static_cast<int>(kStreams + 1), "every remote leg ran");
@@ -4153,7 +4566,10 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
                                            grpc::InsecureChannelCredentials());
 
   grpc::Status holder_status;
-  std::thread holder([&] {
+  // A stop request opens the gate, so the held conversion (and with it this
+  // thread) ends on every exit path and a failed check is reported by name.
+  std::jthread holder([&](std::stop_token stop) {
+    const std::stop_callback open(stop, [&recognizer] { recognizer.release(); });
     auto client = pipestream::parse::v1::ParseService::NewStub(channel);
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + 30s);
@@ -4168,7 +4584,7 @@ void verify_queued_then_cancelled_call_never_dials_a_collector() {
   // call is queued well before it fires.
   expired_context.set_deadline(std::chrono::system_clock::now() + 600ms);
   grpc::Status expired_status;
-  std::thread queued([&] {
+  std::jthread queued([&] {
     auto client = pipestream::parse::v1::ParseService::NewStub(channel);
     pipestream::parse::v1::ConvertSourceResponse response;
     expired_status = client->ConvertSource(&expired_context, pdf_unary_request(), &response);
@@ -6412,6 +6828,7 @@ int main() {
         verify_convert_task_matches_the_unary_conversion(&server);
         verify_watch_streams_the_task_to_its_end(&server);
         verify_task_registry_bounds();
+        verify_finished_watch_frees_its_place_before_its_status_is_sent();
         verify_stream_chunks_holds_the_fetched_charge_until_written();
         verify_streaming_pdf_fast_path_emits_the_collector_document();
         verify_streaming_pdf_fast_path_projects_pages();
@@ -6431,6 +6848,7 @@ int main() {
         verify_stream_chunks_returns_its_charge_when_the_reader_cancels();
         verify_streaming_pdf_router_cancels_with_the_client();
         verify_stream_admission_cap();
+        verify_finished_stream_frees_its_slot_before_its_status_is_sent();
         verify_refused_leg_is_a_capacity_failure();
         verify_stream_threads_stay_bounded_under_load();
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
