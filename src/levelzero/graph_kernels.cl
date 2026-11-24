@@ -371,6 +371,32 @@ __kernel void from_real(__global const real* in, __global float* out, int count)
   if (index < count) out[index] = RLOAD(in, index);
 }
 
+// Each row's best column and its value as four floats, (index, value) over
+// every column and then over every column but the last; the first of equal
+// values wins.  One group of 256 per row.
+__kernel __attribute__((reqd_work_group_size(256, 1, 1)))
+void reduce_rows(__global const real* in, __global float* out, int cols) {
+  const size_t r = get_group_id(0);
+  __global const real* row = in + r * cols;
+  float best = -INFINITY;
+  int at = INT_MAX;
+  for (int c = get_local_id(0); c < cols - 1; c += 256) {
+    const float v = RLOAD(row, c);
+    if (v > best) {
+      best = v;
+      at = c;
+    }
+  }
+  const float top = work_group_reduce_max(best);
+  const int index = work_group_reduce_min(best == top ? at : INT_MAX);
+  if (get_local_id(0) != 0) return;
+  const float last = RLOAD(row, cols - 1);
+  out[r * 4 + 0] = last > top ? (float)(cols - 1) : (float)index;
+  out[r * 4 + 1] = last > top ? last : top;
+  out[r * 4 + 2] = (float)index;
+  out[r * 4 + 3] = top;
+}
+
 #ifdef GRAPH_FP16
 // ---- Convolutions and linear layers on the matrix engines (XMX) -----------
 // C[m][col] = act(sum_k A[m][k] B[k][col] + bias[m]), F16 operands, F32 sums.

@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -30,6 +31,12 @@ struct GraphOptions {
   // Activations stored as half and the GEMM-shaped layers run on the matrix
   // engines (XMX), F32 sums; otherwise everything is float.
   bool fp16 = false;
+  // Each output comes back reduced over its last axis to four floats a row:
+  // the best column and its value over every column, then over every column
+  // but the last (graph_kernels.cl reduce_rows).  For a recognizer whose
+  // caller only takes each time step's best class, it saves reading the
+  // whole score tensor back.
+  bool reduce_rows = false;
 };
 
 class GraphModel {
@@ -48,10 +55,10 @@ class GraphModel {
   std::vector<HostTensor> run(const float* input, const std::vector<int64_t>& shape);
 
   // Runs the graph on an image the device normalizes: `pixels` is height x
-  // width x 3 bytes, interleaved, and the graph's input is [1, 3, height,
+  // width x 3 bytes, pixel by pixel, and the graph's input is [1, 3, height,
   // width] with input[c][y][x] = pixel * norm[c] - mean[c] * norm[c] in
-  // float, the expression RapidOCR computes on the host.  The upload is a
-  // quarter of the float tensor's and no host pass touches the pixels.
+  // float, the expression RapidOCR computes on the host.  The bytes are a
+  // quarter of the float tensor and no host pass touches the pixels.
   std::vector<HostTensor> run_image(const uint8_t* pixels, int height, int width, const float mean[3],
                                     const float norm[3]);
 
@@ -66,14 +73,29 @@ class GraphModel {
   struct Kernels;
   struct Value;
 
-  struct Image {
-    const uint8_t* pixels;
+  // The launches of one input shape, recorded once into a closed command
+  // list and executed again on every later call of that shape: kernel
+  // arguments and arena addresses are fixed when a launch is appended, so a
+  // repeated shape costs no host work beyond the input and output copies.
+  // How an image call scales its bytes; part of what a plan is recorded for.
+  struct ImageScale {
     float mean[3], norm[3];
+    bool operator==(const ImageScale&) const = default;
   };
-  // `image`, when given, is the input in place of `input`.
-  void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs,
-              const Image* image = nullptr);
-  void execute();
+  struct Plan {
+    std::vector<int64_t> shape;
+    std::optional<ImageScale> image;  // set: the input is bytes, normalized by the plan's first launch
+    ze_command_list_handle_t list = nullptr;
+    std::vector<std::vector<int64_t>> output_shapes;
+    std::vector<size_t> output_floats;  // each output's start in io_out_
+    uint64_t used = 0;
+  };
+
+  Plan& plan_for(const std::vector<int64_t>& shape, const std::optional<ImageScale>& image = std::nullopt);
+  void record(const std::vector<int64_t>& shape, Plan* plan);
+  void drop_plans();
+  // `input` is the plan's floats, or its image's bytes.
+  std::vector<HostTensor> execute(const Plan& plan, const void* input);
   void build_fp16_weights();
   void build_plane_weights();
 
@@ -82,6 +104,7 @@ class GraphModel {
   std::vector<size_t> last_use_;  // per value, the last node index that reads it
   std::unique_ptr<Kernels> kernels_;
   bool fp16_ = false;
+  bool reduce_rows_ = false;
   size_t esize_ = 4;               // bytes per activation element
   float* weights_ = nullptr;       // the IR's weight block, float
   void* weights_real_ = nullptr;   // FP16: the same block as half, index for index
@@ -91,12 +114,14 @@ class GraphModel {
   std::vector<size_t> planes_offsets_;  // per node, halves into planes_, or SIZE_MAX
   char* arena_ = nullptr;
   size_t arena_elements_ = 0;
-  char* io_in_ = nullptr;          // float staging for the input and the outputs
+  char* io_in_ = nullptr;          // float staging for the input and the outputs, host memory
   size_t io_in_floats_ = 0;
   char* io_out_ = nullptr;
   size_t io_out_floats_ = 0;
   ze_command_queue_handle_t queue_ = nullptr;
-  ze_command_list_handle_t list_ = nullptr;
+  ze_command_list_handle_t list_ = nullptr;      // the list record() is appending to
+  std::vector<Plan> plans_;                      // most recently used shapes, at most kPlans
+  uint64_t plan_clock_ = 0;
   ze_fence_handle_t fence_ = nullptr;
   std::mutex mutex_;
   // Profiling: one timestamp event per launch, and the node each belongs to.

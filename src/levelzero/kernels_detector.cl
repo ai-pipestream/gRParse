@@ -106,7 +106,7 @@ __kernel void scale_merge(__global const real* x, __global const real* s, __glob
 CONV_TRANSPOSE2(conv_transpose2_8, 8)
 CONV_TRANSPOSE2(conv_transpose2_1, 1)
 
-// An interleaved 3-channel byte image into the graph's first buffer,
+// A 3-channel byte image, pixel by pixel, into the graph's first buffer,
 // normalized as RapidOCR's substractMeanNormalize does on the host:
 // pixel * norm - mean * norm in float, each product rounded before the
 // subtraction (no contraction), so the FP32 module stores the host's bits.
