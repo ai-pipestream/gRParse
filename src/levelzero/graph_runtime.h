@@ -26,12 +26,18 @@ struct HostTensor {
   std::vector<float> data;
 };
 
+struct GraphOptions {
+  // Activations stored as half and the GEMM-shaped layers run on the matrix
+  // engines (XMX), F32 sums; otherwise everything is float.
+  bool fp16 = false;
+};
+
 class GraphModel {
  public:
   // Lowers the model and uploads its weights to `device`.  Throws naming the
   // cause (an op the lowering does not know, a kernel the driver will not
   // build).
-  GraphModel(Device& device, const std::filesystem::path& model);
+  GraphModel(Device& device, const std::filesystem::path& model, GraphOptions options = {});
   ~GraphModel();
   GraphModel(const GraphModel&) = delete;
   GraphModel& operator=(const GraphModel&) = delete;
@@ -54,14 +60,24 @@ class GraphModel {
 
   void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs);
   void execute();
+  void build_fp16_weights();
 
   Device& device_;
   IrGraph ir_;
   std::vector<size_t> last_use_;  // per value, the last node index that reads it
   std::unique_ptr<Kernels> kernels_;
-  float* weights_ = nullptr;
-  float* arena_ = nullptr;
-  size_t arena_floats_ = 0;
+  bool fp16_ = false;
+  size_t esize_ = 4;               // bytes per activation element
+  float* weights_ = nullptr;       // the IR's weight block, float
+  void* weights_real_ = nullptr;   // FP16: the same block as half, index for index
+  uint16_t* xmx_ = nullptr;        // FP16: GEMM weights laid out for gemm_xmx
+  std::vector<size_t> xmx_offsets_;  // per node, halves into xmx_, or SIZE_MAX
+  char* arena_ = nullptr;
+  size_t arena_elements_ = 0;
+  char* io_in_ = nullptr;          // float staging for the input and the outputs
+  size_t io_in_floats_ = 0;
+  char* io_out_ = nullptr;
+  size_t io_out_floats_ = 0;
   ze_command_queue_handle_t queue_ = nullptr;
   ze_command_list_handle_t list_ = nullptr;
   ze_fence_handle_t fence_ = nullptr;

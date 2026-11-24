@@ -7,8 +7,8 @@
 
 #ifdef GRAPH_FP16
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
-#define RLOAD16(p, at) vload_half16(0, (p) + (at))
-#define RSTORE8(p, at, v) vstore_half8(v, 0, (p) + (at))
+#define RLOAD16(p, at) convert_float16(vload16(0, (p) + (at)))
+#define RSTORE8(p, at, v) vstore8(convert_half8(v), 0, (p) + (at))
 #else
 #define RLOAD16(p, at) vload16(0, (p) + (at))
 #define RSTORE8(p, at, v) vstore8(v, 0, (p) + (at))
@@ -23,30 +23,41 @@
 // a tap in the padding adding zero.
 #define DW_R 8
 
-#define DW_TAPS(KW, SW)                                                                  \
+#define DW_TAPS(KW, SW, SHIFT)                                                           \
   __attribute__((opencl_unroll_hint)) for (int kx = 0; kx < (KW); ++kx) {                \
     const float wk = kernel_row[kx];                                                     \
     __attribute__((opencl_unroll_hint)) for (int r = 0; r < DW_R; ++r)                   \
-        acc[r] = fma(wk, v[r * (SW) + kx], acc[r]);                                      \
+        acc[r] = fma(wk, v[r * (SW) + kx + (SHIFT)], acc[r]);                            \
   }
 
-// A kernel row at stride SW: 16 * SW inputs loaded, masked at the row's
-// edges, then the taps for a kernel 3 or 5 wide.
-#define DW_WIDE(SW)                                                                      \
+// A kernel row at stride SW: 16 * SW inputs loaded from SHIFT before the
+// first tap, masked at the row's edges, then the taps for a kernel 3 or 5
+// wide.
+#define DW_WIDE(SW, SHIFT)                                                               \
   {                                                                                      \
     float v[16 * (SW)];                                                                  \
+    const int from = sx0 - (SHIFT);                                                      \
     __attribute__((opencl_unroll_hint)) for (int l = 0; l < (SW); ++l)                   \
-        vstore16(RLOAD16(in, row + sx0 + 16 * l), 0, v + 16 * l);                        \
-    if (sx0 < 0 || sx0 + 16 * (SW) > p.iw) {                                             \
+        vstore16(RLOAD16(in, row + from + 16 * l), 0, v + 16 * l);                       \
+    if (from < 0 || from + 16 * (SW) > p.iw) {                                           \
       __attribute__((opencl_unroll_hint)) for (int i = 0; i < 16 * (SW); ++i)            \
-          v[i] = (sx0 + i >= 0 && sx0 + i < p.iw) ? v[i] : 0.0f;                         \
+          v[i] = (from + i >= 0 && from + i < p.iw) ? v[i] : 0.0f;                       \
     }                                                                                    \
     if (p.kw == 3) {                                                                     \
-      DW_TAPS(3, SW)                                                                     \
+      DW_TAPS(3, SW, SHIFT)                                                              \
     } else {                                                                             \
-      DW_TAPS(5, SW)                                                                     \
+      DW_TAPS(5, SW, SHIFT)                                                              \
     }                                                                                    \
   }
+
+// Half loads are far slower from an odd element (an address that is not a
+// multiple of four bytes), which is where an odd padding starts a row; the
+// FP16 build loads from the element before it instead.
+#ifdef GRAPH_FP16
+#define DW_ODD(p) ((p).pw & 1)
+#else
+#define DW_ODD(p) 0
+#endif
 
 __kernel void conv_depthwise(__global const real* in, __global real* out, __global const float* w,
                              __global const float* b, conv_t p) {
@@ -60,18 +71,24 @@ __kernel void conv_depthwise(__global const real* in, __global real* out, __glob
   __global const float* kernel_row = w + (size_t)c * p.kh * p.kw;
   const int sx0 = x0 * p.sw - p.pw;
   const bool wide = (p.kw == 3 || p.kw == 5) && (p.sw == 1 || p.sw == 2);
-  const int span = 16 * p.sw;
+  const int span = 16 * p.sw, odd = DW_ODD(p);
   float acc[DW_R];
   __attribute__((opencl_unroll_hint)) for (int r = 0; r < DW_R; ++r) acc[r] = 0.0f;
   for (int ky = 0; ky < p.kh; ++ky, kernel_row += p.kw) {
     const int sy = y * p.sh - p.ph + ky;
     if (sy < 0 || sy >= p.ih) continue;
     const long row = plane + (long)sy * p.iw;
-    if (wide && row + sx0 >= 0 && row + sx0 + span <= total) {
+    if (wide && row + sx0 - odd >= 0 && row + sx0 - odd + span <= total) {
       if (p.sw == 1) {
-        DW_WIDE(1)
+        if (odd) {
+          DW_WIDE(1, 1)
+        } else {
+          DW_WIDE(1, 0)
+        }
+      } else if (odd) {
+        DW_WIDE(2, 1)
       } else {
-        DW_WIDE(2)
+        DW_WIDE(2, 0)
       }
     } else {
       for (int kx = 0; kx < p.kw; ++kx) {
