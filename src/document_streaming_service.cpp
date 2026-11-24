@@ -24,6 +24,7 @@
 
 #include "conversion_outputs.h"
 #include "grparse/call_executor.h"
+#include "grparse/chart_derender.h"
 #include "grparse/collector_cancel.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/confidence.h"
@@ -125,6 +126,25 @@ std::function<pipestream::parse::v1::PageData*(int)> page_in(PageEvents* events)
     return event->message.mutable_page();
   };
 }
+
+// What a leg needs to finish a collector's Document before the reactor
+// sees it, copied off the reactor so the work runs on the leg's thread.
+struct OutcomePrep {
+  std::optional<RepairOptions> repair;
+  // Set when the enrichment leg runs on this stream's collector
+  // Documents (enrichment_deliverable).
+  std::shared_ptr<CollectorEndpoints> enrich;
+  std::chrono::system_clock::time_point deadline;
+};
+
+// What the leg did to the Document it delivers.
+struct PreparedOutcome {
+  // The ref renumbering the repair pass applied.
+  std::map<std::string, std::string> renamed;
+  // The enrichment leg ran on the Document; `warnings` is what it said.
+  bool enriched = false;
+  std::vector<Warning> warnings;
+};
 
 class DocumentStreamReactor final
     : public grpc::ServerBidiReactor<pipestream::parse::v1::DocumentChunk,
@@ -800,14 +820,68 @@ class DocumentStreamReactor final
     }
   }
 
+  OutcomePrep outcome_prep() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    OutcomePrep prep;
+    prep.repair = repair_;
+    if (enrichment_deliverable(true)) prep.enrich = endpoints_;
+    prep.deadline = context_->deadline();
+    return prep;
+  }
+
+  // A collector's Document is complete the moment its leg has it, so the
+  // whole-document steps run on it there, on the leg's thread and outside
+  // every lock, in the order ConvertSource keeps: the repair pass, then the
+  // enrichment leg (a blocking call to another service). Streamed pages
+  // went out before the pass; the renumbering it applies is what lets the
+  // repair event name renamed refs instead of resending every item after a
+  // retired one.
+  //
+  // The same goes for the spelling of held images: a collector that still
+  // writes a base64 data: URI is read here, once, as the unary surface
+  // reads it at the merge, so the stream answers with bytes too.
+  //
+  // The stream has no request options, so the enrichment leg runs the jobs
+  // ConvertSource runs under its default options: the deployment's own
+  // (ChartDerenderOptions as GRPARSE_ENRICH_* configure it), which ask for
+  // no code or formula crop.
+  static PreparedOutcome prepare_outcome(const OutcomePrep& prep,
+                                         const std::weak_ptr<CallbackGate>& weak_gate,
+                                         CollectorOutcome* outcome) {
+    PreparedOutcome prepared;
+    hold_image_bytes(&outcome->document);
+    if (!outcome->success) return prepared;
+    if (prep.repair.has_value()) {
+      const ReferenceRenameLog log;
+      run_repair_pass(&outcome->document, *prep.repair);
+      prepared.renamed = log.renames();
+    }
+    if (prep.enrich != nullptr) {
+      ChartDerenderReport report =
+          derender_charts(prep.enrich->enrich_channel(), prep.enrich->derender(),
+                          &outcome->document, prep.deadline, leg_cancelled(weak_gate));
+      prepared.enriched = true;
+      prepared.warnings = std::move(report.warnings);
+    }
+    return prepared;
+  }
+
   static void deliver(const std::weak_ptr<CallbackGate>& weak_gate,
                       pipestream::parse::v1::Collector id, CollectorOutcome outcome,
                       bool pages_streamed = false, uint64_t duration_ns = 0,
                       std::optional<PdfFormWidgetAnswer> form_widgets = std::nullopt) {
-    with_reactor(weak_gate, [id, &outcome, pages_streamed, duration_ns,
-                             &form_widgets](DocumentStreamReactor& reactor) {
+    PreparedOutcome prepared;
+    if (outcome.success) {
+      std::optional<OutcomePrep> prep;
+      with_reactor(weak_gate,
+                   [&prep](DocumentStreamReactor& reactor) { prep = reactor.outcome_prep(); });
+      if (!prep.has_value()) return;  // the call is gone
+      prepared = prepare_outcome(*prep, weak_gate, &outcome);
+    }
+    with_reactor(weak_gate, [id, &outcome, pages_streamed, duration_ns, &form_widgets,
+                             &prepared](DocumentStreamReactor& reactor) {
       reactor.on_collector_done(id, std::move(outcome), pages_streamed, duration_ns,
-                                std::move(form_widgets));
+                                std::move(form_widgets), std::move(prepared));
     });
   }
 
@@ -818,44 +892,154 @@ class DocumentStreamReactor final
   // repair event. A stream with neither names the step as left out
   // (name_omitted_steps_locked) instead of reading widgets for nobody.
   bool form_widgets_deliverable(bool collector_document) const {
-    if (!pdf_form_widget_backend_configured()) return false;
+    return pdf_form_widget_backend_configured() && post_steps_deliverable(collector_document);
+  }
+
+  // The same question for what the enrichment leg adds (a chart's table on
+  // its picture), with the same answer: the repair event, or a whole
+  // collector Document.
+  bool enrichment_deliverable(bool collector_document) const {
+    return enrichment_configured() && post_steps_deliverable(collector_document);
+  }
+
+  bool post_steps_deliverable(bool collector_document) const {
     if (repair_delta_wanted()) return true;
     return collector_document && !slim_collector_documents_.value_or(false);
   }
 
-  // The widget read of a PDF whose pages the CV pipeline produced: one
-  // blocking call to the PDF backend on a stream worker, cancelled with the
-  // client like every leg's, its answer kept for settle_fold_locked. It
-  // starts when recognition is done, not beside it, the order ConvertSource
-  // keeps: the backend then already holds the document the page source
-  // uploaded, and the read names it by its hash instead of sending the bytes
-  // a second time. It holds the terminal event as one more part. A worker
-  // the full queue refuses is a form nobody read, said on the complete
-  // event; the pages are not failed for it.
-  void start_form_widget_leg_locked() {
+  // The enrichment leg exists on this deployment and has a job to run
+  // under default options: the condition ConvertSource runs it on.
+  bool enrichment_configured() const {
+    return endpoints_ != nullptr && endpoints_->has_derender() &&
+           endpoints_->derender().any_job();
+  }
+
+  // The streamed pages' fold once the whole-document passes ran on it: the
+  // terminal event's heading levels, the list grouping for CV pages, the
+  // repair pass, and the renumbering those applied.
+  struct PreparedFold {
+    pipestream::document::v1::Document after;
+    std::map<std::string, std::string> renamed;
+  };
+
+  // What the CV pages' post leg brings back.
+  struct CvPostAnswer {
+    // The fold the enrichment leg ran on, and what the leg said; absent
+    // when the leg was not asked for it.
+    std::optional<PreparedFold> fold;
+    std::vector<Warning> enrichment_warnings;
+    // The PDF backend's answer for the AcroForm widgets; absent when the
+    // leg was not asked for them.
+    std::optional<PdfFormWidgetAnswer> form_widgets;
+  };
+
+  // The heading levels the terminal event ships, clustered once from every
+  // CV page's header heights. The post leg needs them as soon as the pages
+  // are recognized, the complete event when the last part lands.
+  const std::map<std::string, int32_t>& levels_locked() {
+    if (!levels_.has_value()) {
+      levels_.emplace();
+      if (!header_heights_.empty()) *levels_ = section_header_levels(std::move(header_heights_));
+    }
+    return *levels_;
+  }
+
+  // The whole-document passes on the streamed pages' fold, as the unary
+  // path runs them on the CV Document: the heading levels, the list
+  // grouping for CV pages, the repair pass. Throws what the passes throw.
+  PreparedFold prepare_fold_locked() {
+    PreparedFold fold;
+    fold.after = stream_fold_.document();
+    apply_section_header_levels(levels_locked(), &fold.after);
+    const ReferenceRenameLog log;
+    if (fold_has_cv_) group_list_items(&fold.after);
+    if (repair_.has_value()) {
+      // The CV pages' pass counts toward the server's repair totals as
+      // the unary path's does; inspector pages already counted with
+      // their collector's Document.
+      if (fold_has_cv_) {
+        run_repair_pass(&fold.after, *repair_);
+      } else {
+        repair_document(&fold.after, *repair_);
+      }
+    }
+    fold.renamed = log.renames();
+    return fold;
+  }
+
+  // The steps ConvertSource runs on the finished CV Document that call
+  // another service: the enrichment leg over the repaired pages, and the
+  // AcroForm widget read of a PDF. Both run on one stream worker, off the
+  // reactor, cancelled with the client like every leg's; the leg holds the
+  // terminal event as one more part and its answer waits for
+  // settle_fold_locked, which folds it in and computes the repair event.
+  //
+  // It starts when recognition is done, not beside it. The enrichment leg
+  // reads the repaired document, which needs every page. The widget read
+  // then finds the document the page source uploaded already held by the
+  // backend, and names it by its hash instead of sending the bytes a
+  // second time.
+  //
+  // A worker the full queue refuses is a step that ran and failed, said on
+  // the complete event in each step's own words; the pages are not failed
+  // for it.
+  void start_cv_post_leg_locked() {
     std::shared_ptr<const std::string> bytes = std::move(form_widget_bytes_);
     form_widget_bytes_.reset();
-    if (bytes == nullptr) return;
+    std::shared_ptr<PreparedFold> fold;
+    if (enrichment_configured()) {
+      if (enrichment_deliverable(false) && !stream_fold_.empty() && !fold_settled_) {
+        try {
+          fold = std::make_shared<PreparedFold>(prepare_fold_locked());
+        } catch (const std::exception&) {
+          // settle_fold_locked runs the same passes when the last part
+          // lands, meets the same failure and says it there; the
+          // enrichment leg has no document to read.
+          fold.reset();
+        }
+      }
+      // No repair event to carry what the leg adds to these pages (the
+      // client turned it off, so the stream kept no fold of them), or no
+      // repaired document to read: the step is named as left out.
+      if (fold == nullptr) enrichment_left_out_ = true;
+    }
+    if (bytes == nullptr && fold == nullptr) return;
     const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
     const std::chrono::system_clock::time_point deadline = context_->deadline();
     std::string refused;
     try {
-      const bool queued = executor_.submit([weak_gate, bytes = std::move(bytes), deadline] {
-        PdfFormWidgetAnswer answer;
-        try {
-          answer = fetch_pdf_form_widgets_from_backend(*bytes, deadline, {},
-                                                       leg_cancelled(weak_gate));
-        } catch (const std::exception& error) {
-          // The part this leg holds is settled whatever happened in it.
-          answer = PdfFormWidgetAnswer{};
-          answer.warnings.emplace_back(
-              pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
-              std::string("AcroForm widgets not read: ") + error.what());
-        }
-        with_reactor(weak_gate, [&answer](DocumentStreamReactor& reactor) {
-          reactor.on_form_widgets(std::move(answer));
-        });
-      });
+      const bool queued =
+          executor_.submit([weak_gate, bytes, fold, endpoints = endpoints_, deadline] {
+            // The part this leg holds is settled whatever happens in it:
+            // a step that throws is a step that failed, said in its words.
+            CvPostAnswer answer;
+            if (fold != nullptr) {
+              try {
+                ChartDerenderReport report =
+                    derender_charts(endpoints->enrich_channel(), endpoints->derender(),
+                                    &fold->after, deadline, leg_cancelled(weak_gate));
+                answer.enrichment_warnings = std::move(report.warnings);
+              } catch (const std::exception& error) {
+                answer.enrichment_warnings.emplace_back(
+                    std::string("document enrich: not run: ") + error.what());
+              }
+              answer.fold = std::move(*fold);
+            }
+            if (bytes != nullptr) {
+              try {
+                answer.form_widgets = fetch_pdf_form_widgets_from_backend(
+                    *bytes, deadline, {}, leg_cancelled(weak_gate));
+              } catch (const std::exception& error) {
+                answer.form_widgets.emplace();
+                answer.form_widgets->warnings.emplace_back(
+                    pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+                    std::string("AcroForm widgets not read: ") + error.what());
+              }
+            }
+            with_reactor(weak_gate, [&answer](DocumentStreamReactor& reactor) {
+              reactor.on_cv_post_done(std::move(answer));
+            });
+          });
       if (queued) {
         // The leg reports through the lock held here, so the part is
         // counted before it can be settled.
@@ -866,15 +1050,36 @@ class DocumentStreamReactor final
     } catch (const std::exception& error) {
       refused = error.what();
     }
-    PdfFormWidgetAnswer unread;
-    unread.warnings.emplace_back(pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
-                                 "AcroForm widgets not read: " + refused);
-    form_widgets_ = std::move(unread);
+    keep_cv_post_locked(unrun_cv_post(bytes != nullptr, fold, refused));
   }
 
-  void on_form_widgets(PdfFormWidgetAnswer answer) {
+  // The answer of a post leg that could not run: each step it was asked for
+  // is stated as failed, and the prepared fold comes back as it went.
+  static CvPostAnswer unrun_cv_post(bool widgets, const std::shared_ptr<PreparedFold>& fold,
+                                    const std::string& why) {
+    CvPostAnswer answer;
+    if (fold != nullptr) {
+      answer.fold = std::move(*fold);
+      answer.enrichment_warnings.emplace_back("document enrich: not run: " + why);
+    }
+    if (widgets) {
+      answer.form_widgets.emplace();
+      answer.form_widgets->warnings.emplace_back(
+          pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "AcroForm widgets not read: " + why);
+    }
+    return answer;
+  }
+
+  void keep_cv_post_locked(CvPostAnswer answer) {
+    prepared_fold_ = std::move(answer.fold);
+    fold_enrichment_warnings_ = std::move(answer.enrichment_warnings);
+    form_widgets_ = std::move(answer.form_widgets);
+  }
+
+  void on_cv_post_done(CvPostAnswer answer) {
     std::lock_guard<std::mutex> lock(mutex_);
-    form_widgets_ = std::move(answer);
+    keep_cv_post_locked(std::move(answer));
     part_done_locked();
     pump_locked();
   }
@@ -888,6 +1093,14 @@ class DocumentStreamReactor final
       if (std::ranges::find(assembly_warnings_, warning) != assembly_warnings_.end()) continue;
       assembly_warnings_.push_back(std::move(warning));
     }
+  }
+
+  // The enrichment leg ran on one of the stream's documents. What it could
+  // not add it said, item by item where it knows the item, and that joins
+  // the complete event's warnings, the CV collector's on the unary
+  // Document.
+  void take_enrichment_warnings_locked(std::vector<Warning> warnings) {
+    std::ranges::move(warnings, std::back_inserter(assembly_warnings_));
   }
 
   // Queues one leg on the stream pool. A throw inside the leg (an
@@ -1389,7 +1602,7 @@ class DocumentStreamReactor final
     record_collector_done_cv_locked(status);
     if (status.ok()) {
       ++succeeded_parts_;
-      start_form_widget_leg_locked();
+      start_cv_post_leg_locked();
     } else {
       record_part_failure_locked(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, status);
     }
@@ -1406,28 +1619,15 @@ class DocumentStreamReactor final
   // asked (run_pdf_route).
   void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome,
                          bool pages_streamed = false, uint64_t duration_ns = 0,
-                         std::optional<PdfFormWidgetAnswer> form_widgets = std::nullopt) {
+                         std::optional<PdfFormWidgetAnswer> form_widgets = std::nullopt,
+                         PreparedOutcome prepared = {}) {
     record_collector_call(collector,
                           collector_call_status_for(outcome.success, outcome.code),
                           duration_ns, outcome.warnings.size());
-    // A collector's Document is complete the moment it lands here, and this
-    // is where it is projected and emitted, so the repair pass runs on it
-    // first, on the caller's thread and outside the reactor lock: it is
-    // straight-line work on the outcome alone.
-    // Streamed pages went out before the pass; the renumbering it applies
-    // is what lets the repair event name renamed refs instead of resending
-    // every item after a retired one.
-    //
-    // The same goes for the spelling of held images: a collector that still
-    // writes a base64 data: URI is read here, once, as the unary surface
-    // reads it at the merge, so the stream answers with bytes too.
-    hold_image_bytes(&outcome.document);
-    std::map<std::string, std::string> renamed;
-    if (outcome.success && repair_.has_value()) {
-      const ReferenceRenameLog log;
-      run_repair_pass(&outcome.document, *repair_);
-      renamed = log.renames();
-    }
+    // A successful outcome arrives prepared (prepare_outcome, on the leg's
+    // thread): repaired, enriched where the stream runs that leg, its held
+    // images as bytes.
+    const std::map<std::string, std::string>& renamed = prepared.renamed;
     // The widgets join the repaired body, the order ConvertSource keeps,
     // and before the structural rules read the Document, as there. The
     // Document then carries the form subtree whole, and the repair event
@@ -1447,6 +1647,15 @@ class DocumentStreamReactor final
       // stream, the way the unary surfaces fail the request.
       request_finish_locked(structure_status);
       return;
+    }
+    if (outcome.success) {
+      // The order the unary Document's warnings keep: enrichment, then the
+      // widgets.
+      if (prepared.enriched) {
+        take_enrichment_warnings_locked(std::move(prepared.warnings));
+      } else if (enrichment_configured()) {
+        enrichment_left_out_ = true;
+      }
     }
     if (widgets_folded) take_form_widget_warnings_locked(std::move(form_widgets->warnings));
     if (outcome.success) {
@@ -1563,8 +1772,7 @@ class DocumentStreamReactor final
                                 : first_failure_status_);
       return;
     }
-    std::map<std::string, int32_t> levels;
-    if (!header_heights_.empty()) levels = section_header_levels(std::move(header_heights_));
+    const std::map<std::string, int32_t> levels = levels_locked();
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding> findings;
     const grpc::Status fold_status = settle_fold_locked(levels, &findings);
     if (!fold_status.ok()) {
@@ -1612,23 +1820,23 @@ class DocumentStreamReactor final
   }
 
   // The unary path ends with two steps over the whole document, each a
-  // call to another service. The AcroForm widgets of a PDF the stream reads
-  // too and delivers on the repair event or in the PDF collector's own
-  // Document; the step is named here when this stream did not run it (no
-  // event could carry the field items, form_widgets_deliverable, or the
-  // pages came from neither the PDF collector nor the CV pipeline). The
-  // enrichment leg (a call to another service over the whole document,
-  // made after the pages are already on the wire) the stream does not run.
-  // Each is named exactly when ConvertSource with default options would
-  // have run it for this document on this deployment and this stream did
-  // not, so the complete event never lets a stream pass for the unary
-  // result where it is not.
+  // call to another service, and the stream runs both: the AcroForm widgets
+  // of a PDF, delivered on the repair event or in the PDF collector's own
+  // Document, and the enrichment leg, run on every collector Document
+  // before it is delivered and on the CV pages' fold before its repair
+  // event. A step is named here when this stream did not run it on a
+  // document it delivered: no event could carry what the step adds
+  // (post_steps_deliverable), or, for the widgets, the pages came from
+  // neither the PDF collector nor the CV pipeline. Each is named only when
+  // ConvertSource with default options would have run it for this document
+  // on this deployment, so the complete event never lets a stream pass for
+  // the unary result where it is not. A step that ran and failed is not
+  // named: its warning on the complete event says what it could not add.
   void name_omitted_steps_locked(pipestream::parse::v1::DocumentComplete* complete) const {
     if (pdf_ && pdf_form_widget_backend_configured() && !form_widgets_ran_) {
       complete->add_omitted_steps(pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS);
     }
-    if (endpoints_ != nullptr && endpoints_->has_derender() &&
-        endpoints_->derender().any_job()) {
+    if (enrichment_configured() && enrichment_left_out_) {
       complete->add_omitted_steps(pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT);
     }
   }
@@ -1657,22 +1865,25 @@ class DocumentStreamReactor final
     pipestream::document::v1::Document after;
     std::map<std::string, std::string> renamed;
     try {
-      after = stream_fold_.document();
-      apply_section_header_levels(levels, &after);
-      if (repair_delta_wanted()) before = after;
-      const ReferenceRenameLog log;
-      if (fold_has_cv_) group_list_items(&after);
-      if (repair_.has_value()) {
-        // The CV pages' pass counts toward the server's repair totals as
-        // the unary path's does; inspector pages already counted with
-        // their collector's Document.
-        if (fold_has_cv_) {
-          run_repair_pass(&after, *repair_);
-        } else {
-          repair_document(&after, *repair_);
-        }
+      if (repair_delta_wanted()) {
+        before = stream_fold_.document();
+        apply_section_header_levels(levels, &before);
       }
-      renamed = log.renames();
+      if (prepared_fold_.has_value()) {
+        // The post leg ran the passes when the pages were recognized, and
+        // the enrichment leg on their result.
+        after = std::move(prepared_fold_->after);
+        renamed = std::move(prepared_fold_->renamed);
+        prepared_fold_.reset();
+        take_enrichment_warnings_locked(std::move(fold_enrichment_warnings_));
+      } else {
+        PreparedFold fold = prepare_fold_locked();
+        after = std::move(fold.after);
+        renamed = std::move(fold.renamed);
+        // These pages never met the enrichment leg: no repair event to
+        // carry what it adds, or pages the CV pipeline did not finish.
+        if (enrichment_configured()) enrichment_left_out_ = true;
+      }
       // The AcroForm widgets join the repaired body, the order ConvertSource
       // keeps; the delta below carries them as the form subtree. Only a
       // client that takes the repair event had them read
@@ -1915,6 +2126,16 @@ class DocumentStreamReactor final
   std::shared_ptr<const std::string> form_widget_bytes_;
   bool form_widgets_ran_ = false;
   std::optional<PdfFormWidgetAnswer> form_widgets_;
+  // The enrichment leg. A document of this stream went out without it (a
+  // collector Document or the streamed pages' fold that no event could
+  // deliver its additions for): the complete event names the step. The
+  // fold the CV pages' post leg prepared and enriched, and what the leg
+  // said, wait here for settle_fold_locked.
+  bool enrichment_left_out_ = false;
+  std::optional<PreparedFold> prepared_fold_;
+  std::vector<Warning> fold_enrichment_warnings_;
+  // section_header_levels of the CV pages, computed once (levels_locked).
+  std::optional<std::map<std::string, int32_t>> levels_;
   // What the routed CV pages take from the inspector's read (see
   // note_cv_route), held for the complete event.
   std::vector<Warning> route_warnings_;
