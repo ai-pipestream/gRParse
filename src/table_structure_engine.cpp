@@ -143,7 +143,9 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    const bool split = native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda;
+    const OrtEp ep = ort_ep_selection().ep;
+    const bool split = (native_tensorrt_build() && ep == OrtEp::kCuda) ||
+                       (native_openvino_build() && ep == OrtEp::kOpenVino);
     const std::string characters =
         split ? load_split_model(model_path) : load_released_model(model_path);
     std::istringstream lines(characters);
@@ -161,13 +163,17 @@ class TableStructureEngine::Impl {
     vocab_.push_back("eos");
   }
 
-  // Native TensorRT cannot import the released model: its decoder is one
-  // ONNX Loop whose carried tensors grow each step.  The same network runs
-  // as two static graphs instead (scripts/split_slanet.py): the encoder once
-  // per crop, the decoder one fixed-shape step per token, driven by
-  // decode_split.  A missing file fails startup, naming the script; the
-  // released model is never run on ONNX Runtime in its place.  Returns the
-  // token vocabulary, one token per line.
+  // Neither native TensorRT nor OpenVINO can import the released model: its
+  // decoder is one ONNX Loop whose carried tensors grow each step (TensorRT's
+  // parser and OpenVINO's ONNX frontend both reject it).  The same network
+  // runs as two static graphs instead (scripts/split_slanet.py): the encoder
+  // once per crop, the decoder one fixed-shape step per token, driven by
+  // decode_split.  On OpenVINO both compile at FP32: at the GPU plugin's
+  // default FP16 the decoder picks a different token on some tables, while
+  // at FP32 every acm-table crop decodes to the CPU path's tokens.  A missing
+  // file fails startup, naming the script; the released model is never run
+  // on ONNX Runtime in its place.  Returns the token vocabulary, one token
+  // per line.
   std::string load_split_model(const std::filesystem::path& model_path) {
     const auto directory = model_path.parent_path();
     const auto encoder_path = directory / "slanet_plus_encoder.onnx";
@@ -178,28 +184,21 @@ class TableStructureEngine::Impl {
       throw std::runtime_error("Table structure file is missing: " + derived.string() +
                                " (scripts/fetch-models.sh derives it from slanet_plus.onnx)");
     }
-    encoder_ = make_inference_model(ModelSpec{encoder_path, "table structure encoder",
-                                              OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
-    step_ = make_inference_model(ModelSpec{step_path, "table structure decoder",
-                                           OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+    const auto build = ort_ep_selection().ep == OrtEp::kOpenVino ? make_openvino_model
+                                                                   : make_inference_model;
+    encoder_ = build(ModelSpec{encoder_path, "table structure encoder", OrtPrecision::kFloat32,
+                               kIntraOpProcessDefault, {}});
+    step_ = build(ModelSpec{step_path, "table structure decoder", OrtPrecision::kFloat32,
+                            kIntraOpProcessDefault, {}});
     std::ifstream vocab_file(vocab_path);
     return std::string(std::istreambuf_iterator<char>(vocab_file), std::istreambuf_iterator<char>());
   }
 
-  // ONNX Runtime: the same provider decision point as the other models, with
-  // #355's declared exception: on ONNX Runtime's OpenVINO provider this model
-  // is pinned to CPU in the open, since its dynamic-rank Loop does not
-  // compile on the GPU plugin.  Returns the token vocabulary, which rides in
-  // the model metadata, one token per line, exactly as the reference reads
-  // it.
+  // ONNX Runtime: the same provider decision point as the other models.
+  // Returns the token vocabulary, which rides in the model metadata, one
+  // token per line, exactly as the reference reads it.
   std::string load_released_model(const std::filesystem::path& model_path) {
-    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-      session_ = make_pinned_cpu_session(
-          env_, model_path, "table structure",
-          "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
-    } else {
-      session_ = make_session(env_, model_path, "table structure");
-    }
+    session_ = make_session(env_, model_path, "table structure");
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();
     if (session_.GetOutputCount() != 2) {

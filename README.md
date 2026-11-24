@@ -1297,14 +1297,17 @@ from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 `GRPARSE_RUNTIME_IMAGE` build arg ("Runtime image" above says why).
 
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
-layout, and figure classification all compile and run on the GPU plugin.
-One model does not: `slanet_plus.onnx` uses a dynamic-rank `While`/`Loop`
-the OpenVINO plugin rejects on every device. Under OpenVINO the table
-session is therefore pinned to CPU in code (`make_pinned_cpu_session`, with
-its reason), not retried and not counted as a refusal; the pin is visible as
-`pin="..."` on its `grparse_ort_sessions` series and in its startup placement
-line. `GRPARSE_TABLE_STRUCTURE=off` remains available for anyone who would
-rather not pay for it on CPU at all.
+layout, table structure and figure classification all compile and run on
+the GPU plugin. Table structure runs on native OpenVINO rather than the ONNX
+Runtime provider: `slanet_plus.onnx` decodes inside one ONNX `Loop` whose
+carried tensors grow each step, which OpenVINO's ONNX frontend cannot read,
+so the server runs the same split graphs as TensorRT
+(`slanet_plus_encoder.onnx`, `slanet_plus_step.onnx`, see "Table structure"
+above), read and compiled by OpenVINO itself through its C API
+(`src/openvino/openvino_model.cpp`) at FP32. Its placement series are
+`model="table structure encoder"` and `model="table structure decoder"`
+with `actual="OpenVINO"`; a compile the plugin refuses fails startup and is
+counted like any other refusal.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `NPU`, `NPU.<n>`
