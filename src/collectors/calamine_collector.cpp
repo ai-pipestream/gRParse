@@ -18,6 +18,7 @@
 #include <format>
 #include <limits>
 #include <map>
+#include <set>
 #include <string>
 #include <utility>
 #include <vector>
@@ -545,8 +546,14 @@ CollectorOutcome collect_via_handle(calaminev1::CalamineService::Stub* stub,
       return outcome;
     }
     // Sheets already folded survive a later sheet's failure: a partially
-    // read workbook is a partial success, not a failed parse.
-    outcome.warnings.push_back("sheet " + sheet.name() + " failed: " + why);
+    // read workbook is a partial success, not a failed parse. The read stops
+    // here, so this sheet and every sheet after it are named as not read to
+    // the end: what the fold holds of them is a part, or nothing.
+    outcome.warnings.push_back(Warning(docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+                                       "sheet " + sheet.name() + " failed: " + why));
+    for (int unread = sheet_index - 1; unread < opened.metadata().sheets_size(); ++unread) {
+      outcome.incomplete_sheets.push_back({opened.metadata().sheets(unread).name(), why});
+    }
     break;
   }
 
@@ -594,6 +601,8 @@ CollectorOutcome collect_via_parse_workbook(calaminev1::CalamineService::Stub* s
   std::string protocol_detail;
   int current = -1;
   bool current_failed = false;
+  // The sheets whose range part has started, by index.
+  std::set<int> begun;
   int sheets_failed = 0;
   std::string first_failure;
   calaminev1::ParseWorkbookResponse event;
@@ -618,6 +627,7 @@ CollectorOutcome collect_via_parse_workbook(calaminev1::CalamineService::Stub* s
           if (current >= 0) end_sheet(fold, sheets[current].name(), outcome.warnings);
           current = static_cast<int>(index);
           current_failed = false;
+          begun.insert(current);
           fold.begin_sheet(current, sheets[current]);
         }
         // A terminal error ends this sheet's part only; the server moves on
@@ -633,6 +643,7 @@ CollectorOutcome collect_via_parse_workbook(calaminev1::CalamineService::Stub* s
           }
           outcome.warnings.push_back("sheet " + sheets[current].name()
                                      + " failed: " + error);
+          outcome.incomplete_sheets.push_back({sheets[current].name(), error});
         }
         break;
       }
@@ -689,9 +700,20 @@ CollectorOutcome collect_via_parse_workbook(calaminev1::CalamineService::Stub* s
     }
     // Sheets already folded survive a later failure: a partially read
     // workbook is a partial success, not a failed parse.
-    outcome.warnings.push_back("calamine stream failed after "
-                               + std::to_string(fold.sheets_folded())
-                               + " sheet(s): " + why);
+    outcome.warnings.push_back(Warning(docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+                                       "calamine stream failed after "
+                                           + std::to_string(fold.sheets_folded())
+                                           + " sheet(s): " + why));
+    // Nothing ends a sheet's part but the next sheet's first event or the
+    // done event, so the sheet the stream stopped in cannot be told from a
+    // whole one by its cells, and a sheet whose part never started was not
+    // read at all. Neither is a reading of the sheet to its end.
+    for (int index = 0; index < static_cast<int>(sheets.size()); ++index) {
+      const bool stopped_inside = index == current && !current_failed;
+      if (stopped_inside || !begun.contains(index)) {
+        outcome.incomplete_sheets.push_back({sheets[index].name(), why});
+      }
+    }
   }
   outcome.success = true;
   return outcome;

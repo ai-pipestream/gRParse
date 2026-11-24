@@ -860,7 +860,11 @@ source) and libreoffice's merged areas where calamine reads none (ODS,
 XLSB), and the header band is marked again over them. The values and text
 are calamine's because it reads what the file stores, where libreoffice's
 import re-parses text cells (a reference such as `1-31-16` becomes a
-date) and shows numbers in their display format. An explicit
+date) and shows numbers in their display format. Only a sheet calamine read
+to its end is adopted: when a sheet's read fails or the calamine stream ends
+early, that sheet and every sheet not yet read keep libreoffice's cells, and
+each one raises a `WARNING_CODE_SHEET_CELLS_NOT_ADOPTED` warning whose
+`item_ref` is the sheet's table. An explicit
 collector selection stays verbatim, readings and all, and a fan-out leg
 whose primary failed keeps its full reading, which is what keeps a workbook
 parsing when libreoffice fails on it (a partial success with the

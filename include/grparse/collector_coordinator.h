@@ -13,6 +13,7 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/collector_cancel.h"
 #include "grparse/warning.h"
+#include "grparse/workbook_cells.h"
 
 namespace grparse {
 
@@ -72,6 +73,12 @@ struct CollectorOutcome {
   std::vector<Warning> warnings;
   ai::pipestream::document::v1::Document document;
   CollectorProtocol protocol = CollectorProtocol::kCurrent;
+  // The sheets of a workbook this leg did not read to the end (the calamine
+  // leg, when a sheet's read fails or its stream ends early). The leg is
+  // still a success and `document` holds what arrived, but a sheet listed
+  // here is a part: the coordinator never lets it replace another reader's
+  // whole sheet (workbook_cells.h).
+  std::vector<IncompleteSheet> incomplete_sheets;
 };
 
 // One collector planned into a parse: its wire identity and the callable

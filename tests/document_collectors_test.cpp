@@ -3045,6 +3045,8 @@ void verify_calamine_folds_sheets() {
           "every chunk of the upload reaches the stream");
   require(service.closed() == 0, "the stream leaves no handle to close");
   require(outcome.warnings.empty(), "declared headers produce no inference warning");
+  require(outcome.incomplete_sheets.empty(),
+          "a stream read to its done event leaves no sheet short");
   require_calamine_fold(outcome);
 }
 
@@ -3060,6 +3062,8 @@ void verify_calamine_falls_back_to_handles_on_unimplemented() {
               && outcome.warnings[0].message.contains("handle path"),
           "the fallback is announced as a warning, never silent");
   require(service.closed() == 1, "the workbook handle is closed on success");
+  require(outcome.incomplete_sheets.empty(),
+          "every sheet's stream ended OK, so none is short");
   require_calamine_fold(outcome);
 }
 
@@ -3070,6 +3074,7 @@ enum class CalamineScript {
   kNoDoneAfterCells,   // one cell, then the stream ends without done
   kNoDoneNoCells,      // metadata, then the stream ends without done
   kExhausted,          // metadata, then RESOURCE_EXHAUSTED
+  kDiesInSecondSheet,  // three sheets: one whole, one cell of the second, UNAVAILABLE
 };
 
 class ScriptedParseWorkbookService final : public calaminev1::CalamineService::Service {
@@ -3083,13 +3088,15 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
     calaminev1::ParseWorkbookRequest frame;
     while (stream->Read(&frame)) {
     }
-    const bool two = script_ == CalamineScript::kFirstSheetFails;
+    const int sheet_count = script_ == CalamineScript::kDiesInSecondSheet ? 3
+                            : script_ == CalamineScript::kFirstSheetFails ? 2
+                            : 1;
     calaminev1::ParseWorkbookResponse event;
-    for (const char* name : {"Alpha", "Beta"}) {
+    for (const char* name : {"Alpha", "Beta", "Gamma"}) {
+      if (event.metadata().metadata().sheets_size() == sheet_count) break;
       calaminev1::Sheet* sheet = event.mutable_metadata()->mutable_metadata()->add_sheets();
       sheet->set_name(name);
       sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
-      if (!two) break;
     }
     stream->Write(event);
     auto range = [&](uint32_t index, auto fill) {
@@ -3122,6 +3129,10 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
         return grpc::Status::OK;
       case CalamineScript::kExhausted:
         return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "dense-cell budget");
+      case CalamineScript::kDiesInSecondSheet:
+        range(0, one_cell);
+        range(1, one_cell);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "worker died");
     }
     event.Clear();
     event.mutable_done();
@@ -3150,6 +3161,14 @@ bool has_calamine_warning(const grparse::CollectorOutcome& outcome, const std::s
   return false;
 }
 
+// The names of the sheets the leg says it did not read to the end, in the
+// order it lists them.
+std::vector<std::string> incomplete_sheet_names(const grparse::CollectorOutcome& outcome) {
+  std::vector<std::string> names;
+  for (const auto& sheet : outcome.incomplete_sheets) names.push_back(sheet.name);
+  return names;
+}
+
 grparse::CollectorOutcome run_calamine_script(CalamineScript script, int* handle_calls) {
   ScriptedParseWorkbookService service(script);
   ServerFixture server(&service);
@@ -3166,6 +3185,9 @@ void verify_calamine_stream_failures() {
           "a sheet after a failed one still folds: " + outcome.error);
   require(has_calamine_warning(outcome, "Alpha failed: cell table corrupt"),
           "the failed sheet is a warning naming it");
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Alpha"} &&
+              outcome.incomplete_sheets[0].reason == "cell table corrupt",
+          "the failed sheet, and only it, is named as not read to the end");
 
   outcome = run_calamine_script(CalamineScript::kOnlySheetFails, &handle_calls);
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT
@@ -3175,6 +3197,13 @@ void verify_calamine_stream_failures() {
   outcome = run_calamine_script(CalamineScript::kNoDoneAfterCells, &handle_calls);
   require(outcome.success && has_calamine_warning(outcome, "without its done event"),
           "a stream cut short after cells is a partial success with a warning");
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Alpha"},
+          "the sheet the stream stopped in is named as not read to the end");
+  for (const auto& warning : outcome.warnings) {
+    require(!warning.message.contains("without its done event") ||
+                warning.code == docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+            "the cut-short stream states its code");
+  }
 
   outcome = run_calamine_script(CalamineScript::kNoDoneNoCells, &handle_calls);
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
@@ -3381,6 +3410,190 @@ void verify_calamine_fanout_keeps_its_body_when_the_primary_failed() {
   require(result.document.groups_size() == 2 && result.document.tables_size() == 2 &&
               result.document.named_ranges_size() == 1,
           "with no primary body, the calamine reading is the document");
+}
+
+// The routed libreoffice primary's reading of a workbook: one sheet group
+// per name, each holding a table of two rows it read in full.
+grparse::CollectorOutcome office_workbook_outcome(const std::vector<std::string>& sheets) {
+  grparse::CollectorOutcome outcome;
+  outcome.success = true;
+  docv1::Document& document = outcome.document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  for (const std::string& name : sheets) {
+    docv1::GroupItem* group = document.add_groups();
+    group->set_self_ref("#/groups/" + std::to_string(document.groups_size() - 1));
+    group->mutable_parent()->set_ref("#/body");
+    group->set_name(name);
+    group->set_label(docv1::GROUP_LABEL_SHEET);
+    document.mutable_body()->add_children()->set_ref(group->self_ref());
+    docv1::TableItem* table = document.add_tables();
+    table->set_self_ref("#/tables/" + std::to_string(document.tables_size() - 1));
+    table->mutable_parent()->set_ref(group->self_ref());
+    table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    table->add_source()->mutable_collector()->set_collector("libreoffice");
+    group->add_children()->set_ref(table->self_ref());
+    for (int row = 0; row < 2; ++row) {
+      docv1::TableCell* cell = table->mutable_data()->add_table_cells();
+      cell->set_start_row_offset_idx(row);
+      cell->set_end_row_offset_idx(row + 1);
+      cell->set_start_col_offset_idx(0);
+      cell->set_end_col_offset_idx(1);
+      cell->set_row_span(1);
+      cell->set_col_span(1);
+      cell->set_text("libreoffice " + name + " row " + std::to_string(row));
+    }
+    table->mutable_data()->set_num_rows(2);
+    table->mutable_data()->set_num_cols(1);
+  }
+  return outcome;
+}
+
+// Runs the routed workbook plan: the libreoffice reading of `sheets`, then
+// `calamine` as the fan-out leg beside it.
+grparse::CoordinatorResult run_workbook_plan(const std::vector<std::string>& sheets,
+                                             grparse::CollectorOutcome calamine) {
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE,
+                  [sheets] { return office_workbook_outcome(sheets); }});
+  grparse::PlannedCollector leg;
+  leg.id = parsev1::COLLECTOR_CALAMINE;
+  leg.office_fanout = true;
+  leg.run = [calamine = std::move(calamine)] { return calamine; };
+  plan.push_back(std::move(leg));
+  return grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+}
+
+// The sheet table at `index` still holds the two rows libreoffice read, the
+// table names libreoffice alone as its reader, and the caller is told so by
+// code: a calamine warning that names the table and says its cells were
+// not adopted.
+void require_libreoffice_cells_stand(const grparse::CoordinatorResult& result, int index,
+                                     const std::string& sheet) {
+  const docv1::TableItem& table = result.document.tables(index);
+  require(table.data().table_cells_size() == 2 &&
+              table.data().table_cells(0).text() == "libreoffice " + sheet + " row 0" &&
+              table.data().table_cells(1).text() == "libreoffice " + sheet + " row 1",
+          "sheet " + sheet + " keeps the cells libreoffice read in full, found " +
+              std::to_string(table.data().table_cells_size()) + " cell(s)");
+  require(table.source_size() == 1 && table.source(0).collector().collector() == "libreoffice",
+          "sheet " + sheet + " names libreoffice alone as the reader of its cells");
+  bool told = false;
+  for (const auto& [collector, warning] : result.warnings) {
+    if (collector == parsev1::COLLECTOR_CALAMINE &&
+        warning.code == docv1::WARNING_CODE_SHEET_CELLS_NOT_ADOPTED &&
+        warning.item_ref == table.self_ref()) {
+      require(warning.message.contains("'" + sheet + "'"), "the words name the sheet too");
+      told = true;
+    }
+  }
+  require(told, "sheet " + sheet + " has a SHEET_CELLS_NOT_ADOPTED warning on " +
+                    table.self_ref());
+}
+
+// The sheet table at `index` took calamine's one cell, and nothing says its
+// cells were held back.
+void require_calamine_cells_adopted(const grparse::CoordinatorResult& result, int index,
+                                    const std::string& sheet) {
+  const docv1::TableItem& table = result.document.tables(index);
+  require(table.data().table_cells_size() == 1 && table.data().table_cells(0).text() == "42" &&
+              table.source(0).collector().collector() == "calamine",
+          "sheet " + sheet + ", read to its end, takes calamine's cells");
+  for (const auto& [collector, warning] : result.warnings) {
+    require(warning.item_ref != table.self_ref(),
+            "no warning is about sheet " + sheet + ": " + warning.message);
+  }
+}
+
+// A calamine leg that reads a workbook only in part is still a successful
+// leg, but a sheet it did not read to the end is not the sheet: libreoffice
+// read every cell of it, and those cells must stand. Swapping them for the
+// part calamine got through loses cells behind an OK status.
+void verify_calamine_partial_read_keeps_libreoffice_cells() {
+  int handle_calls = 0;
+  // The stream dies inside the second of three sheets. Nothing marks the
+  // end of a sheet's part but the next sheet's first event or the done
+  // event, so the second sheet cannot be told from a complete one by its
+  // cells; the third never started.
+  auto outcome = run_calamine_script(CalamineScript::kDiesInSecondSheet, &handle_calls);
+  require(outcome.success, "a stream cut short after cells is a partial success: " +
+                               outcome.error);
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Beta", "Gamma"},
+          "the sheet the stream stopped in and the one never begun are named");
+  auto result = run_workbook_plan({"Alpha", "Beta", "Gamma"}, std::move(outcome));
+  require(result.succeeded == 2 && result.document.tables_size() == 3,
+          "both legs contribute and the workbook keeps its three sheet tables");
+  require_calamine_cells_adopted(result, 0, "Alpha");
+  require_libreoffice_cells_stand(result, 1, "Beta");
+  require_libreoffice_cells_stand(result, 2, "Gamma");
+
+  // A terminal in-band error ends one sheet's part and the stream goes on:
+  // the failed sheet keeps libreoffice's cells, the one after it is adopted.
+  outcome = run_calamine_script(CalamineScript::kFirstSheetFails, &handle_calls);
+  require(outcome.success, "a sheet after a failed one still folds: " + outcome.error);
+  result = run_workbook_plan({"Alpha", "Beta"}, std::move(outcome));
+  require_libreoffice_cells_stand(result, 0, "Alpha");
+  require_calamine_cells_adopted(result, 1, "Beta");
+}
+
+// The handle path of a server that predates ParseWorkbook: three sheets, of
+// which the first reads whole and the second fails after one cell.
+class DiesInSecondSheetHandleService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-3");
+    for (const char* name : {"Alpha", "Beta", "Gamma"}) {
+      calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+      sheet->set_name(name);
+      sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext*, const calaminev1::StreamWorksheetRangeRequest* request,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    calaminev1::StreamWorksheetRangeResponse event;
+    calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+    row->set_row_index(0);
+    row->add_values()->set_int_value(42);
+    writer->Write(event);
+    if (request->sheet().sheet_index() == 1) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "sheet read blew up");
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+};
+
+// The handle path stops at the first sheet that fails, so the failed sheet
+// and every sheet after it keep libreoffice's cells.
+void verify_calamine_handle_partial_read_keeps_libreoffice_cells() {
+  DiesInSecondSheetHandleService service;
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  require(outcome.success && outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
+          "a later sheet's failure on the handle path is a partial success: " + outcome.error);
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Beta", "Gamma"},
+          "the failed sheet and the one never asked for are named");
+  const auto result = run_workbook_plan({"Alpha", "Beta", "Gamma"}, std::move(outcome));
+  require(result.succeeded == 2 && result.document.tables_size() == 3,
+          "both legs contribute and the workbook keeps its three sheet tables");
+  require_calamine_cells_adopted(result, 0, "Alpha");
+  require_libreoffice_cells_stand(result, 1, "Beta");
+  require_libreoffice_cells_stand(result, 2, "Gamma");
 }
 
 }  // namespace
@@ -4066,6 +4279,8 @@ int main() {
       verify_calamine_unreachable_endpoint_degrades,
       verify_calamine_fanout_merges_without_a_second_body,
       verify_calamine_fanout_keeps_its_body_when_the_primary_failed,
+      verify_calamine_partial_read_keeps_libreoffice_cells,
+      verify_calamine_handle_partial_read_keeps_libreoffice_cells,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,
