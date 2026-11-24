@@ -58,7 +58,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 
 | Repo | Default branch | Language | Port | Vendored in `collectors/` | Routed by default for |
 |---|---|---|---|---|---|
-| `grpc-libreoffice` | `main` | C++ (CMake, LibreOfficeKit) | 50053 | none (contract in `office_service.proto` here; gRParse folds its typed events itself) | office formats |
+| `grpc-libreoffice` | `main` | C++ (CMake, LibreOfficeKit) | 50053 | `office_service.proto` at the repository root, pinned in `collectors/PINS.tsv` like the rest (gRParse folds its typed events itself) | office formats |
 | `grpc-pdf-inspector` | `main` | Rust (Cargo, buf) | 50067 | `pdf_types.proto`, `pdf_service.proto` | PDF routing oracle: classifies, and text PDFs take its fast path |
 | `grpc-email` | `main` | Java (Gradle, buf) | 50054 | `email_service.proto` | `.eml`, `.msg`, `message/rfc822` |
 | `grpc-xml` | `main` | Rust (Cargo, buf) | 50066 | `xml.proto`, `xml_service.proto` | `.xml`, `.nxml`, `.xbrl`, METS/GBS archives |
