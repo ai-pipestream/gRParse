@@ -1163,6 +1163,56 @@ void verify_unapplied_annotations_are_typed_warnings() {
                 "the annotations that could not be applied are counted");
 }
 
+// EnrichStarted.unmatched_images: crops this side sent whose self_ref named
+// no item in the peer's reading of the document, so their bytes reached
+// nothing. The two sides disagree about the document, and the caller is
+// told how many crops that cost, typed.
+void verify_crops_the_peer_could_not_place_are_reported() {
+  docv1::Document document = document_with_code_and_formula();
+  enrichv1::EnrichDocumentResponse started = started_event(0, 1, 0);
+  started.mutable_started()->set_unmatched_images(2);
+  enrichv1::EnrichDocumentResponse code = annotation_event(Job::kCode, "#/texts/0", "int x;");
+  code.mutable_annotation()->set_input(enrichv1::ANNOTATION_INPUT_IMAGE);
+  const grparse::ChartDerenderReport report =
+      enrich_against({started, code, complete_event(1, 0, 0)}, &document);
+  require_equal(report.codes_enriched, 1, "the annotation that arrived is applied");
+  const std::vector<grparse::Warning> mismatched =
+      warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+  require(mismatched.size() == 1 && report.warnings.size() == 1,
+          "crops the peer could not place are one COLLECTOR_COUNT_MISMATCH warning:" +
+              all_messages(report));
+  require(mismatched[0].count == std::optional<uint64_t>(2) &&
+              mismatched[0].message.contains("crop"),
+          "it states how many crops it stands for:" + all_messages(report));
+}
+
+// ItemAnnotation.input: a code or formula annotation marked TEXT_ONLY was
+// written from the item's existing text, with no image of the item. It is a
+// rewrite, not a reading of the page, and it replaces the item's text, so
+// the caller is told on the item, typed. An annotation read from the image,
+// or from a peer that does not say, raises nothing.
+void verify_a_text_only_rewrite_is_said_on_the_item() {
+  docv1::Document document = document_with_code_and_formula();
+  enrichv1::EnrichDocumentResponse code = annotation_event(Job::kCode, "#/texts/0", "int x;");
+  code.mutable_annotation()->set_input(enrichv1::ANNOTATION_INPUT_TEXT_ONLY);
+  enrichv1::EnrichDocumentResponse formula = annotation_event(Job::kFormula, "#/texts/1", "a+b");
+  formula.mutable_annotation()->set_input(enrichv1::ANNOTATION_INPUT_IMAGE);
+  const grparse::ChartDerenderReport report =
+      enrich_against({started_event(0, 1, 1), code, formula, complete_event(2, 0, 0)}, &document);
+  require(report.codes_enriched == 1 && report.formulas_enriched == 1 &&
+              document.texts(0).code().text() == "int x;" &&
+              document.texts(1).formula().base().text() == "a+b",
+          "both annotations are applied");
+  const std::vector<grparse::Warning> text_only =
+      warnings_coded(report, docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING);
+  require(text_only.size() == 1 && report.warnings.size() == 1,
+          "the text-only rewrite is one ENRICHMENT_CROP_MISSING warning, and the item read "
+          "from its image raises none:" + all_messages(report));
+  require(text_only[0].item_ref == "#/texts/0" && text_only[0].message.contains("text alone"),
+          "it is on the rewritten item and says what the model was given:" +
+              all_messages(report));
+}
+
 // The trailer and the selection counts are read and held against what
 // arrived: an item the peer says failed, a count the events do not bear
 // out, and a stream that ends without its trailer each reach the caller
@@ -1236,14 +1286,14 @@ void verify_the_trailer_is_reconciled_with_the_events() {
 }
 
 // grpc-enrich counts an item that failed outside the VLM call in the
-// trailer's `failed` only, and also names it in a skip event, whose reason
-// is a value newer than the vendored contract (it arrives as a bare
-// number). That stream adds up: the failure is reported once, the skip is
-// not a count the trailer contradicts, and the item was answered.
+// trailer's `failed` only, and also names it in a skip event with
+// SKIP_REASON_INTERNAL_ERROR. That stream adds up: the failure is reported
+// once, the skip is not a count the trailer contradicts, and the item was
+// answered. A reason newer than the vendored contract arrives as a bare
+// number and is passed on as one.
 void verify_a_failed_item_named_by_a_skip_is_one_failure() {
   enrichv1::EnrichDocumentResponse internal_error = skipped_event("#/pictures/0");
-  // SKIP_REASON_INTERNAL_ERROR on grpc-enrich main; unknown to this build.
-  internal_error.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(7));
+  internal_error.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_INTERNAL_ERROR);
   internal_error.mutable_skipped()->set_detail(
       "unexpected failure enriching this item: IllegalStateException");
   {
@@ -1264,10 +1314,22 @@ void verify_a_failed_item_named_by_a_skip_is_one_failure() {
                 warnings_coded(report, docv1::WARNING_CODE_UNSPECIFIED).size() == 1,
             "beside it only the peer's own skip is passed on:" + all_messages(report));
     require(report.warnings[0].message.contains("#/pictures/0") &&
-                report.warnings[0].message.contains("7") &&
+                report.warnings[0].message.contains("SKIP_REASON_INTERNAL_ERROR") &&
                 report.warnings[0].message.contains("IllegalStateException"),
-            "a skip reason this build has no name for is passed on by its number: " +
+            "the peer's skip is passed on with its reason and detail: " +
                 report.warnings[0].message);
+  }
+  {
+    // A reason this build's contract has no name for.
+    enrichv1::EnrichDocumentResponse newer = skipped_event("#/pictures/0");
+    newer.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(99));
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(1, 0, 0), newer, complete_event(0, 1, 0)}, &document);
+    require(report.warnings.size() == 1 &&
+                report.warnings[0].message.contains("skip reason 99"),
+            "a skip reason this build has no name for is passed on by its number:" +
+                all_messages(report));
   }
   {
     // More skip events than the trailer's skipped and failed can account for.
@@ -1378,6 +1440,8 @@ int main() {
       verify_picture_description_api_call_reaches_enrich,
       verify_code_formula_options_reach_enrich_typed,
       verify_unapplied_annotations_are_typed_warnings,
+      verify_crops_the_peer_could_not_place_are_reported,
+      verify_a_text_only_rewrite_is_said_on_the_item,
       verify_the_trailer_is_reconciled_with_the_events,
       verify_a_failed_item_named_by_a_skip_is_one_failure,
       verify_undecodable_inline_pixels_are_reported,

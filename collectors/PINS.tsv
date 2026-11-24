@@ -5,7 +5,7 @@ collectors/calamine_types.proto	grpc-calamine	proto/calamine/v1/types.proto	8313
 collectors/ebcdic.proto	grpc-ebcdic	proto/ai/pipestream/ebcdic/v1/ebcdic.proto	0e4e2cfa3b6ec2fed6cc8a2e23414ccb2b0ac7f2
 collectors/ebcdic_service.proto	grpc-ebcdic	proto/ai/pipestream/ebcdic/v1/ebcdic_service.proto	0e4e2cfa3b6ec2fed6cc8a2e23414ccb2b0ac7f2
 collectors/email_service.proto	grpc-email	proto/ai/pipestream/email/v1/email_service.proto	2789a5674a1a4ef04c7c8bbfa5a08615aeb6c4f9
-collectors/enrich_service.proto	grpc-enrich	proto/ai/pipestream/enrich/v1/enrich_service.proto	977ab3368c54c5f4c5259ef73db2df670b7c3880
+collectors/enrich_service.proto	grpc-enrich	proto/ai/pipestream/enrich/v1/enrich_service.proto	4b3d22f015349d586685a7ad8bc166751c88edec
 collectors/epub_service.proto	grpc-epub	proto/ai/pipestream/epub/v1/epub_service.proto	8f61f4a3e3b053c7fd7e254ec52cf90aad81dd65
 collectors/epub_types.proto	grpc-epub	proto/ai/pipestream/epub/v1/types.proto	8f61f4a3e3b053c7fd7e254ec52cf90aad81dd65
 collectors/lolhtml_service.proto	grpc-lol-html	proto/lolhtml/v1/lolhtml_service.proto	03c0a2888e11009f01769efd3f7ae7907913f3dc
