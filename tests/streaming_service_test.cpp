@@ -7253,6 +7253,17 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
   require(info.contains("use_markdown_tables") &&
               !info.at("use_markdown_tables").bool_value(),
           "chunking_info carries use_markdown_tables");
+  // The same facts, typed: the chunker and the options it ran with, every
+  // default filled in, so a reader never looks a key up in a bag.
+  require(response.response().has_chunker_settings() &&
+              response.response().chunker_settings().has_hierarchical(),
+          "the response names the hierarchical chunker in a typed field");
+  const auto& ran_with = response.response().chunker_settings().hierarchical();
+  require(!ran_with.use_markdown_tables() && !ran_with.include_raw_text(),
+          "the typed settings carry the request's own choices");
+  require(ran_with.has_use_markdown_images() && !ran_with.use_markdown_images() &&
+              ran_with.image_placeholder() == "![IMAGE]",
+          "and state the defaults the request left unset");
 }
 
 void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
@@ -7296,6 +7307,17 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
           "chunking_info defaults merge_peers to true");
   require(info.contains("tokenizer") && info.at("tokenizer").string_value() == "wordish/1",
           "chunking_info defaults the tokenizer to wordish/1");
+  require(response.response().chunker_settings().has_hybrid(),
+          "the response names the hybrid chunker in a typed field");
+  const auto& ran_with = response.response().chunker_settings().hybrid();
+  require(ran_with.max_tokens() == 8, "the typed settings carry the request budget");
+  require(ran_with.has_merge_peers() && ran_with.merge_peers() &&
+              ran_with.tokenizer() == "wordish/1" &&
+              ran_with.has_use_markdown_images() && !ran_with.use_markdown_images() &&
+              ran_with.image_placeholder() == "![IMAGE]",
+          "and state the defaults the request left unset");
+  require(!ran_with.has_tokenizer_path(),
+          "a tokenizer path nobody set is not invented");
 
   pipestream::parse::v1::ChunkHybridSourceRequest without_budget;
   *without_budget.mutable_request()->add_sources() = request.request().sources(0);
@@ -7372,6 +7394,10 @@ void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
           "the converted document rides along only when it is asked for");
   require(summary.summary().chunking_info().at("chunker").string_value() == "hierarchical",
           "the summary carries chunking_info");
+  require(summary.summary().chunker_settings().has_hierarchical() &&
+              summary.summary().chunker_settings().hierarchical().image_placeholder() ==
+                  "![IMAGE]",
+          "the summary carries the typed chunker settings too");
 
   pipestream::parse::v1::StreamChunksRequest hybrid;
   *hybrid.mutable_hybrid()->add_sources() = unary.request().sources(0);
