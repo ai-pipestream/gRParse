@@ -528,7 +528,8 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
 
   // Page events this service's streams folded server side to compute their
   // repair events, summed over every stream since construction. A stream
-  // that set DocumentChunk.repair_delta to false adds nothing. For tests.
+  // that set DocumentChunk.repair_delta to false adds nothing, unless it
+  // asked for structure_validation, which checks the same fold. For tests.
   uint64_t folded_page_events() const { return folded_pages_->load(); }
 
  private:
