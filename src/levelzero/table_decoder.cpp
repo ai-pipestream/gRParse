@@ -33,6 +33,14 @@ constexpr size_t kExchangeBytes = (kHidden + kGates + kPositions + kGates + 2 * 
 constexpr size_t kScratchFloats = size_t(kPositions) * kHidden + size_t(kChannels) * kPositions;
 constexpr uint32_t kCounterStride = 32;  // one 128-byte line per table's barrier counter
 
+// A Level Zero descriptor with its structure type set and every other field zero.
+template <typename Desc>
+Desc ze_desc(ze_structure_type_t type) {
+  Desc desc{};
+  desc.stype = type;
+  return desc;
+}
+
 std::string ze_name(ze_result_t result) { return std::format("0x{:08x}", static_cast<uint32_t>(result)); }
 
 // Output-major copy of an [in][out] matrix, rows `stride` floats apart.
@@ -114,7 +122,7 @@ class TableDecoder::Impl {
       std::vector<ze_device_handle_t> devices(count);
       check(zeDeviceGet(candidate, &count, devices.data()), "device list");
       for (ze_device_handle_t device : devices) {
-        ze_device_properties_t properties{ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES};
+        ze_device_properties_t properties = ze_desc<ze_device_properties_t>(ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES);
         check(zeDeviceGetProperties(device, &properties), "device properties");
         if (properties.type != ZE_DEVICE_TYPE_GPU || seen++ != gpu_index) continue;
         driver_ = candidate;
@@ -125,9 +133,9 @@ class TableDecoder::Impl {
     if (device_ == nullptr) {
       throw std::runtime_error(std::format("Level Zero has no GPU {} ({} found)", gpu_index, seen));
     }
-    ze_context_desc_t context_desc{ZE_STRUCTURE_TYPE_CONTEXT_DESC};
+    ze_context_desc_t context_desc = ze_desc<ze_context_desc_t>(ZE_STRUCTURE_TYPE_CONTEXT_DESC);
     check(zeContextCreate(driver_, &context_desc, &context_), "context creation");
-    ze_module_desc_t module_desc{ZE_STRUCTURE_TYPE_MODULE_DESC};
+    ze_module_desc_t module_desc = ze_desc<ze_module_desc_t>(ZE_STRUCTURE_TYPE_MODULE_DESC);
     module_desc.format = ZE_MODULE_FORMAT_IL_SPIRV;
     module_desc.inputSize = kSlanetDecoderSpirvSize;
     module_desc.pInputModule = kSlanetDecoderSpirv;
@@ -143,14 +151,14 @@ class TableDecoder::Impl {
       throw std::runtime_error(std::format("the decoder kernel did not build ({}): {}", ze_name(built), text));
     }
     if (log != nullptr) zeModuleBuildLogDestroy(log);
-    ze_kernel_desc_t kernel_desc{ZE_STRUCTURE_TYPE_KERNEL_DESC};
+    ze_kernel_desc_t kernel_desc = ze_desc<ze_kernel_desc_t>(ZE_STRUCTURE_TYPE_KERNEL_DESC);
     kernel_desc.pKernelName = "slanet_decode";
     check(zeKernelCreate(module_, &kernel_desc, &kernel_), "kernel creation");
     check(zeKernelSetGroupSize(kernel_, kGroupSize, 1, 1), "group size");
     check(zeKernelSuggestMaxCooperativeGroupCount(kernel_, &max_groups_), "cooperative group count");
     if (max_groups_ == 0) throw std::runtime_error("the device runs no cooperative group of the decoder");
     max_batch_ = std::min<uint32_t>(max_groups_, 16);
-    ze_command_queue_desc_t queue_desc{ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC};
+    ze_command_queue_desc_t queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
     queue_desc.mode = ZE_COMMAND_QUEUE_MODE_SYNCHRONOUS;
     check(zeCommandListCreateImmediate(context_, device_, &queue_desc, &list_), "command list");
 
@@ -239,7 +247,7 @@ class TableDecoder::Impl {
   };
 
   void* allocate(size_t bytes) {
-    ze_device_mem_alloc_desc_t desc{ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC};
+    ze_device_mem_alloc_desc_t desc = ze_desc<ze_device_mem_alloc_desc_t>(ZE_STRUCTURE_TYPE_DEVICE_MEM_ALLOC_DESC);
     void* memory = nullptr;
     const ze_result_t result = zeMemAllocDevice(context_, &desc, bytes, 64, device_, &memory);
     if (result != ZE_RESULT_SUCCESS) {
