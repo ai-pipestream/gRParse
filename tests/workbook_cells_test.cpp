@@ -517,6 +517,134 @@ void verify_an_embedded_workbooks_sheet_is_not_adopted_into() {
                 "the real sheet takes calamine's reading");
 }
 
+// "row R, col C" of a table's origin, for a failure message.
+std::string origin_text(const docv1::TableData& data) {
+  return "row " + std::to_string(data.origin().row()) + ", col " +
+         std::to_string(data.origin().col());
+}
+
+void set_origin(docv1::TableData* data, int row, int column) {
+  data->mutable_origin()->set_row(row);
+  data->mutable_origin()->set_col(column);
+}
+
+void name_columns(docv1::TableData* data, std::initializer_list<const char*> names) {
+  for (const char* name : names) data->add_columns()->set_name(name);
+}
+
+// Both folds cut a sheet table to its used range and state where it starts
+// in TableData.origin. The two readers do not always agree on that start: a
+// styled blank cell is a cell to calamine and nothing to libreoffice. So
+// the adoption pairs cells by their sheet address (grid position plus
+// origin), never by grid position alone, and the adopted table is cut to
+// the cells it ends up holding.
+void verify_adoption_pairs_cells_by_sheet_address() {
+  // libreoffice: used range C5:D6.
+  Workbook libre("libreoffice");
+  docv1::TableData* left = libre.sheet("Stock");
+  text(left, 0, 0, "Region")->set_column_header(true);
+  text(left, 0, 1, "Units")->set_column_header(true);
+  text(left, 1, 0, "North");
+  number(left, 1, 1, 12, "12.00")->mutable_value()->set_number_format("0.00");
+  set_origin(left, 4, 2);
+  name_columns(left, {"C", "D"});
+  // calamine: the same cells and a styled blank at B5, so its range starts
+  // one column earlier.
+  Workbook calamine("calamine");
+  docv1::TableData* right = calamine.sheet("Stock");
+  text(right, 0, 0, "")->mutable_value()->set_style_id(3);
+  text(right, 0, 1, "Region");
+  text(right, 0, 2, "Units");
+  text(right, 1, 1, "North");
+  number(right, 1, 2, 12, "12");
+  set_origin(right, 4, 1);
+
+  std::vector<grparse::Warning> warnings;
+  const int adopted =
+      grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
+  require_equal(adopted, 1, "sheet tables adopted");
+  const docv1::TableData& result = libre.document().tables(0).data();
+  require(result.origin().row() == 4 && result.origin().col() == 1,
+          "the adopted table starts where its cells start, B5, got " +
+              origin_text(result));
+  require_equal(result.num_rows(), 2, "rows of the adopted table");
+  require_equal(result.num_cols(), 3, "columns of the adopted table");
+  const docv1::TableCell* units = at(result, 1, 2);
+  require(units != nullptr && units->value().number() == 12, "D6 holds calamine's number");
+  require(units != nullptr && units->text() == "12.00" &&
+              units->value().number_format() == "0.00",
+          "and libreoffice's display and number format for D6, not for another cell");
+  require(at(result, 0, 1) != nullptr && at(result, 0, 1)->text() == "Region",
+          "C5 sits one column in from the adopted origin");
+  require(result.columns_size() == 0,
+          "libreoffice's column schema began at C; it does not describe a table from B");
+}
+
+// libreoffice keeps a cell that only anchors something (a picture placed in
+// the cell). When that cell lies above calamine's range, the adopted table
+// starts at it, and calamine's cells move down to their sheet rows.
+void verify_an_anchor_cell_outside_calamines_range_moves_the_origin() {
+  Workbook libre("libreoffice");
+  docv1::TableData* left = libre.sheet("Stock");
+  text(left, 0, 0, "")->mutable_ref()->set_ref("#/pictures/0");
+  text(left, 1, 0, "Region");
+  text(left, 1, 1, "Units");
+  text(left, 2, 0, "North");
+  number(left, 2, 1, 12, "12");
+  set_origin(left, 3, 2);
+  name_columns(left, {"C", "D"});
+  Workbook calamine("calamine");
+  docv1::TableData* right = calamine.sheet("Stock");
+  text(right, 0, 0, "Region");
+  text(right, 0, 1, "Units");
+  text(right, 1, 0, "North");
+  number(right, 1, 1, 12, "12");
+  set_origin(right, 4, 2);
+
+  std::vector<grparse::Warning> warnings;
+  grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
+  const docv1::TableData& result = libre.document().tables(0).data();
+  require(result.origin().row() == 3 && result.origin().col() == 2,
+          "the adopted table starts at the anchor cell, C4, got " +
+              origin_text(result));
+  require_equal(result.num_rows(), 3, "rows of the adopted table");
+  require_equal(result.num_cols(), 2, "columns of the adopted table");
+  require(at(result, 0, 0) != nullptr && at(result, 0, 0)->ref().ref() == "#/pictures/0",
+          "the anchor cell keeps its ref at the top");
+  require(at(result, 1, 0) != nullptr && at(result, 1, 0)->text() == "Region" &&
+              at(result, 2, 1) != nullptr && at(result, 2, 1)->value().number() == 12,
+          "calamine's cells sit at their sheet rows under it");
+  require(result.columns_size() == 2 && result.columns(0).name() == "C",
+          "the column schema still starts at the table's first column");
+}
+
+// A declared table's range is in sheet addresses. In a table cut to its
+// used range the header cells are found at the range minus the origin, and
+// a declaration that spans the cut table's width names its columns.
+void verify_a_declared_table_marks_headers_in_a_cut_sheet() {
+  docv1::TableData data;
+  text(&data, 0, 0, "Region");
+  text(&data, 0, 1, "Units");
+  text(&data, 1, 0, "North");
+  number(&data, 1, 1, 12, "12");
+  set_origin(&data, 4, 2);
+  auto* table = data.add_declared_tables();
+  table->set_name("Stock");
+  table->mutable_range()->mutable_start()->set_row(4);
+  table->mutable_range()->mutable_start()->set_col(2);
+  table->mutable_range()->mutable_end()->set_row(5);
+  table->mutable_range()->mutable_end()->set_col(3);
+  table->set_header_row_count(1);
+  table->add_columns("Region name");
+  table->add_columns("Unit count");
+  require_equal(grparse::mark_sheet_header(&data), 2, "header cells marked");
+  require(at(data, 0, 0)->column_header() && at(data, 0, 1)->column_header() &&
+              !at(data, 1, 0)->column_header(),
+          "the declared header row is the cut grid's first row");
+  require(data.columns_size() == 2 && data.columns(1).name() == "Unit count",
+          "a declaration across the cut table's width names its columns");
+}
+
 }  // namespace
 
 int main() {
@@ -533,6 +661,9 @@ int main() {
       verify_incomplete_sheet_keeps_the_first_reader_cells,
       verify_coordinator_holds_back_an_incomplete_sheet,
       verify_an_embedded_workbooks_sheet_is_not_adopted_into,
+      verify_adoption_pairs_cells_by_sheet_address,
+      verify_an_anchor_cell_outside_calamines_range_moves_the_origin,
+      verify_a_declared_table_marks_headers_in_a_cut_sheet,
       verify_coordinator_adopts_calamine_cells,
       verify_calamine_alone_is_the_body,
   });

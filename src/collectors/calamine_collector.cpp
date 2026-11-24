@@ -1,8 +1,9 @@
 // grpc-calamine client: the wire carries no document event, so the fold
 // happens here. One ParseWorkbook stream uploads the bytes and streams every
 // sheet's cells back, and each sheet folds into a sheet group holding one
-// TableItem in absolute row and column offsets (the shape the office fold
-// gives libreoffice sheets). The workbook lives on the server for that
+// TableItem cut to the sheet's used range, its origin saying where that
+// starts (the shape the office fold gives libreoffice sheets). The workbook
+// lives on the server for that
 // stream only. A server older than ParseWorkbook answers UNIMPLEMENTED and
 // gets the handle path instead: OpenWorkbook, one StreamWorksheetRange per
 // sheet, and CloseWorkbook on every path, success or failure.
@@ -25,6 +26,7 @@
 
 #include "calamine/v1/calamine_service.grpc.pb.h"
 #include "collector_support.h"
+#include "grparse/office_fold/grid_cells.h"
 #include "grparse/workbook_cells.h"
 #include "google/protobuf/util/time_util.h"
 
@@ -241,14 +243,17 @@ class CalamineFold {
     }
   }
 
-  // Closes the sheet: spans its merged areas and marks its header band.
-  // Returns the number of header cells marked.
+  // Closes the sheet: spans its merged areas, cuts the table to its used
+  // range and marks its header band. The cells sat at their sheet addresses
+  // until here, which is where the merged areas look for them. Returns the
+  // number of header cells marked.
   int end_sheet() {
     if (current_ == nullptr) return 0;
     current_->set_num_rows(static_cast<int32_t>(num_rows_));
     current_->set_num_cols(static_cast<int32_t>(num_cols_));
     apply_merged_areas(current_, merged_);
     merged_.clear();
+    office_fold::cut_to_used_range(current_);
     const bool declared = !current_->declared_tables().empty();
     const int marked = mark_sheet_header(current_);
     current_ = nullptr;

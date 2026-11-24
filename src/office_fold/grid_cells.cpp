@@ -1,7 +1,9 @@
 #include "grparse/office_fold/grid_cells.h"
 
+#include <algorithm>
 #include <cctype>
 #include <cstdint>
+#include <limits>
 #include <set>
 #include <utility>
 
@@ -142,6 +144,45 @@ docv1::TableCell* place_cell(docv1::TableData* data, int row, int column,
   cell->set_col_span(1);
   cell->set_text(text);
   return cell;
+}
+
+GridOrigin origin_of(const docv1::TableData& data) {
+  if (!data.has_origin()) return {};
+  return {data.origin().row(), data.origin().col()};
+}
+
+void cut_to_used_range(docv1::TableData* data, int schema_column) {
+  if (data->has_origin() || data->table_cells().empty() || !data->grid().empty()) {
+    return;
+  }
+  int top = std::numeric_limits<int>::max();
+  int left = std::numeric_limits<int>::max();
+  for (const docv1::TableCell& cell : data->table_cells()) {
+    top = std::min(top, cell.start_row_offset_idx());
+    left = std::min(left, cell.start_col_offset_idx());
+  }
+  top = std::max(top, 0);
+  left = std::max(left, 0);
+  if (data->columns_size() > 0) {
+    const int ahead = left - schema_column;
+    if (ahead < 0 || ahead >= data->columns_size()) {
+      data->clear_columns();
+    } else if (ahead > 0) {
+      data->mutable_columns()->DeleteSubrange(0, ahead);
+    }
+  }
+  if (top == 0 && left == 0) return;
+  for (docv1::TableCell& cell : *data->mutable_table_cells()) {
+    cell.set_start_row_offset_idx(cell.start_row_offset_idx() - top);
+    cell.set_end_row_offset_idx(cell.end_row_offset_idx() - top);
+    cell.set_start_col_offset_idx(cell.start_col_offset_idx() - left);
+    cell.set_end_col_offset_idx(cell.end_col_offset_idx() - left);
+  }
+  data->set_num_rows(std::max(0, data->num_rows() - top));
+  data->set_num_cols(std::max(0, data->num_cols() - left));
+  docv1::GridCell* origin = data->mutable_origin();
+  origin->set_row(top);
+  origin->set_col(left);
 }
 
 void fill_grid_from_cells(docv1::TableData* data) {

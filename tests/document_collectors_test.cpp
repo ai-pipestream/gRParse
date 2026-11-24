@@ -3370,6 +3370,82 @@ class FailingSheetCalamineService final : public calaminev1::CalamineService::Se
   int closed_ = 0;
 };
 
+// "row R, col C" of a table's origin, for a failure message.
+std::string origin_text(const docv1::TableData& data) {
+  return "row " + std::to_string(data.origin().row()) + ", col " +
+         std::to_string(data.origin().col());
+}
+
+// One sheet whose cells sit at C5:E7 under a declared table of the same
+// range. The row stream anchors every row at column A, so each row leads
+// with two empty values.
+class OffsetSheetCalamineService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-5");
+    response->set_detected_format(calaminev1::WORKBOOK_FORMAT_XLSX);
+    calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+    sheet->set_name("Stock");
+    sheet->set_typ(calaminev1::SHEET_TYPE_WORKSHEET);
+    sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext*, const calaminev1::StreamWorksheetRangeRequest*,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    calaminev1::StreamWorksheetRangeResponse event;
+    event.mutable_started()->set_sheet_name("Stock");
+    auto* declared = event.mutable_started()->add_tables();
+    declared->set_name("StockList");
+    declared->mutable_range()->mutable_start()->set_row(4);
+    declared->mutable_range()->mutable_start()->set_col(2);
+    declared->mutable_range()->mutable_end()->set_row(6);
+    declared->mutable_range()->mutable_end()->set_col(4);
+    declared->set_header_row_count(1);
+    for (const auto* name : {"Region", "Units", "Price"}) declared->add_columns(name);
+    writer->Write(event);
+    event.Clear();
+    calaminev1::WorksheetRowGap* gap = event.mutable_row_gap();
+    gap->set_first_row_index(0);
+    gap->set_row_count(4);
+    writer->Write(event);
+    event.Clear();
+    calaminev1::WorksheetRowBatch* batch = event.mutable_rows();
+    calaminev1::WorksheetRow* labels = batch->add_rows();
+    labels->set_row_index(4);
+    labels->add_values()->mutable_empty();
+    labels->add_values()->mutable_empty();
+    for (const auto* label : {"Region", "Units", "Price"}) {
+      labels->add_values()->set_string_value(label);
+    }
+    for (uint32_t row = 5; row < 7; ++row) {
+      calaminev1::WorksheetRow* line = batch->add_rows();
+      line->set_row_index(row);
+      line->add_values()->mutable_empty();
+      line->add_values()->mutable_empty();
+      line->add_values()->set_string_value(row == 5 ? "North" : "South");
+      line->add_values()->set_int_value(row == 5 ? 12 : 7);
+      line->add_values()->set_float_value(row == 5 ? 3.5 : 4.25);
+    }
+    writer->Write(event);
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+};
+
 // What both wires must fold the fake's workbook into.
 void require_calamine_fold(const grparse::CollectorOutcome& outcome) {
   const docv1::Document& document = outcome.document;
@@ -3716,6 +3792,42 @@ void verify_calamine_sheet_failure_still_closes() {
           "a sheet that produced nothing fails the leg naming the sheet");
   require(service.closed() == 1,
           "the workbook handle is closed even when the read fails");
+}
+
+// The shared schema's TableData.origin: a sheet table holds its used range
+// only, and says where grid cell (0, 0) sits in the sheet. calamine's rows
+// arrive anchored at column A and at their sheet rows, so the fold used to
+// write a table with four blank rows and two blank columns ahead of the
+// data.
+void verify_calamine_cuts_a_sheet_table_to_its_used_range() {
+  OffsetSheetCalamineService service;
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  require(outcome.success, "calamine collection succeeds: " + outcome.error);
+  require(outcome.document.tables_size() == 1, "the sheet folds into one table");
+  const docv1::TableData& data = outcome.document.tables(0).data();
+  require(data.has_origin() && data.origin().row() == 4 && data.origin().col() == 2,
+          "the table's origin is its first cell, C5, got " + origin_text(data));
+  require(data.num_rows() == 3 && data.num_cols() == 3,
+          "the table holds the used range only, got " + std::to_string(data.num_rows()) +
+              " x " + std::to_string(data.num_cols()));
+  require(data.table_cells_size() == 9, "every cell of the range folds");
+  const docv1::TableCell& first = data.table_cells(0);
+  require(first.start_row_offset_idx() == 0 && first.start_col_offset_idx() == 0 &&
+              first.text() == "Region" && first.column_header(),
+          "grid cell (0, 0) is C5, and the declared header row is marked there");
+  const docv1::TableCell& last = data.table_cells(8);
+  require(last.start_row_offset_idx() == 2 && last.end_row_offset_idx() == 3 &&
+              last.start_col_offset_idx() == 2 && last.end_col_offset_idx() == 3 &&
+              last.value().number() == 4.25 && !last.column_header(),
+          "E7 sits at its sheet address minus the origin");
+  require(data.columns_size() == 3 && data.columns(1).name() == "Units",
+          "a declared table across the used width names the columns");
+  require(data.declared_tables(0).range().start().row() == 4 &&
+              data.declared_tables(0).range().start().col() == 2,
+          "the declaration keeps the sheet's own addresses");
+  require(data.row_prov_size() == 3 && data.row_prov(0).grid().row() == 4,
+          "row provenance keeps the sheet's own rows");
 }
 
 void verify_calamine_unreachable_endpoint_degrades() {
@@ -4720,6 +4832,7 @@ int main() {
       verify_calamine_falls_back_to_handles_on_unimplemented,
       verify_calamine_stream_failures,
       verify_calamine_sheet_failure_still_closes,
+      verify_calamine_cuts_a_sheet_table_to_its_used_range,
       verify_calamine_terminal_error_does_not_wait_out_the_deadline,
       verify_calamine_unreachable_endpoint_degrades,
       verify_calamine_fanout_merges_without_a_second_body,

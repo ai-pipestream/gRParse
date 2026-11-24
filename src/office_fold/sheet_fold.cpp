@@ -69,7 +69,7 @@ bool typed_cell_value(const officev1::SheetCell& cell, docv1::CellValue* out) {
   return typed;
 }
 
-// One placed cell of a sheet row, in the sheet's absolute addresses.
+// One placed cell of a sheet row, at its sheet address.
 docv1::TableCell* place_sheet_cell(const officev1::SheetCell& cell, int row,
                                    docv1::TableData* data) {
   docv1::TableCell* out = data->add_table_cells();
@@ -128,8 +128,10 @@ void SheetFold::on_sheet(const officev1::Sheet& sheet) {
   sheet_group_[sheet.index()] = group->self_ref();
   sheet_name_[sheet.index()] = sheet.name();
 
-  // The sheet's cell grid folds into one TableItem in absolute row and
-  // column offsets, so cell addresses survive the mapping.
+  // The sheet's cell grid folds into one TableItem. While the rows stream
+  // its cells sit at their sheet addresses; once all are in, the table is
+  // cut to its used range and its origin says where that starts, so every
+  // cell address survives the mapping as grid position plus origin.
   sheet_table_[sheet.index()] = arena_.document().tables_size();
   docv1::TableItem* table = arena_.add_table(layer, group->self_ref(), nullptr);
   docv1::TableData* data = table->mutable_data();
@@ -328,12 +330,22 @@ void SheetFold::size_empty_tables() {
   }
 }
 
-bool SheetFold::mark_declared_headers(int sheet_index, const RowCells& rows,
-                                      int* marked) {
+void SheetFold::cut_tables_to_used_ranges() {
+  for (const auto& [sheet_index, table_index] : sheet_table_) {
+    cut_to_used_range(
+        arena_.document().mutable_tables(table_index)->mutable_data());
+  }
+}
+
+bool SheetFold::mark_declared_headers(int sheet_index,
+                                      const docv1::TableData& data,
+                                      const RowCells& rows, int* marked) {
   // A database range that declares a header names the row outright. The
   // range's sheet is still pending here (names resolve with the anchors),
   // so the pending list is what pairs a range with its sheet.
+  // The range is in sheet addresses; the rows are the cut table's.
   bool declared = false;
+  const GridOrigin origin = origin_of(data);
   const docv1::Document& document = arena_.document();
   for (const auto& [range_index, range_sheet] : pending_range_sheets_) {
     if (range_sheet != sheet_index
@@ -346,10 +358,10 @@ bool SheetFold::mark_declared_headers(int sheet_index, const RowCells& rows,
       continue;
     }
     declared = true;
-    auto found = rows.find(range.range().start().row());
+    auto found = rows.find(range.range().start().row() - origin.row);
     if (found == rows.end()) continue;
     for (docv1::TableCell* cell : found->second) {
-      const int column = cell->start_col_offset_idx();
+      const int column = cell->start_col_offset_idx() + origin.column;
       if (column < range.range().start().col()
           || column > range.range().end().col()) {
         continue;
@@ -396,7 +408,7 @@ void SheetFold::mark_header_rows() {
     }
     if (rows.empty()) continue;
     int marked = 0;
-    if (!mark_declared_headers(sheet_index, rows, &marked)) {
+    if (!mark_declared_headers(sheet_index, *data, rows, &marked)) {
       const int before = marked;
       mark_inferred_header(data, rows, &marked);
       if (marked > before) {

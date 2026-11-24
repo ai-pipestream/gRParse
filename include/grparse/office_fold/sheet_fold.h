@@ -1,6 +1,6 @@
-// The spreadsheet plane: one group and one absolute-address table per
-// sheet, its rows, its named and database ranges, its cell notes and its
-// pivot definitions. It also answers the questions a chart on a sheet asks
+// The spreadsheet plane: one group and one table per sheet (cut to the
+// sheet's used range, its origin saying where that starts), its rows, its
+// named and database ranges, its cell notes and its pivot definitions. It also answers the questions a chart on a sheet asks
 // about the sheet it sits on.
 #pragma once
 
@@ -49,6 +49,10 @@ class SheetFold {
   // used_end_column are zero for an empty sheet and for a sheet whose only
   // cell is A1 alike, and only the cells tell the two apart).
   void size_empty_tables();
+  // Cuts every sheet table to its used range once every row has arrived
+  // (grid_cells.h, cut_to_used_range). Until then the cells sit at their
+  // sheet addresses, which is how a chart's source range finds them.
+  void cut_tables_to_used_ranges();
   // Marks the header rows of each sheet table once every row has arrived:
   // a database range that declares one, else the band of label rows over
   // the first data region (sheet_header_band.h). A lone merged text cell
@@ -65,8 +69,8 @@ class SheetFold {
 
   // Marks the header cells every database range on the sheet declares.
   // True when the sheet declared one at all, which rules the inference out.
-  bool mark_declared_headers(int sheet_index, const RowCells& rows,
-                             int* marked);
+  bool mark_declared_headers(int sheet_index, const docv1::TableData& data,
+                             const RowCells& rows, int* marked);
   // The band of label rows over the first data region, when no range
   // declared a header row.
   void mark_inferred_header(docv1::TableData* data, const RowCells& rows,
