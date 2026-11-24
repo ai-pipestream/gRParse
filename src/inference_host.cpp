@@ -7,11 +7,18 @@
 // OpenVINO state at all: `grparse-server --grparse-inference-host <fd>` owns
 // the core, the compiled shapes and the GPU context, and the server's models
 // are proxies that send each call over a SOCK_SEQPACKET socketpair, the
-// tensors in a memfd per call.  When the host dies, or a call outlives
-// GRPARSE_OPENVINO_CALL_TIMEOUT_S (default 120; the host is then killed),
-// every call in flight fails with InferenceDeviceError (gRPC UNAVAILABLE),
+// tensors in a memfd per call.  When the host dies, or a call outlives its
+// limit (the host is then killed), every call in flight fails with
+// InferenceDeviceError (gRPC UNAVAILABLE),
 // the host is respawned, and each model reopens and re-prewarms on its next
 // call (from the kernel cache).  Counted in openvino_host_restart_count.
+//
+// Two limits, because the two kinds of call differ by orders of magnitude:
+// an inference answers in milliseconds, so GRPARSE_OPENVINO_CALL_TIMEOUT_S
+// (default 120) bounds it; opening a model and prewarming it compile every
+// bucketed shape, which takes minutes on an empty kernel cache (the Arc Pro
+// B70 needed more than 120 s for the recognizer's widths alone), so
+// GRPARSE_OPENVINO_COMPILE_TIMEOUT_S (default 1800) bounds those.
 
 #include "grparse_inference_model.h"
 
@@ -367,6 +374,25 @@ int call_timeout_seconds() {
   return seconds;
 }
 
+int compile_timeout_seconds() {
+  static const int seconds = [] {
+    const char* value = std::getenv("GRPARSE_OPENVINO_COMPILE_TIMEOUT_S");
+    if (value == nullptr || *value == '\0') return 1800;
+    const int parsed = std::atoi(value);
+    if (parsed < 1 || parsed > 14400) {
+      throw std::invalid_argument("GRPARSE_OPENVINO_COMPILE_TIMEOUT_S must be 1..14400");
+    }
+    return parsed;
+  }();
+  return seconds;
+}
+
+// Open and prewarm compile; configure and run do not.
+int timeout_seconds_for(Kind kind) {
+  return kind == Kind::kOpen || kind == Kind::kPrewarm ? compile_timeout_seconds()
+                                                       : call_timeout_seconds();
+}
+
 class HostClient {
  public:
   static HostClient& instance() {
@@ -403,10 +429,11 @@ class HostClient {
         throw InferenceDeviceError("OpenVINO inference host is gone (send failed)");
       }
     }
-    if (future.wait_for(std::chrono::seconds(call_timeout_seconds())) != std::future_status::ready) {
+    const int limit = timeout_seconds_for(kind);
+    if (future.wait_for(std::chrono::seconds(limit)) != std::future_status::ready) {
       // A wedged device: kill the host; the reader fails every pending call.
       std::println(stderr, "gRParse OpenVINO inference host: a call outlived {} s; killing host {}",
-                   call_timeout_seconds(), pid_of(generation));
+                   limit, pid_of(generation));
       kill_generation(generation);
     }
     return future.get();
