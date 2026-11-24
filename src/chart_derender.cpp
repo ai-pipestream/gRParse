@@ -4,6 +4,8 @@
 #include <atomic>
 #include <charconv>
 #include <chrono>
+#include <cstdint>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -107,21 +109,50 @@ docv1::PictureItem* picture_for(const std::string& self_ref, docv1::Document* do
   return picture->self_ref().empty() ? picture : nullptr;
 }
 
-// Splits "data:<mimetype>;base64,<payload>" into decoded bytes; false for
-// any other URI (an external reference is not pixels this side holds).
-bool decode_data_uri(const std::string& uri, std::string* mimetype, std::string* bytes) {
+// What a picture's image reference held when its pixels were asked for.
+enum class InlinePixels {
+  // Decoded: the bytes and their mimetype are filled in.
+  kDecoded,
+  // Not a data: URI (an external reference, or no URI): not pixels this
+  // side holds, so the picture is not one this leg can send.
+  kNone,
+  // A data: URI whose payload is not base64 or is empty: pixels the
+  // document claims to hold inline and that cannot be read.
+  kUndecodable,
+};
+
+// Splits "data:<mimetype>;base64,<payload>" into decoded bytes.
+InlinePixels decode_data_uri(const std::string& uri, std::string* mimetype, std::string* bytes) {
   constexpr std::string_view kScheme = "data:";
   constexpr std::string_view kBase64 = ";base64,";
-  if (!uri.starts_with(kScheme)) return false;
+  if (!uri.starts_with(kScheme)) return InlinePixels::kNone;
   const size_t marker = uri.find(kBase64);
-  if (marker == std::string::npos) return false;
+  if (marker == std::string::npos) return InlinePixels::kUndecodable;
   *mimetype = uri.substr(kScheme.size(), marker - kScheme.size());
   try {
     *bytes = decode_base64(uri.substr(marker + kBase64.size()));
   } catch (const std::invalid_argument&) {
-    return false;  // Malformed base64 is no pixels: the picture is skipped.
+    return InlinePixels::kUndecodable;
   }
-  return !bytes->empty();
+  return bytes->empty() ? InlinePixels::kUndecodable : InlinePixels::kDecoded;
+}
+
+// The candidate for the picture at `index`, when its pixels decode. A
+// picture whose inline pixels do not decode is skipped, and named in
+// `undecodable` (when given) so the leg can say it was never sent.
+bool decoded_candidate(const docv1::PictureItem& picture, int index, ChartCandidate* candidate,
+                       std::vector<std::string>* undecodable) {
+  candidate->self_ref = picture.self_ref().empty() ? "#/pictures/" + std::to_string(index)
+                                                   : picture.self_ref();
+  const InlinePixels pixels =
+      decode_data_uri(picture.image().uri(), &candidate->mimetype, &candidate->bytes);
+  if (pixels == InlinePixels::kUndecodable && undecodable != nullptr) {
+    undecodable->push_back(candidate->self_ref);
+  }
+  if (pixels != InlinePixels::kDecoded) return false;
+  candidate->picture_index = index;
+  if (candidate->mimetype.empty()) candidate->mimetype = picture.image().mimetype();
+  return true;
 }
 
 int cells_extent(const docv1::TableData& data, bool rows) {
@@ -191,7 +222,10 @@ void add_generation_source(const std::string& model, const std::string& endpoint
 
 }  // namespace
 
-std::vector<ChartCandidate> chart_derender_candidates(const docv1::Document& document) {
+namespace {
+
+std::vector<ChartCandidate> select_chart_candidates(const docv1::Document& document,
+                                                    std::vector<std::string>* undecodable) {
   std::vector<ChartCandidate> candidates;
   for (int index = 0; index < document.pictures_size(); index++) {
     const docv1::PictureItem& picture = document.pictures(index);
@@ -199,15 +233,16 @@ std::vector<ChartCandidate> chart_derender_candidates(const docv1::Document& doc
                          picture.label() == docv1::DOC_ITEM_LABEL_CHART;
     if (!verdict || has_tabular_chart(picture) || !picture.has_image()) continue;
     ChartCandidate candidate;
-    if (!decode_data_uri(picture.image().uri(), &candidate.mimetype, &candidate.bytes)) continue;
-    candidate.picture_index = index;
-    candidate.self_ref = picture.self_ref().empty()
-                             ? "#/pictures/" + std::to_string(index)
-                             : picture.self_ref();
-    if (candidate.mimetype.empty()) candidate.mimetype = picture.image().mimetype();
+    if (!decoded_candidate(picture, index, &candidate, undecodable)) continue;
     candidates.push_back(std::move(candidate));
   }
   return candidates;
+}
+
+}  // namespace
+
+std::vector<ChartCandidate> chart_derender_candidates(const docv1::Document& document) {
+  return select_chart_candidates(document, nullptr);
 }
 
 docv1::Document chart_derender_request_document(
@@ -392,7 +427,8 @@ bool fold_formula_annotation(const enrichv1::ItemAnnotation& annotation,
 // Pictures that still need a description: inline pixels, no meta description,
 // and matching the optional class allow/deny / min-confidence filters.
 std::vector<ChartCandidate> picture_description_candidates(
-    const docv1::Document& document, const ChartDerenderOptions& options) {
+    const docv1::Document& document, const ChartDerenderOptions& options,
+    std::vector<std::string>* undecodable) {
   std::vector<ChartCandidate> candidates;
   for (int index = 0; index < document.pictures_size(); index++) {
     const docv1::PictureItem& picture = document.pictures(index);
@@ -407,12 +443,7 @@ std::vector<ChartCandidate> picture_description_candidates(
       continue;
     }
     ChartCandidate candidate;
-    if (!decode_data_uri(picture.image().uri(), &candidate.mimetype, &candidate.bytes)) continue;
-    candidate.picture_index = index;
-    candidate.self_ref = picture.self_ref().empty()
-                             ? "#/pictures/" + std::to_string(index)
-                             : picture.self_ref();
-    if (candidate.mimetype.empty()) candidate.mimetype = picture.image().mimetype();
+    if (!decoded_candidate(picture, index, &candidate, undecodable)) continue;
     candidates.push_back(std::move(candidate));
   }
   return candidates;
@@ -427,13 +458,28 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   ChartDerenderReport report;
   if (!options.any_job()) return report;
 
+  std::vector<std::string> undecodable;
   std::vector<ChartCandidate> chart_candidates;
   if (options.do_chart_extraction) {
-    chart_candidates = chart_derender_candidates(*document);
+    chart_candidates = select_chart_candidates(*document, &undecodable);
   }
   std::vector<ChartCandidate> describe_candidates;
   if (options.do_picture_description) {
-    describe_candidates = picture_description_candidates(*document, options);
+    describe_candidates = picture_description_candidates(*document, options, &undecodable);
+  }
+  // A picture a job selected and whose inline pixels do not decode is never
+  // sent, so nothing can come back for it. Said once per picture, whichever
+  // jobs wanted it, and before anything can return early.
+  std::set<std::string> undecodable_seen;
+  for (const std::string& self_ref : undecodable) {
+    if (!undecodable_seen.insert(self_ref).second) continue;
+    ++report.pictures_undecodable;
+    report.warnings.push_back(
+        Warning(docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING,
+                "document enrich: the inline image of " + self_ref +
+                    " does not decode (a data: URI whose payload is not base64, or is "
+                    "empty); the picture was not sent for enrichment")
+            .on_item(self_ref));
   }
   // Deduplicate ItemImage uploads by self_ref (a chart may also be described).
   std::vector<ChartCandidate> images;
@@ -586,19 +632,73 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     }
   } writer_guard{context, writer};
 
-  int skipped_events = 0;
-  int chart_skips = 0;
+  // Chart events that folded nothing: a chart annotation that could not be
+  // applied, or a skip that is a chart's.
+  int chart_unfolded = 0;
   std::set<std::string> answered;
   // Charts that received at least one chart output.
   std::set<std::string> charts_answered;
+  // What EnrichStarted said was selected, and per job the events that
+  // answered one of its items: an annotation, applied or not, or a skip.
+  std::optional<enrichv1::EnrichStarted> selected;
+  int description_events = 0;
+  int code_events = 0;
+  int formula_events = 0;
+  std::set<std::string> chart_refs;
+  for (const ChartCandidate& candidate : chart_candidates) chart_refs.insert(candidate.self_ref);
+  std::set<std::string> untagged_chart_skips;
+  // An annotation that is not in the document afterwards is a result the
+  // caller asked for and did not get: said on the item, with its code.
+  const auto not_applied = [&report](const std::string& self_ref, std::string text) {
+    ++report.annotations_not_applied;
+    report.warnings.push_back(
+        Warning(docv1::WARNING_CODE_ENRICHMENT_NOT_APPLIED, std::move(text)).on_item(self_ref));
+  };
+  // Counts a skip under the job it belongs to. A chart output names itself;
+  // a text item is code or a formula by what the document holds there; a
+  // picture skip with no chart output is a description's, except on the
+  // single-call chart path (no ChartExtractionOptions), whose skips carry
+  // none either: there the first such skip of a chart candidate still
+  // waiting for its table is the chart's.
+  const auto count_skip = [&](const enrichv1::ItemSkipped& skip) {
+    if (skip.chart_output() != enrichv1::CHART_OUTPUT_UNSPECIFIED) {
+      ++chart_unfolded;
+      return;
+    }
+    if (const docv1::BaseTextItem* item = text_item_for(skip.self_ref(), document)) {
+      if (item->has_code()) ++code_events;
+      if (item->has_formula()) ++formula_events;
+      return;
+    }
+    // A reference that is neither is no job's item; the skip is still
+    // passed on in words below.
+    if (picture_for(skip.self_ref(), document) == nullptr) return;
+    const bool untagged_charts =
+        options.do_chart_extraction && !options.chart_extraction.has_value();
+    if (untagged_charts && chart_refs.contains(skip.self_ref()) &&
+        !answered.contains(skip.self_ref() + "#chart") &&
+        untagged_chart_skips.insert(skip.self_ref()).second) {
+      ++chart_unfolded;
+      return;
+    }
+    ++description_events;
+  };
   enrichv1::EnrichDocumentResponse event;
   while (stream->Read(&event)) {
-    if (event.has_annotation()) {
+    if (event.has_started()) {
+      selected = event.started();
+    } else if (event.has_complete()) {
+      report.trailer_seen = true;
+      report.trailer_succeeded = event.complete().succeeded();
+      report.trailer_skipped = event.complete().skipped();
+      report.items_failed = event.complete().failed();
+    } else if (event.has_annotation()) {
+      ++report.annotations_received;
       const enrichv1::ItemAnnotation& annotation = event.annotation();
       if (annotation.has_chart_table()) {
         if (answered.contains(annotation.self_ref() + "#chart")) {
-          report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                    " returned a duplicate table, ignored");
+          not_applied(annotation.self_ref(), "chart derender: " + annotation.self_ref() +
+                                                 " returned a duplicate table, ignored");
         } else if (fold_chart_table(annotation, chart_endpoint, document)) {
           ++report.chart_tables;
           answered.insert(annotation.self_ref() + "#chart");
@@ -607,56 +707,69 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                    " (" + std::to_string(annotation.chart_table().table().num_rows()) + "x" +
                    std::to_string(annotation.chart_table().table().num_cols()) + ")");
         } else {
-          ++skipped_events;
-          ++chart_skips;
-          report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                    " returned an empty table");
+          ++chart_unfolded;
+          not_applied(annotation.self_ref(),
+                      "chart derender: " + annotation.self_ref() + " returned an empty table");
         }
       } else if (annotation.has_chart_summary()) {
         if (fold_chart_summary(annotation, chart_endpoint, document)) {
           ++report.chart_summaries;
           charts_answered.insert(annotation.self_ref());
         } else {
-          ++skipped_events;
-          ++chart_skips;
-          report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                    " summary not applied (empty, or the picture already "
-                                    "has a description)");
+          ++chart_unfolded;
+          not_applied(annotation.self_ref(),
+                      "chart derender: " + annotation.self_ref() +
+                          " summary not applied (empty, or the picture already has a "
+                          "description)");
         }
       } else if (annotation.has_chart_code()) {
         if (fold_chart_code(annotation, chart_endpoint, document)) {
           ++report.chart_codes;
           charts_answered.insert(annotation.self_ref());
         } else {
-          ++skipped_events;
-          ++chart_skips;
-          report.warnings.push_back("chart derender: " + annotation.self_ref() +
-                                    " code not applied (empty, or the picture already has "
-                                    "code)");
+          ++chart_unfolded;
+          not_applied(annotation.self_ref(),
+                      "chart derender: " + annotation.self_ref() +
+                          " code not applied (empty, or the picture already has code)");
         }
       } else if (annotation.has_description()) {
+        ++description_events;
         if (fold_picture_description(annotation, options.vlm_endpoint, document)) {
           ++report.pictures_described;
           answered.insert(annotation.self_ref() + "#desc");
         } else {
-          ++skipped_events;
+          not_applied(annotation.self_ref(),
+                      "document enrich: " + annotation.self_ref() +
+                          " description not applied (empty, no picture at that reference, "
+                          "or the picture already has a description)");
         }
       } else if (annotation.has_code()) {
+        ++code_events;
         if (fold_code_annotation(annotation, document)) {
           ++report.codes_enriched;
         } else {
-          ++skipped_events;
+          not_applied(annotation.self_ref(),
+                      "document enrich: " + annotation.self_ref() +
+                          " code not applied (empty, or no code item at that reference)");
         }
       } else if (annotation.has_formula()) {
+        ++formula_events;
         if (fold_formula_annotation(annotation, document)) {
           ++report.formulas_enriched;
         } else {
-          ++skipped_events;
+          not_applied(annotation.self_ref(),
+                      "document enrich: " + annotation.self_ref() +
+                          " formula not applied (empty, or no formula item at that "
+                          "reference)");
         }
+      } else {
+        not_applied(annotation.self_ref(),
+                    "document enrich: " + annotation.self_ref() +
+                        " carries an annotation of a kind this build does not read");
       }
     } else if (event.has_skipped()) {
-      ++skipped_events;
-      if (event.skipped().chart_output() != enrichv1::CHART_OUTPUT_UNSPECIFIED) ++chart_skips;
+      ++report.skips_received;
+      count_skip(event.skipped());
       report.warnings.push_back("document enrich: " + event.skipped().self_ref() +
                                 " skipped (" + skip_reason_text(event.skipped()) + ")");
     }
@@ -674,19 +787,68 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                                               std::memory_order_relaxed);
   const int unanswered = std::max(0, report.candidates - report.derendered);
   count_skipped(unanswered);
+  // The reconciliation: what was selected and what the trailer claims,
+  // against the events that arrived. Only a stream that ended OK is held to
+  // it; a failed call has said so above.
+  const auto mismatch = [&report](int count, std::string text) {
+    report.warnings.push_back(
+        Warning(docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH, std::move(text))
+            .times(static_cast<uint64_t>(count)));
+  };
   if (options.chart_extraction.has_value()) {
     // One event per enabled output per chart: name the outputs that never
     // came back at all (not even as a skip).
     const int delivered =
-        report.chart_tables + report.chart_summaries + report.chart_codes + chart_skips;
+        report.chart_tables + report.chart_summaries + report.chart_codes + chart_unfolded;
     const int missing = report.candidates * outputs_per_chart - delivered;
     if (missing > 0 && status.ok() && options.do_chart_extraction) {
-      report.warnings.push_back("chart derender: " + std::to_string(missing) +
-                                " chart output(s) received no event before the stream ended");
+      mismatch(missing, "chart derender: " + std::to_string(missing) +
+                            " chart output(s) received no event before the stream ended");
     }
-  } else if (unanswered > skipped_events && status.ok() && options.do_chart_extraction) {
-    report.warnings.push_back("chart derender: " + std::to_string(unanswered - skipped_events) +
-                              " chart(s) received no event before the stream ended");
+  } else if (unanswered > chart_unfolded && status.ok() && options.do_chart_extraction) {
+    mismatch(unanswered - chart_unfolded,
+             "chart derender: " + std::to_string(unanswered - chart_unfolded) +
+                 " chart(s) received no event before the stream ended");
+  }
+  if (status.ok()) {
+    if (!report.trailer_seen) {
+      report.warnings.push_back(
+          Warning(docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+                  "document enrich: the enrich service's stream ended without its "
+                  "EnrichComplete trailer; what it had not yet answered is not enriched"));
+    } else {
+      const auto claimed_against = [&mismatch](uint32_t claimed, int arrived, const char* what) {
+        const int64_t difference = static_cast<int64_t>(claimed) - arrived;
+        if (difference == 0) return;
+        mismatch(static_cast<int>(difference < 0 ? -difference : difference),
+                 "document enrich: the enrich service's trailer counts " +
+                     std::to_string(claimed) + " " + what + "(s), " + std::to_string(arrived) +
+                     " arrived");
+      };
+      claimed_against(report.trailer_succeeded, report.annotations_received, "annotation");
+      claimed_against(report.trailer_skipped, report.skips_received, "skip");
+      if (report.items_failed > 0) {
+        mismatch(static_cast<int>(report.items_failed),
+                 "document enrich: the enrich service reports " +
+                     std::to_string(report.items_failed) +
+                     " item(s) failed outside the VLM call; they are not enriched and no "
+                     "event names them");
+      }
+    }
+    if (selected.has_value()) {
+      // Charts are reconciled above, against the candidates this side sent.
+      const auto unanswered_of = [&mismatch](uint32_t chosen, int events, const char* what) {
+        const int64_t missing = static_cast<int64_t>(chosen) - events;
+        if (missing <= 0) return;
+        mismatch(static_cast<int>(missing),
+                 "document enrich: " + std::to_string(missing) + " " + what +
+                     "(s) the enrich service selected received no event before the stream "
+                     "ended");
+      };
+      unanswered_of(selected->picture_descriptions(), description_events, "picture description");
+      unanswered_of(selected->code_enrichments(), code_events, "code item");
+      unanswered_of(selected->formula_enrichments(), formula_events, "formula item");
+    }
   }
   const auto enrich_elapsed_ns = static_cast<uint64_t>(
       std::chrono::duration_cast<std::chrono::nanoseconds>(

@@ -2323,7 +2323,7 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
                       [call] { return call.cancelled(); }, std::move(item_crops.crops));
-  for (const std::string& warning : derendered.warnings) {
+  for (const Warning& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
 }
