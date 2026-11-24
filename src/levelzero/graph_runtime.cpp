@@ -628,7 +628,7 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
             const int max_pool = node.op == IrOp::kMaxPool, include_pad = node.count_include_pad;
             // A size-keeping dense convolution over whole runs reads its input planes in place.
             const size_t planes = fp16_ && node.op == IrOp::kConv && !a.in_weights && c.oh == c.ih && c.ow == c.iw &&
-                                              (c.ih * c.iw) % 32 == 0
+                                              (c.ih * c.iw) % 8 == 0
                                       ? planes_offsets_[index]
                                       : SIZE_MAX;
             // Its last read spans 32 planes from the last whole block of 32 channels.

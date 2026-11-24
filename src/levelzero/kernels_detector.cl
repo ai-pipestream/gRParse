@@ -169,8 +169,9 @@ __kernel void conv_few_terms(__global const real* in, __global real* out, __glob
 // are one transform read with the channel planes as its rows; a pixel whose
 // tap falls outside the image, where the shifted run wraps to the
 // neighbouring row or leaves the plane, contributes zero.  Needs
-// ih * iw to be a multiple of 32, so every plane starts on a 64-byte
-// boundary and is a whole number of runs.  A read always spans 32 planes:
+// ih * iw to be a multiple of 8: the block read takes a pitch (here a
+// plane, ih * iw halves) only in multiples of 16 bytes, and returns other
+// data, with no error, for any other.  A plane's last run may be partial.  A read always spans 32 planes:
 // with fewer channels left it runs past the tensor, into arena the runtime
 // reserves, and the terms it brings from there are zeroed.  The block read
 // places a run only
@@ -222,7 +223,8 @@ void conv_planes_xmx(__global const half* in, __global const half* in1, __global
     const int dy = tap / p.kw - p.ph, dx = tap % p.kw - p.pw;
     int valid[2];
     for (int j = 0; j < 2; ++j) {
-      valid[j] = py[j] + dy >= 0 && py[j] + dy < p.ih && px[j] + dx >= 0 && px[j] + dx < p.iw;
+      valid[j] = q0 + 16 * j + lane < hw && py[j] + dy >= 0 && py[j] + dy < p.ih && px[j] + dx >= 0 &&
+                 px[j] + dx < p.iw;
     }
     if (!sub_group_any(valid[0] | valid[1])) continue;
     __global const half* wt = w + (size_t)tap * cop * cip;
@@ -234,12 +236,13 @@ void conv_planes_xmx(__global const half* in, __global const half* in1, __global
       intel_sub_group_2d_block_read_16b_16r16x2c((__global void*)wt, cip * 2, cop, cip * 2, (int2)(c0, m0),
                                                  (__private ushort*)blk);
       for (int j = 0; j < 2; ++j) {
-        // The shifted run's first element, split into a 32-element (64-byte) base and the rest.
-        const int s = q0 + 16 * j + dy * p.iw + dx - odd, base = (s >> 5) << 5;
+        // The shifted run's first element: its address split into a
+        // 64-byte-aligned base and the even number of elements past it.
+        const ulong at = (ulong)(src + (ptrdiff_t)c0 * hw + (q0 + 16 * j + dy * p.iw + dx - odd));
+        const ulong base = at & ~(ulong)63;
         int8 r[2];
-        intel_sub_group_2d_block_read_transform_16b_32r16x1c(
-            (__global void*)(src + (ptrdiff_t)c0 * hw + base), 128, 32, hw * 2, (int2)(s - base, 0),
-            (__private uint*)r);
+        intel_sub_group_2d_block_read_transform_16b_32r16x1c((__global void*)base, 128, 32, hw * 2,
+                                                             (int2)((int)(at - base) >> 1, 0), (__private uint*)r);
         if (!valid[j]) r[0] = r[1] = (int8)(0);
         // The read takes 32 planes whatever the height it is given: past
         // the last channel it holds whatever follows the tensor, which the
@@ -262,12 +265,14 @@ void conv_planes_xmx(__global const half* in, __global const half* in1, __global
     for (int j = 0; j < 2; ++j) {
       float8 v = acc[i][j];
       for (int m = 0; m < 8; ++m) v[m] = activate(v[m] + bias[min(row + m, p.co - 1)], p.act, p.alpha, p.beta);
-      if (row + 8 <= p.co) {
+      if (row + 8 <= p.co && q0 + 16 * j + 16 <= hw) {
         ushort8 h = as_ushort8(convert_half8(v));
-        intel_sub_group_2d_block_write_16b_8r16x1c((__global void*)(out + (size_t)row * hw + q0), 128, 8, hw * 2,
-                                                   (int2)(16 * j, 0), (__private ushort*)&h);
-      } else {
-        for (int m = 0; row + m < p.co; ++m) vstore_half(v[m], (size_t)(row + m) * hw + q0 + 16 * j + lane, out);
+        const ulong at = (ulong)(out + (size_t)row * hw + q0 + 16 * j), base = at & ~(ulong)63;
+        intel_sub_group_2d_block_write_16b_8r16x1c((__global void*)base, 128, 8, hw * 2,
+                                                   (int2)((int)(at - base) >> 1, 0), (__private ushort*)&h);
+      } else if (q0 + 16 * j + lane < hw) {
+        // The last channels, or a plane's last, partial run: one element at a time.
+        for (int m = 0; m < 8 && row + m < p.co; ++m) vstore_half(v[m], (size_t)(row + m) * hw + q0 + 16 * j + lane, out);
       }
     }
   }
