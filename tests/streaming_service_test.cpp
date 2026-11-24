@@ -7425,6 +7425,32 @@ StreamedChunks read_stream_chunks(TestServer* server,
   return streamed;
 }
 
+// The two retired bags are off the wire, not merely unwritten: a chunk has
+// no string `metadata` map and a chunk response no `chunking_info` map. A
+// reader takes typed_metadata and chunker_settings, and neither number nor
+// name can come back meaning something else.
+void verify_the_retired_chunk_maps_are_off_the_wire() {
+  struct Retired {
+    const google::protobuf::Descriptor* message;
+    int number;
+    const char* name;
+  };
+  const Retired retired[] = {
+      {pipestream::parse::v1::Chunk::descriptor(), 10, "metadata"},
+      {pipestream::parse::v1::ChunkDocumentResponse::descriptor(), 4, "chunking_info"},
+      {pipestream::parse::v1::StreamChunksSummary::descriptor(), 4, "chunking_info"},
+  };
+  for (const Retired& field : retired) {
+    const std::string where = std::string(field.message->name()) + "." + field.name;
+    require(field.message->FindFieldByNumber(field.number) == nullptr &&
+                field.message->FindFieldByName(field.name) == nullptr,
+            where + " is no longer a field");
+    require(field.message->IsReservedNumber(field.number) &&
+                field.message->IsReservedName(field.name),
+            where + ": its number and name are reserved");
+  }
+}
+
 // The streamed chunker sends exactly the unary chunks, one per message in
 // order, then one summary; a refused request sends nothing.
 void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
@@ -8658,6 +8684,7 @@ int main() {
         verify_hierarchical_chunk_rpc_carries_digest_and_offsets(&server);
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
+        verify_the_retired_chunk_maps_are_off_the_wire();
         verify_vlm_pipeline_document_carries_the_parse_identity();
         verify_vlm_pipeline_losses_reach_the_caller_typed();
         verify_vlm_pipeline_response_carries_text_offsets();
