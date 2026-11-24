@@ -85,6 +85,20 @@ bool is_stream_rejection_code(grpc::StatusCode code) {
   }
 }
 
+// One collector that could not contribute, as both stream surfaces report
+// it: on the complete event of StreamProcessDocument and on the
+// source_result of StreamDocument. The category is the one
+// failure_category_for gives the leg's status class, which is what the
+// unary surface puts on that collector's ErrorItem, so no surface can
+// classify the same failure differently.
+void report_collector_failure(pipestream::parse::v1::Collector collector, grpc::StatusCode code,
+                              const std::string& error,
+                              pipestream::parse::v1::CollectorFailure* failure) {
+  failure->set_collector(collector);
+  failure->set_error(error);
+  failure->set_category(failure_category_for(code));
+}
+
 // One queued write. The message lives on the heap, as the Documents and
 // pages moved into it do: a message on an arena of its own would turn each
 // of those moves into a deep copy, a second Document held until the write.
@@ -1268,14 +1282,17 @@ class DocumentStreamReactor final
       // out of the repair event folds no pages, so the stream builds no
       // fold to diff against.
       std::optional<pipestream::parse::v1::DocumentRepairDelta> delta;
-      if (!repair_delta_wanted()) {
-        // No delta.
-      } else if (pages_streamed) {
+      if (pages_streamed) {
         if (!fold_has_cv_ && !fold_settled_) {
+          // The collector's Document stands for these pages from here on,
+          // and the structural rules were checked on it above, so the fold
+          // is settled even when it was kept only for that check.
           fold_settled_ = true;
-          delta = repair_delta(stream_fold_.document(), outcome.document, renamed, collector);
+          if (repair_delta_wanted()) {
+            delta = repair_delta(stream_fold_.document(), outcome.document, renamed, collector);
+          }
         }
-      } else if (!pages.empty()) {
+      } else if (repair_delta_wanted() && !pages.empty()) {
         PageFold fold;
         for (const auto& [_, event] : pages) fold.fold(event->message.page());
         count_folded_pages(pages.size());
@@ -1328,10 +1345,8 @@ class DocumentStreamReactor final
 
   void record_part_failure_locked(pipestream::parse::v1::Collector collector,
                                   grpc::Status status) {
-    auto* failure = collector_failures_.Add();
-    failure->set_collector(collector);
-    failure->set_error(status.error_message());
-    failure->set_category(failure_category_for(status.error_code()));
+    report_collector_failure(collector, status.error_code(), status.error_message(),
+                             collector_failures_.Add());
     if (first_failure_status_.ok()) first_failure_status_ = std::move(status);
   }
 
@@ -1351,7 +1366,15 @@ class DocumentStreamReactor final
     }
     std::map<std::string, int32_t> levels;
     if (!header_heights_.empty()) levels = section_header_levels(std::move(header_heights_));
-    emit_fold_delta_locked(levels);
+    google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding> findings;
+    const grpc::Status fold_status = settle_fold_locked(levels, &findings);
+    if (!fold_status.ok()) {
+      // ENFORCE on the pages no collector Document stands for (or a check
+      // that could not run): the stream fails where ConvertSource fails the
+      // request, and no complete event claims otherwise.
+      request_finish_locked(fold_status);
+      return;
+    }
     auto event = std::make_unique<Event>();
     event->message.set_document_id(document_id_);
     event->message.set_total_pages(total_pages_);
@@ -1364,6 +1387,7 @@ class DocumentStreamReactor final
     *complete->mutable_collector_failures() = collector_failures_;
     complete->mutable_section_header_levels()->insert(levels.begin(), levels.end());
     if (!repair_delta_wanted()) complete->set_repair_delta_omitted(true);
+    complete->mutable_structure_findings()->Swap(&findings);
     for (const Warning& warning : assembly_warnings_) {
       complete->add_warnings(warning.message);
       stamp_warning(warning, collector_name(pipestream::parse::v1::COLLECTOR_GRPARSE_CV),
@@ -1380,36 +1404,74 @@ class DocumentStreamReactor final
   // them) went out as recognized, before anything whole-document could run
   // on them. Here the stream catches up with the unary path: the fold of
   // those pages, with the terminal event's heading levels applied, gets the
-  // list grouping and the repair pass, and whatever they changed goes out
-  // as the repair event. Inspector-only pages whose collector Document
+  // list grouping and the repair pass, the structural rules check the
+  // result when the request validates, and whatever the passes changed goes
+  // out as the repair event. Inspector-only pages whose collector Document
   // never arrived get the repair pass alone.
-  void emit_fold_delta_locked(const std::map<std::string, int32_t>& levels) {
-    if (stream_fold_.empty() || fold_settled_) return;
+  //
+  // No collector Document stands for these pages, so this is the one place
+  // their structure can be checked. REPORT appends to `findings`; a non-OK
+  // return ends the stream: ENFORCE's FAILED_PRECONDITION, or the failure
+  // that kept a requested check from running. Only a request that does not
+  // validate may lose its repair event to a warning.
+  grpc::Status settle_fold_locked(
+      const std::map<std::string, int32_t>& levels,
+      google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding>* findings) {
+    if (stream_fold_.empty() || fold_settled_) return grpc::Status::OK;
     fold_settled_ = true;
+    const bool validates = structure_.validates();
+    pipestream::document::v1::Document before;
+    pipestream::document::v1::Document after;
+    std::map<std::string, std::string> renamed;
     try {
-      pipestream::document::v1::Document before = stream_fold_.document();
-      apply_section_header_levels(levels, &before);
-      pipestream::document::v1::Document after = before;
-      std::map<std::string, std::string> renamed;
-      {
-        const ReferenceRenameLog log;
-        if (fold_has_cv_) group_list_items(&after);
-        if (repair_.has_value()) {
-          // The CV pages' pass counts toward the server's repair totals as
-          // the unary path's does; inspector pages already counted with
-          // their collector's Document.
-          if (fold_has_cv_) {
-            run_repair_pass(&after, *repair_);
-          } else {
-            repair_document(&after, *repair_);
-          }
+      after = stream_fold_.document();
+      apply_section_header_levels(levels, &after);
+      if (repair_delta_wanted()) before = after;
+      const ReferenceRenameLog log;
+      if (fold_has_cv_) group_list_items(&after);
+      if (repair_.has_value()) {
+        // The CV pages' pass counts toward the server's repair totals as
+        // the unary path's does; inspector pages already counted with
+        // their collector's Document.
+        if (fold_has_cv_) {
+          run_repair_pass(&after, *repair_);
+        } else {
+          repair_document(&after, *repair_);
         }
-        renamed = log.renames();
       }
+      renamed = log.renames();
+    } catch (const std::exception& error) {
+      if (validates) {
+        // The document the rules were asked to check does not exist, and
+        // an unchecked stream must not finish as a checked one.
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                            std::string(kStreamSurface) +
+                                ": structure_validation could not run, the whole-document "
+                                "passes failed on the streamed pages: " +
+                                error.what());
+      }
+      assembly_warnings_.push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_REPAIR_EVENT_SKIPPED,
+                  std::string("the streamed pages' repair event was skipped: ") + error.what()));
+      return grpc::Status::OK;
+    }
+    if (validates) {
+      // Outside the handlers that turn a lost repair event into a warning:
+      // a finding, or a check that threw, is the stream's status.
+      try {
+        const grpc::Status structure_status =
+            check_structure(after, structure_, kStreamSurface, findings);
+        if (!structure_status.ok()) return structure_status;
+      } catch (...) {
+        return status_from_exception(std::current_exception());
+      }
+    }
+    if (!repair_delta_wanted()) return grpc::Status::OK;
+    try {
       auto delta = repair_delta(before, after, renamed,
                                 fold_has_cv_ ? pipestream::parse::v1::COLLECTOR_GRPARSE_CV
                                              : pipestream::parse::v1::COLLECTOR_PDF);
-      if (!delta.has_value()) return;
+      if (!delta.has_value()) return grpc::Status::OK;
       auto event = std::make_unique<Event>();
       event->message.set_document_id(document_id_);
       event->message.set_total_pages(total_pages_);
@@ -1420,16 +1482,20 @@ class DocumentStreamReactor final
           Warning(pipestream::document::v1::WARNING_CODE_REPAIR_EVENT_SKIPPED,
                   std::string("the streamed pages' repair event was skipped: ") + error.what()));
     }
+    return grpc::Status::OK;
   }
 
   // DocumentChunk.repair_delta: unset or true keeps the repair events.
   bool repair_delta_wanted() const { return repair_delta_.value_or(true); }
 
-  // Folds one streamed page event into stream_fold_, unless the client
-  // opted out of the repair event: then the stream keeps no second copy of
-  // the pages it sent, and emit_fold_delta_locked finds the fold empty.
+  // Folds one streamed page event into stream_fold_, unless nothing will
+  // read the fold: the client opted out of the repair event and asked for
+  // no structural check. Then the stream keeps no second copy of the pages
+  // it sent, and settle_fold_locked finds the fold empty. A request that
+  // validates keeps the fold whatever repair_delta says, because the fold
+  // is the only whole document these pages ever form on the server.
   void fold_locked(const pipestream::parse::v1::PageData& page) {
-    if (!repair_delta_wanted()) return;
+    if (!repair_delta_wanted() && !structure_.validates()) return;
     stream_fold_.fold(page);
     count_folded_pages(1);
   }
@@ -1567,7 +1633,8 @@ class DocumentStreamReactor final
   // Every page event this stream emitted page by page (CV pages and the
   // inspector's streamed fast path), folded the way a client folds them,
   // so the end of the stream can say what the whole-document passes
-  // changed. Settled once its repair event is decided.
+  // changed and check the structural rules on the result. Settled once its
+  // repair event and its check are decided.
   PageFold stream_fold_;
   bool fold_has_cv_ = false;
   bool fold_settled_ = false;
@@ -1576,7 +1643,8 @@ class DocumentStreamReactor final
   // and fixed before any page streams (the plan starts on the complete
   // chunk).
   std::optional<bool> repair_delta_;
-  // The service's count of page events folded for repair events, shared
+  // The service's count of page events folded for repair events (or for
+  // the structural check of a stream that opted out of them), shared
   // by every stream it serves (DocumentStreamingService::folded_page_events).
   std::shared_ptr<std::atomic<uint64_t>> folded_pages_;
   // Each streamed CV page's read quality, folded into the terminal event.
@@ -1834,25 +1902,36 @@ class SourceStreamReactor final
       result.set_filename(!parsed.filename.empty() || !single.sources(0).has_file()
                               ? parsed.filename.string()
                               : single.sources(0).file().filename());
+      // success says a Document was produced; status is what tells a full
+      // conversion from one a collector is missing from.
       result.set_success(status.ok());
       std::unique_lock<std::mutex> lock(mutex_);
       ++processed_;
       if (status.ok()) {
-        ++(parsed.result.failures.empty() ? succeeded_ : partially_succeeded_);
+        const auto& failures = parsed.result.failures;
+        ++(failures.empty() ? succeeded_ : partially_succeeded_);
+        result.set_status(failures.empty()
+                              ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                              : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
         result.set_document_name(final_document->final_document().name());
-        // A partial success names the collectors that could not contribute.
-        std::string failures;
-        for (const auto& failure : parsed.result.failures) {
-          if (!failures.empty()) failures += "; ";
-          failures += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
+        // A partial success names the collectors that could not contribute:
+        // one typed entry each, and the same list joined into error_message
+        // for the readers that predate collector_failures.
+        std::string joined;
+        for (const auto& failure : failures) {
+          report_collector_failure(failure.id, failure.code, failure.error,
+                                   result.add_collector_failures());
+          if (!joined.empty()) joined += "; ";
+          joined += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
         }
-        if (!failures.empty()) result.set_error_message(failures);
+        if (!joined.empty()) result.set_error_message(joined);
         final_document->set_source_index(source_index);
         queue_locked(std::move(final_document));
         source_outputs->set_source_index(source_index);
         queue_locked(std::move(source_outputs));
       } else {
         ++failed_;
+        result.set_status(pipestream::parse::v1::CONVERSION_STATUS_FAILURE);
         result.set_error_message(status.error_message());
         auto error = std::make_unique<Envelope>();
         error->set_source_index(source_index);
