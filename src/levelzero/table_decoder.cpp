@@ -202,7 +202,7 @@ class TableDecoder::Impl {
     if (features.size() != size_t(kPositions) * kChannels) {
       throw std::invalid_argument("table decoder: features must be 256 x 96");
     }
-    Pending pending{features.data()};
+    Pending pending{features.data(), {}, {}, false};
     std::unique_lock lock(mutex_);
     queue_.push_back(&pending);
     while (!pending.done) {
