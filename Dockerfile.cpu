@@ -98,6 +98,32 @@ RUN apt-get update && apt-get install -y --no-install-recommends ccache \
     && rm -rf /var/lib/apt/lists/*
 ENV CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G
 ARG GRPARSE_BUILD_JOBS=2
+# The Hailo-10H flavor: --build-arg GRPARSE_HAILORT_VERSION=5.1.1 builds
+# HailoRT's runtime library from its MIT-licensed source
+# (github.com/hailo-ai/hailort, hailort/LICENSE) and turns on the native
+# backend (cmake/Hailo.cmake, GRPARSE_ORT_EP=hailo at run time). Empty, the
+# default, builds the plain CPU image with no HailoRT in it. The version must
+# be the HailoRT release of the host's Hailo PCIe driver and firmware: the
+# library talks to the chip through /dev/hailo0 and refuses another release.
+# The commit pins what the tag pointed at when this was written. Nothing is
+# taken from a distribution package, and no firmware or compiler is in the
+# image; this step sits after the seed inputs, so it does not change the seed.
+# Pass --build-arg GRPARSE_BUILD_CACHE_SCOPE=-hailo with it, so this flavor
+# keeps a build tree of its own instead of reconfiguring the CPU one.
+ARG GRPARSE_HAILORT_VERSION=
+ARG GRPARSE_HAILORT_COMMIT=1adb3306b57f0bc44166a5ecb1b87c4c116ae0e7
+RUN mkdir -p /opt/hailort/lib /opt/hailort/include /opt/hailort/licenses \
+ && if [ -n "${GRPARSE_HAILORT_VERSION}" ]; then \
+      git clone --depth 1 --branch "v${GRPARSE_HAILORT_VERSION}" https://github.com/hailo-ai/hailort.git /tmp/hailort \
+   && test "$(git -C /tmp/hailort rev-parse HEAD)" = "${GRPARSE_HAILORT_COMMIT}" \
+   && cmake -S /tmp/hailort -B /tmp/hailort-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+   && cmake --build /tmp/hailort-build --target libhailort --parallel ${GRPARSE_BUILD_JOBS} \
+   && cp -a /tmp/hailort/hailort/libhailort/include/hailo /opt/hailort/include/ \
+   && cp -a /tmp/hailort-build/hailort/libhailort/src/libhailort.so* /opt/hailort/lib/ \
+   && cp /tmp/hailort/hailort/LICENSE /tmp/hailort/hailort/LICENSE-3RD-PARTY.md /opt/hailort/licenses/ \
+   && rm -rf /tmp/hailort /tmp/hailort-build; \
+    fi
 # CI fills models/ in the build context and passes 1, so the in-build ctest
 # fails on a missing model instead of skipping the model-backed goldens.
 ARG GRPARSE_TEST_REQUIRE_MODELS=0
@@ -142,9 +168,11 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.84.1-ort1.30.0-cxx23-sessio
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=cpu -DGRPARSE_TEST_TIMEOUT=600 \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
       -DGRPARSE_COMPILER_LAUNCHER=ccache \
+      -DGRPARSE_NATIVE_HAILO=$([ -n "${GRPARSE_HAILORT_VERSION}" ] && echo ON || echo OFF) \
+      -DGRPARSE_HAILORT_ROOT=/opt/hailort \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
- && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
+ && LD_LIBRARY_PATH=/opt/opencv/lib:/opt/hailort/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
       --output-junit /build/ctest-junit.xml \
  && skips="${GRPARSE_EXPECTED_SKIPS:-$( [ "$GRPARSE_TEST_REQUIRE_MODELS" = 1 ] && echo embeddings,emulators || echo models,embeddings,emulators )}" \
  && sh scripts/check-skips.sh /build/ctest-junit.xml "$skips" \
@@ -168,7 +196,7 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.84.1-ort1.30.0-cxx23-sessio
 # out instead of staging a second copy of each library under its SONAME.
 # The last line holds this image to the invariant the vendored OpenCV
 # exists for: no poppler in the staged closure.
-RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
+RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib:/opt/hailort/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
          /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/ort-libs/*.so* \
@@ -182,7 +210,7 @@ RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
 # them, and this image is never published. Their closure is staged apart so
 # the runtime image's libraries stay exactly the server's.
 FROM build AS e2e-closure
-RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
+RUN LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib:/opt/hailort/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/e2e-libs /out/e2e/* /out/ort-libs/*.so*
 
@@ -212,13 +240,18 @@ LABEL org.opencontainers.image.revision=${GRPARSE_REVISION}
 ENV GRPARSE_LISTEN_ADDRESS=0.0.0.0:50051 GRPARSE_MODELS_DIR=/models GRPARSE_PAGE_WORKERS=2 \
     GRPARSE_ORT_EP=cpu \
     GRPARSE_LAYOUT_MODEL=heron \
-    LD_LIBRARY_PATH=/usr/local/lib
+    LD_LIBRARY_PATH=/usr/local/lib \
+    HAILORT_LOGGER_PATH=NONE
+# HAILORT_LOGGER_PATH=NONE: HailoRT (the Hailo-10H flavor only) otherwise
+# writes hailort.log into the working directory, which this user cannot write.
 # The base carries no CA bundle, and libcurl (https S3, HTTP and storage
 # sources and targets) refuses every TLS peer without one; the build stage's
 # ca-certificates bundle is the one its tests verified against.
 COPY --from=build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 COPY --from=build /out/runtime-libs/ /usr/local/lib/
 COPY --from=build /out/ort-libs/ /usr/local/lib/
+# HailoRT's license texts when the image carries its library; empty otherwise.
+COPY --from=build /opt/hailort/licenses/ /usr/share/licenses/hailort/
 COPY --from=build /out/grparse-server /usr/local/bin/grparse-server
 COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-client
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text

@@ -1,0 +1,6 @@
+grparse_ort_sessions{model="OCR detection",requested="Hailo",actual="Hailo",device="HAILO10H",pin=""} 1
+grparse_ort_sessions{model="OCR direction",requested="Hailo",actual="Hailo",device="HAILO10H",pin=""} 1
+grparse_ort_sessions{model="OCR recognition",requested="Hailo",actual="Hailo",device="HAILO10H",pin=""} 1
+grparse_ort_sessions{model="layout",requested="Hailo",actual="Hailo",device="HAILO10H",pin=""} 1
+grparse_ort_sessions{model="table structure",requested="Hailo",actual="CPU",device="",pin="the Hailo compiler cannot parse the structure decoder's Loop"} 2
+grparse_ort_sessions{model="figure classes",requested="Hailo",actual="Hailo",device="HAILO10H",pin=""} 1

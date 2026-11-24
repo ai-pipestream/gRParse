@@ -13,6 +13,8 @@
 
 #include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
+#include "hailo/hailo_models.h"
+#include "hailo/hailo_vision.h"
 
 namespace grparse {
 namespace {
@@ -48,6 +50,15 @@ class FigureClassifierEngine::Impl {
       : env_(ORT_LOGGING_LEVEL_ERROR, "grparse-figure-classifier") {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Figure classifier model is missing: " + model_path.string());
+    }
+    if (ort_ep_selection().ep == OrtEp::kHailo) {
+      // On the Hailo device the classifier is its HEF (model_path is that
+      // HEF), shared by every pooled engine.  Loading it ran one frame, and
+      // FigureLogits checks the class count against the label set.
+      device_ = std::make_unique<hailo::FigureLogits>(
+          hailo::shared_model(hailo::ModelId::kFigureClasses), static_cast<int>(labels().size()));
+      warmed_ = true;
+      return;
     }
     // Same provider decision point as the other models.
     // One crop per call: the free batch dimension is fixed for a backend
@@ -85,6 +96,7 @@ class FigureClassifierEngine::Impl {
     if (crop.empty() || crop.type() != CV_8UC3) {
       throw std::invalid_argument("Figure classification expects a non-empty BGR crop");
     }
+    if (device_) return ranked(device_->run(crop).data());
     cv::Mat resized;
     cv::resize(crop, resized, cv::Size(kInputSize, kInputSize));
 
@@ -113,6 +125,14 @@ class FigureClassifierEngine::Impl {
     }
     const float* logits = outputs[0].floats();
 
+    warmed_ = true;
+    return ranked(logits);
+  }
+
+ private:
+  // Softmax over the logits, most likely class first.
+  static std::vector<FigureClass> ranked(const float* logits) {
+    const auto& class_labels = labels();
     float highest = logits[0];
     for (size_t index = 1; index < class_labels.size(); ++index) {
       highest = std::max(highest, logits[index]);
@@ -130,13 +150,13 @@ class FigureClassifierEngine::Impl {
       if (a.confidence != b.confidence) return a.confidence > b.confidence;
       return a.label < b.label;
     });
-    warmed_ = true;
     return classes;
   }
 
- private:
   Ort::Env env_;
   std::unique_ptr<InferenceModel> model_;
+  // Set instead of model_ when the classifier runs on the Hailo device.
+  std::unique_ptr<hailo::FigureLogits> device_;
   // First inference compiles provider kernels; see the gate in classify().
   bool warmed_ = false;
 };

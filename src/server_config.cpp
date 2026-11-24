@@ -20,6 +20,8 @@
 #include "grparse/vlm_convert.h"
 #include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
+#include "hailo/hailo_placement.h"
+#include "hailo/hailo_runtime.h"
 
 namespace grparse {
 namespace {
@@ -184,6 +186,44 @@ std::unique_ptr<grparse::OcrEnginePool> build_pool_with(grparse::OrtEp ep,
         "RapidOcr session hook never ran: the rapidocr dependency was built without "
         "patches/rapidocr-session-ep.patch; rebuild with a fresh dependency cache");
   }
+  return pool;
+}
+
+// GRPARSE_HAILO_HEF_DIR: where the HEFs are; <models>/hailo10h when unset.
+std::filesystem::path configured_hailo_hef_dir(const std::filesystem::path& models) {
+  const char* configured = std::getenv("GRPARSE_HAILO_HEF_DIR");
+  return configured == nullptr || *configured == '\0' ? models / "hailo10h"
+                                                      : std::filesystem::path(configured);
+}
+
+// The HEF a device model of the selection loads.
+std::filesystem::path hailo_hef(grparse::hailo::ModelId id) {
+  return std::filesystem::path(grparse::ort_ep_selection().hailo_hef_dir) /
+         std::string(grparse::hailo::placement_rule(id).hef);
+}
+
+// The warm OCR pool on the Hailo device.  The device is opened first, so a
+// host without one stops here, before any model is read; then every engine
+// loads (or shares) the three OCR HEFs.  There is no retry and no other
+// provider behind it: any failure is the startup failure.
+std::unique_ptr<grparse::OcrEnginePool> build_hailo_pool(const std::filesystem::path& models,
+                                                         size_t worker_count) {
+  grparse::hailo::DeviceIdentity device;
+  try {
+    device = grparse::hailo::open_device();
+  } catch (const std::exception& error) {
+    throw std::invalid_argument(std::string("GRPARSE_ORT_EP=hailo: ") + error.what());
+  }
+  const std::filesystem::path hef_dir = configured_hailo_hef_dir(models);
+  grparse::set_ort_ep_selection(grparse::OrtEpSelection{
+      .ep = grparse::OrtEp::kHailo,
+      .hailo_device = device.architecture,
+      .hailo_hef_dir = hef_dir.string(),
+  });
+  grparse::reset_ort_placements();
+  auto pool = std::make_unique<grparse::OcrEnginePool>(models, worker_count, -1);
+  std::println("gRParse OCR execution provider: Hailo ({} at {}, firmware {}, HEFs from {})",
+               device.architecture, device.id, device.firmware, hef_dir.string());
   return pool;
 }
 
@@ -695,6 +735,7 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     std::println("gRParse OCR execution provider: OpenVINO ({})", configured_openvino_device());
     return pool;
   }
+  if (ep == "hailo") return build_hailo_pool(models, worker_count);
   if (ep == "cpu") {
     auto pool = build_pool_with(grparse::OrtEp::kCpu, models, worker_count, gpu_index);
     std::println("gRParse OCR execution provider: CPU (GRPARSE_ORT_EP=cpu)");
@@ -741,13 +782,19 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
     std::println("gRParse OCR execution provider: CPU (selected by GRPARSE_ORT_EP=auto)");
     return pool;
   }
-  throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, cpu, or auto");
+  throw std::invalid_argument("GRPARSE_ORT_EP must be cuda, openvino, hailo, cpu, or auto");
 }
 
 std::unique_ptr<LayoutEngine> build_layout_engine(const std::filesystem::path& models_dir) {
   const std::string mode = configured_mode("GRPARSE_LAYOUT", "auto", {"auto", "on", "off"});
   const grparse::LayoutModel selection = grparse::configured_layout_model();
-  const std::filesystem::path model = models_dir / grparse::layout_model_file(selection);
+  // On the Hailo device the anchor-free detector is a HEF; the query detector
+  // stays an ONNX file on CPU (src/hailo/hailo_placement.cpp says why).
+  const bool on_hailo = grparse::ort_ep_selection().ep == grparse::OrtEp::kHailo &&
+                        selection == grparse::LayoutModel::kPicoDet;
+  const std::filesystem::path model =
+      on_hailo ? hailo_hef(grparse::hailo::ModelId::kLayoutAnchorFree)
+               : models_dir / grparse::layout_model_file(selection);
   if (mode == "off") {
     std::println("gRParse layout: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
@@ -799,7 +846,11 @@ std::unique_ptr<FigureClassifierPool> build_figure_classifier_pool(
     const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
   const std::string mode =
       configured_mode("GRPARSE_FIGURE_CLASSES", "auto", {"auto", "on", "off"});
-  const std::filesystem::path model = models_dir / "figure_classifier.onnx";
+  // On the Hailo device the classifier is a HEF, not the ONNX file.
+  const std::filesystem::path model =
+      grparse::ort_ep_selection().ep == grparse::OrtEp::kHailo
+          ? hailo_hef(grparse::hailo::ModelId::kFigureClasses)
+          : models_dir / "figure_classifier.onnx";
   if (mode == "off") {
     std::println("gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)");
     return nullptr;

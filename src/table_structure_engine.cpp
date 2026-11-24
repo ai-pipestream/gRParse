@@ -17,6 +17,7 @@
 
 #include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
+#include "hailo/hailo_placement.h"
 
 namespace grparse {
 namespace {
@@ -197,6 +198,10 @@ class TableStructureEngine::Impl {
       session_ = make_pinned_cpu_session(
           env_, model_path, "table structure",
           "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
+    } else if (ort_ep_selection().ep == OrtEp::kHailo) {
+      // The same Loop stops the Hailo compiler at the parser.
+      session_ = make_pinned_cpu_session(env_, model_path, "table structure",
+                                         hailo::cpu_pin_reason(hailo::ModelId::kTableStructure));
     } else {
       session_ = make_session(env_, model_path, "table structure");
     }

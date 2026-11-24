@@ -112,11 +112,13 @@ full-device execution.
 
 Env knobs:
 
-- `GRPARSE_ORT_EP=cuda|openvino|cpu|auto` — `cuda` is the default and fails
+- `GRPARSE_ORT_EP=cuda|openvino|hailo|cpu|auto` — `cuda` is the default and fails
   loud (native TensorRT in the CUDA image); `openvino` targets Intel devices
-  through the OpenVINO build; `cpu` is an explicit choice, never a silent
-  fallback; `auto` takes a CUDA device when one is present (and then builds
-  on it or fails, like `cuda`), then OpenVINO, then CPU, logging each step.
+  through the OpenVINO build; `hailo` runs HEFs on a Hailo-10H through HailoRT
+  (`src/hailo/`, README "Hailo-10H") and is never chosen by `auto`; `cpu` is an
+  explicit choice, never a silent fallback; `auto` takes a CUDA device when one
+  is present (and then builds on it or fails, like `cuda`), then OpenVINO, then
+  CPU, logging each step.
 - `GRPARSE_TENSORRT_CACHE_DIR=<dir>` — where built TensorRT engines are kept
   between starts; unset (the default) builds them at every start. Requesting a provider the linked
   ONNX Runtime does not offer fails with the list that is available.

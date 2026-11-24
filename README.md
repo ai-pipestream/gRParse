@@ -497,10 +497,12 @@ one of it. Select the NVIDIA device with
 `cuda` (default, fails startup if CUDA cannot initialize; in the CUDA image
 this is native TensorRT, not an ONNX Runtime provider, see "NVIDIA GPUs
 (TensorRT)" below), `openvino` (Intel GPU/CPU/NPU through the OpenVINO
-build, see below), `cpu` (explicit CPU inference on ONNX Runtime), or `auto`
-(a CUDA device when one is present, then OpenVINO, then CPU, logging each
-step; with a CUDA device present the models build on it or startup fails,
-exactly as under `cuda`). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
+build, see below), `hailo` (a Hailo-10H through HailoRT, not an ONNX Runtime
+provider either, see "Hailo-10H" below), `cpu` (explicit CPU inference on
+ONNX Runtime), or `auto` (a CUDA device when one is present, then OpenVINO,
+then CPU, logging each step; with a CUDA device present the models build on
+it or startup fails, exactly as under `cuda`; `auto` never picks the Hailo
+device). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
 crops the angle classifier and recognizer take per call: 16 under CUDA, 1
 under CPU (where padding costs more than batching saves) and OpenVINO (whose
 GPU plugin compiles kernels for every new input shape).
@@ -1376,6 +1378,134 @@ went out, and the `complete` line adds `upload_ms`, `first_page_ms` and
 or in one burst at the end. The client deadline is ten minutes; set
 `GRPARSE_STREAM_CLIENT_DEADLINE_S` for longer documents.
 
+## Hailo-10H (HailoRT)
+
+On a Raspberry Pi 5 with a Hailo-10H (AI HAT+ 2), `GRPARSE_ORT_EP=hailo`
+runs the image models on the chip through HailoRT, with no ONNX Runtime
+session for any model the chip runs. The chip is not an ONNX Runtime
+provider: it runs HEF files, each a network compiled offline for one chip
+family at fixed input shapes ([models/hailo/README.md](models/hailo/README.md)
+has the build scripts, the compiler's verdict per model and the accuracy of
+each HEF against its float model).
+
+`Dockerfile.cpu` builds the flavor on arm64 when given the HailoRT release of
+the host's Hailo driver and firmware; the library is built from HailoRT's
+MIT-licensed source, nothing comes from a distribution package, and the
+image carries no firmware and no compiler:
+
+```bash
+docker build -f Dockerfile.cpu -t grparse-hailo \
+  --build-arg GRPARSE_HAILORT_VERSION=5.1.1 --build-arg GRPARSE_BUILD_CACHE_SCOPE=-hailo .
+docker run --rm --device /dev/hailo0 -v /path/to/models:/models:ro -p 50051:50051 \
+  -e GRPARSE_ORT_EP=hailo -e GRPARSE_LAYOUT_MODEL=picodet grparse-hailo
+```
+
+The HEFs are read from `GRPARSE_HAILO_HEF_DIR` (default
+`<models>/hailo10h`). They are build outputs of `models/hailo/` and are not
+published or fetched by `scripts/fetch-models.sh` yet. Only one process can
+hold the chip, so one server per device.
+
+Where each model runs is one table in code
+(`src/hailo/hailo_placement.cpp`), and there is no third option beside its
+two columns:
+
+| Model | Under `GRPARSE_ORT_EP=hailo` | Why |
+|---|---|---|
+| OCR detection | Hailo, `det_640.hef` | |
+| OCR direction | Hailo, `cls_48x192.hef` | |
+| OCR recognition | Hailo, `rec_48x320.hef` | |
+| Layout, `GRPARSE_LAYOUT_MODEL=picodet` | Hailo, `layout_800x608.hef` | |
+| Figure classes | Hailo, `figure_224.hef` | |
+| Layout, `GRPARSE_LAYOUT_MODEL=heron` | CPU, pinned | the Hailo compiler has no GridSample, GatherElements or TopK, which the query decoder needs |
+| Table structure | CPU, pinned | the Hailo compiler cannot parse the structure decoder's Loop |
+
+Placement is strict, as on the Intel image. Startup fails when HailoRT finds
+no device, when the chip is not a Hailo-10H, or when a HEF is missing or will
+not load; nothing is built on CPU in its place, and `GRPARSE_ORT_EP=auto`
+never picks the chip. A model that is in neither column cannot get a session
+at all: with the chip selected, the session builder refuses every model that
+does not carry a CPU pin with its reason. The two pins show up as `pin="..."`
+on `grparse_ort_sessions` and in the startup placement lines, like the Intel
+image's table pin. `grparse_hailo_frames_total{model}` counts the frames each
+model ran on the chip and `grparse_hailo_model_reloads_total{model}` the times
+a model had to be loaded onto the chip again after the chip aborted it.
+
+A HEF has one input shape, so the page pipeline is cut to fit and joined
+back on the host (`src/hailo/hailo_ocr.cpp`, arithmetic in
+`src/hailo/hailo_ocr_plan.cpp`):
+
+- The detector reads the page as overlapping 640x640 tiles. Their
+  probability maps are joined, each pixel from the tile whose edge is
+  farthest, and boxes are cut from the joined map by the CPU path's own
+  code, so a line that crosses a tile edge is one box.
+- The recognizer reads a line as 320-pixel windows that share 64 pixels. A
+  window's time steps are joined to the next at a step both read as blank,
+  so a glyph at a window edge is read once, and the joined steps are decoded
+  as one line.
+- The direction net, the layout detector and the figure classifier each
+  resize their input to their one size, as their float models do.
+
+The scale rule, box extraction, crop rotation, dictionary, layout decode and
+class ranking are the CPU path's code; only the three inference calls differ.
+Inputs go to the chip as 8-bit pixels (normalization is compiled into the
+HEF) and outputs come back as the chip's 8 or 16 bit numbers and are turned
+into floats on the host.
+
+Measured on a Raspberry Pi 5 with a Hailo-10H, HailoRT and firmware 5.1.1
+(HEFs built by Dataflow Compiler 5.4.0 load on 5.1.1 unchanged):
+
+| | On the chip | Note |
+|---|---|---|
+| OCR detection | 22 tiles/s (25 in batches) | a 200 dpi page is 12 tiles |
+| OCR direction | 460 crops/s (2000 in batches of 8) | |
+| OCR recognition | 38 windows/s (about 100 in batches of 16) | a full-width line is 5 to 7 windows |
+| Layout | 13 pages/s | |
+| Figure classes | 27 crops/s (70 in batches of 8) | |
+
+- Pages: 23 scanned pages (20 paper pages at 200 dpi, 3 corpus pages) took
+  115 s with the chip, 5.0 s a page, against 552 s on the Pi's four cores,
+  24.0 s a page (same build, `GRPARSE_ORT_EP=cpu`, same layout model): 4.8
+  times faster. One full-width page is 12 detector tiles and about 360
+  recognizer windows.
+- Text: against the CPU run's Markdown, 3.1% of the characters of those 23
+  pages differ (2.5% on the median page, 0.2% to 7.6% per page; blocks that
+  the two layout runs order differently count in full). The recognizer HEF
+  is the cause of most of it: about one doubled letter in five is read once
+  ("recuring", "paterns"), and `I`, `l`, `]` and `1` are confused more often
+  than by the float model. models/hailo/README.md has each HEF's agreement
+  with its float model.
+- Chip memory: the chip's own system reports 125 MiB in use of 5.8 GiB when
+  idle and 145 to 150 MiB with the five HEFs loaded (read with HailoRT's
+  performance query from a separate tool; the server does not make that
+  query).
+- Stability: the chip can abort a running model (`HAILO_STREAM_ABORT`), after
+  which every call on that model fails until it is loaded again. On a freshly
+  booted Pi this was rare: one abort in about 80,000 frames of sustained
+  recognition, and none in the 23 pages above, in the placement suite, or in
+  four minutes of HailoRT's own `hailortcli run2`. On the same Pi after six
+  days of uptime and many sessions it happened about once in 6,000 frames,
+  with `hailortcli run2` as well as with this server, and one two-minute
+  `hailortcli run2` run left the chip unreachable until the Pi was rebooted
+  (reloading its driver was not enough). The server loads an aborted model
+  onto the chip again and runs the call once more there;
+  `grparse_hailo_model_reloads_total` counts it and reads 0 on a healthy
+  chip.
+
+`scripts/test/hailo-placement-test.sh <image-or-rootfs> <models-dir>` is the
+receipt, modeled on the Intel one: it fails, never skips, on a host without
+`/dev/hailo0`; startup must fail without the device and with an empty HEF
+directory; and with the device the placement series must equal
+`tests/data/gpu_placement/hailo.prom` on two boots while a page converts from
+a models directory that holds no ONNX file of any model the chip runs. A
+further boot sets `GRPARSE_HAILO_TEST_ABORT_EVERY=5`, a hook for this suite
+only that makes every model abort itself on the chip before every fifth
+batch: the reload counter must rise and the page must come back item for
+item as it did without the faults. It
+takes an image, or a directory holding the image's root filesystem for a host
+with no Docker daemon (it then runs under bubblewrap). The unit tests of the
+policy (`hailo-placement-test`, `hailo-ocr-plan-test`, `hailo-ocr-test`) need
+no device and run in every flavor.
+
 ## End-to-end suite
 
 `e2e/` holds a Playwright suite that drives the whole demo stack through
@@ -1555,11 +1685,14 @@ against the `default` configure preset's `build/`):
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
 | `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |
 
-`ctest -N -L stack` lists the seven compose-stack suites (`stack-e2e`,
+`ctest -N -L stack` lists the eight compose-stack suites (`stack-e2e`,
 `s3-corpus-eval`, `ocr-presets-e2e`, `embedding-rpc`, `compose-preflight`,
-`observability-compose`, `gpu-placement`); `gpu-placement` needs an Intel GPU
+`observability-compose`, `gpu-placement`, `hailo-placement`); `gpu-placement` needs an Intel GPU
 host (krick-1), `GRPARSE_STACK_OPENVINO_IMAGE` and `GRPARSE_STACK_MODELS_DIR`,
-and fails rather than skips without a render node; each runs exactly as its script runs by hand, the
+and fails rather than skips without a render node; `hailo-placement` needs a
+Hailo-10H host (pi5ai2p), `GRPARSE_STACK_HAILO_IMAGE` and
+`GRPARSE_STACK_MODELS_DIR`, and fails rather than skips without `/dev/hailo0`;
+each runs exactly as its script runs by hand, the
 wrapper only decides whether it runs. The `release` preset sets
 `EVAL_REQUIRE=1`, `GRPARSE_BENCH_ENFORCE=1`, `GRPARSE_TEST_REQUIRE_MODELS=1`
 and `GRPARSE_STACK_SUITES=all`, so a skip there is a failure. Every image build

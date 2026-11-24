@@ -40,6 +40,7 @@ std::string device_label(OrtEp ep, const OrtEpSelection& selection) {
     case OrtEp::kCuda:
     case OrtEp::kTensorRt: return std::to_string(selection.cuda_device);
     case OrtEp::kOpenVino: return selection.openvino_device;
+    case OrtEp::kHailo: return selection.hailo_device;
     case OrtEp::kCpu: break;
   }
   return {};
@@ -197,6 +198,7 @@ std::string_view ort_ep_name(OrtEp ep) {
     case OrtEp::kCuda: return "CUDA";
     case OrtEp::kTensorRt: return "TensorRT";
     case OrtEp::kOpenVino: return "OpenVINO";
+    case OrtEp::kHailo: return "Hailo";
     case OrtEp::kCpu: break;
   }
   return "CPU";
@@ -308,6 +310,13 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
       options.AppendExecutionProvider_OpenVINO_V2(openvino_options);
       return;
     }
+    case OrtEp::kHailo:
+      // The device runs HEFs through HailoRT, never an ONNX Runtime session.
+      // A model reaches this line only when it is neither on the device
+      // (src/hailo/hailo_placement.cpp) nor pinned to CPU with a reason.
+      throw std::runtime_error(
+          "no ONNX Runtime provider runs on the Hailo device; the model needs a HEF or a CPU "
+          "pin with a reason");
     case OrtEp::kTensorRt:  // never a selection (set_ort_ep_selection refuses it)
     case OrtEp::kCpu:
       return;

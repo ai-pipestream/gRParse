@@ -26,7 +26,11 @@ namespace grparse {
 // kTensorRt is never a selection: it is where a model actually runs when the
 // selection is kCuda in a build that carries native TensorRT
 // (native_tensorrt_build), and it appears only as a placement's `actual`.
-enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt };
+// kHailo is a selection and not an ONNX Runtime provider: it selects the
+// native HailoRT backend (src/hailo/), which runs HEFs on a Hailo-10H.  No
+// ONNX Runtime session can be built for it, so a model that is neither on
+// the device nor pinned to CPU in code fails startup.
+enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt, kHailo };
 
 // Numeric precision a session asks its provider for.  kProviderDefault leaves
 // the provider's own choice alone, which for the OpenVINO GPU plugin is half
@@ -45,6 +49,10 @@ struct OrtEpSelection {
   // create reuses the previous compile instead of repeating it.  Empty
   // disables the cache.
   std::string openvino_cache_dir = {};
+  // The Hailo device as it identified itself (HAILO10H), for the ledger.
+  std::string hailo_device = {};
+  // Directory holding the HEFs (GRPARSE_HAILO_HEF_DIR).
+  std::string hailo_hef_dir = {};
 };
 
 // Human-readable name of a provider, for logs.
@@ -165,8 +173,9 @@ struct OrtPlacement {
 };
 
 // Records one model built on the selection's native backend (TensorRT under
-// a CUDA selection, src/inference_model.cpp) in the same placements as the
-// ONNX Runtime sessions, so grparse_ort_sessions shows every model.
+// a CUDA selection, src/inference_model.cpp; the Hailo device under a Hailo
+// selection, src/hailo/) in the same placements as the ONNX Runtime
+// sessions, so grparse_ort_sessions shows every model.
 void record_native_placement(std::string_view what);
 
 // Every placement recorded so far, one entry per (model, requested, actual,

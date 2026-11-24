@@ -9,6 +9,10 @@
 
 namespace grparse {
 
+namespace hailo {
+class HailoOcr;
+}
+
 // Detection knobs read once from the environment at process start.  They are
 // process-global on purpose: every engine in the pool must score identically.
 struct OcrDetectOptions {
@@ -44,12 +48,16 @@ class OcrEngine final {
   using Page = OcrPage;
 
   OcrEngine(const std::filesystem::path& model_directory, int gpu_index);
+  ~OcrEngine();
 
   Page extract_page(const cv::Mat& image);
   static constexpr const char* execution_provider() { return "CUDA"; }
 
  private:
   std::unique_ptr<OcrLite> engine_;
+  // Set instead of engine_ when the Hailo device is selected: the same page
+  // pipeline over the device's fixed-shape models (src/hailo/hailo_ocr.h).
+  std::unique_ptr<hailo::HailoOcr> hailo_;
   // First inference compiles provider kernels; see the gate in
   // extract_page() (src/ocr_engine.cpp).
   bool warmed_ = false;
