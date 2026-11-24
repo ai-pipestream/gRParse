@@ -24,6 +24,7 @@
 #include "conversion_outputs.h"
 #include "grparse/collector_coordinator.h"
 #include "grparse/prometheus_metrics.h"
+#include "grparse/service_health.h"
 #include "grparse/service_version.h"
 #include "parse_support.h"
 #include "source_parse.h"
@@ -1194,7 +1195,13 @@ grpc::Status DocumentParserService::parse_chunk_source(
 grpc::ServerUnaryReactor* DocumentParserService::Health(
     grpc::CallbackServerContext* context, const pipestream::parse::v1::HealthRequest*,
     pipestream::parse::v1::HealthResponse* response) {
-  response->set_status("ready");
+  if (health_ != nullptr) {
+    health_->describe(response);
+  } else {
+    // Nobody told this service what it was started with (set_health).
+    response->set_state(pipestream::parse::v1::SERVING_STATE_NOT_SERVING);
+    response->set_status(serving_status_text(pipestream::parse::v1::SERVING_STATE_NOT_SERVING));
+  }
   response->set_version(std::string(kServiceVersion));
   return finish_inline(context, grpc::Status::OK);
 }

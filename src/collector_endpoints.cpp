@@ -6,6 +6,7 @@
 #include <mutex>
 #include <string>
 #include <utility>
+#include <vector>
 
 #include <grpc/impl/channel_arg_names.h>
 #include <grpcpp/grpcpp.h>
@@ -119,6 +120,34 @@ std::shared_ptr<grpc::Channel> CollectorEndpoints::lighton_channel() {
   if (!has_lighton()) return nullptr;
   std::lock_guard<std::mutex> lock(mutex_);
   return next_channel(lighton_channel_, targets_.lighton.target, 1);
+}
+
+std::vector<grpc_connectivity_state> CollectorEndpoints::states_of(
+    const ChannelPool& pool) const {
+  std::vector<grpc_connectivity_state> states;
+  states.reserve(pool.channels.size());
+  // false: report the state, do not ask an idle channel to connect.
+  for (const auto& channel : pool.channels) states.push_back(channel->GetState(false));
+  return states;
+}
+
+std::vector<grpc_connectivity_state> CollectorEndpoints::channel_states(
+    pipestream::parse::v1::Collector id) const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  if (id == pipestream::parse::v1::COLLECTOR_VLM) return states_of(vlm_channel_);
+  const auto pool = channels_.find(id);
+  if (pool == channels_.end()) return {};
+  return states_of(pool->second);
+}
+
+std::vector<grpc_connectivity_state> CollectorEndpoints::enrich_channel_states() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return states_of(enrich_channel_);
+}
+
+std::vector<grpc_connectivity_state> CollectorEndpoints::lighton_channel_states() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return states_of(lighton_channel_);
 }
 
 }  // namespace grparse

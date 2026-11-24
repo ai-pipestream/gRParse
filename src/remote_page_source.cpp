@@ -1125,6 +1125,13 @@ CollectorChannelOptions& pdf_backend_channel_options() {
   return options;
 }
 
+// One channel per target, made on first use and kept for the process.
+// Guarded by pdf_backend_channel_mutex().
+std::map<std::string, std::shared_ptr<grpc::Channel>>& pdf_backend_channels() {
+  static std::map<std::string, std::shared_ptr<grpc::Channel>> channels;
+  return channels;
+}
+
 }  // namespace
 
 void set_pdf_backend_channel_options(const CollectorChannelOptions& options) {
@@ -1132,9 +1139,18 @@ void set_pdf_backend_channel_options(const CollectorChannelOptions& options) {
   pdf_backend_channel_options() = options;
 }
 
-std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target) {
-  static std::map<std::string, std::shared_ptr<grpc::Channel>> channels;
+std::optional<grpc_connectivity_state> pdf_backend_channel_state(const std::string& target) {
   const std::lock_guard<std::mutex> lock(pdf_backend_channel_mutex());
+  const auto& channels = pdf_backend_channels();
+  const auto it = channels.find(target);
+  if (it == channels.end()) return std::nullopt;
+  // false: report the state, do not ask an idle channel to connect.
+  return it->second->GetState(false);
+}
+
+std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target) {
+  const std::lock_guard<std::mutex> lock(pdf_backend_channel_mutex());
+  auto& channels = pdf_backend_channels();
   auto it = channels.find(target);
   if (it != channels.end()) return it->second;
   // The collector channels' arguments: their message limit (a page raster
