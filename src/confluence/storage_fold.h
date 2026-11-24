@@ -54,23 +54,23 @@ class StorageFold {
 
   enum class TextKind { kSectionHeader, kList, kText };
 
-  // A meta stamp (panel or macro name) that every item created inside the
-  // scope carries, unwound when the scope ends.
-  class StampScope {
+  // The callout (info, note, warning, tip) whose body is being folded:
+  // every text item created inside the scope states it as its admonition
+  // kind. An empty kind opens no scope.
+  class AdmonitionScope {
    public:
-    StampScope(StorageFold* fold, std::string key, std::string value)
-        : fold_(fold) {
-      if (value.empty()) {
+    AdmonitionScope(StorageFold* fold, std::string kind) : fold_(fold) {
+      if (kind.empty()) {
         fold_ = nullptr;
         return;
       }
-      fold_->stamps_.emplace_back(std::move(key), std::move(value));
+      fold_->admonitions_.push_back(std::move(kind));
     }
-    ~StampScope() {
-      if (fold_ != nullptr) fold_->stamps_.pop_back();
+    ~AdmonitionScope() {
+      if (fold_ != nullptr) fold_->admonitions_.pop_back();
     }
-    StampScope(const StampScope&) = delete;
-    StampScope& operator=(const StampScope&) = delete;
+    AdmonitionScope(const AdmonitionScope&) = delete;
+    AdmonitionScope& operator=(const AdmonitionScope&) = delete;
 
    private:
     StorageFold* fold_;
@@ -78,14 +78,15 @@ class StorageFold {
 
   docv1::GroupItem* group_by_ref(const std::string& ref);
   void link_child(const std::string& parent_ref, const std::string& child_ref);
-  // Removes a list group that folded to no items (an empty <ul>, a task
-  // list whose children are all damaged): docling-core's EMPTY_GROUP rule
-  // rejects an empty group, and an ENFORCE request with it.
+  // Removes a group that folded to no items (an empty <ul>, a task list
+  // whose children are all damaged, a macro with an empty body):
+  // docling-core's EMPTY_GROUP rule rejects an empty group, and an ENFORCE
+  // request with it. True when the group was removed.
+  bool drop_empty_group(const std::string& group_ref, const std::string& parent_ref);
+  // The same for a list, with the list's own warning.
   void drop_empty_list(const std::string& group_ref, const std::string& parent_ref);
   void stamp_source(
       google::protobuf::RepeatedPtrField<docv1::SourceType>* source);
-  template <typename Meta>
-  void stamp_meta(Meta* meta);
 
   docv1::GroupItem* add_group(const std::string& parent_ref,
                                    docv1::GroupLabel label,
@@ -132,7 +133,7 @@ class StorageFold {
 
   docv1::Document* document_ = nullptr;
   std::vector<Warning>* warnings_ = nullptr;
-  std::vector<std::pair<std::string, std::string>> stamps_;
+  std::vector<std::string> admonitions_;
   int emitted_ = 0;
 };
 
