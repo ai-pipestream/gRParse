@@ -591,9 +591,9 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
   // below folds answers into `document` while frames still go out.
   std::string document_chunk;
   if (needs_full_document) {
-    // Full document so code/formula/description selectors see every item;
-    // picture uris stay (ItemImage still supplies bytes when stripped peers
-    // prefer crops, and inline data URIs remain readable).
+    // Full document so code/formula/description selectors see every item.
+    // Pictures go without their pixels: each one's bytes travel once, as
+    // its ItemImage frame.
     docv1::Document request_doc = *document;
     for (docv1::PictureItem& picture : *request_doc.mutable_pictures()) {
       if (picture.has_image()) {

@@ -979,6 +979,7 @@ if(BUILD_TESTING)
     layout-engine-test
     office-collector-test
     office-fallback-test
+    image-bytes-e2e-test
     office-cv-enrichment-test
     ocr-shape-buckets-test
     ort-session-ep-test
