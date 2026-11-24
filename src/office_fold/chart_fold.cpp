@@ -1,7 +1,9 @@
 #include "grparse/office_fold/chart_fold.h"
 
 #include <algorithm>
+#include <charconv>
 #include <cstdlib>
+#include <system_error>
 #include <utility>
 
 #include "grparse/data_totals.h"
@@ -103,46 +105,55 @@ void add_line_annotation(const officev1::EmbeddedChart& chart,
   }
 }
 
-void add_pie_annotation(const officev1::EmbeddedChart& chart,
-                        const std::string& name, DocumentArena& arena,
-                        docv1::PictureItem* picture) {
-  const auto& series = chart.series();
-  if (series.empty()) return;
-  docv1::PicturePieChartData* pie =
-      picture->add_annotations()->mutable_pie_chart();
-  pie->set_kind("pie_chart_data");
-  pie->set_title(chart.title());
+// The pie annotation is single-series by shape too, so a pie with several
+// series (a ring chart read as a pie) gets one annotation per series, in
+// series order, like the bars; the series names live on the tabular
+// projection's label row in the same order.
+void add_pie_annotations(const officev1::EmbeddedChart& chart,
+                         const std::string& name, DocumentArena& arena,
+                         docv1::PictureItem* picture) {
   int missing_labels = 0;
-  for (int i = 0; i < series[0].values_y_size(); i++) {
-    docv1::ChartSlice* slice = pie->add_slices();
-    slice->set_label(i < chart.categories_size() ? chart.categories(i)
-                                                 : std::to_string(i + 1));
-    if (i >= chart.categories_size()) ++missing_labels;
-    slice->set_value(series[0].values_y(i));
+  int total_slices = 0;
+  for (const officev1::EmbeddedChartSeries& one : chart.series()) {
+    docv1::PicturePieChartData* pie =
+        picture->add_annotations()->mutable_pie_chart();
+    pie->set_kind("pie_chart_data");
+    pie->set_title(chart.title());
+    for (int i = 0; i < one.values_y_size(); i++) {
+      docv1::ChartSlice* slice = pie->add_slices();
+      slice->set_label(i < chart.categories_size() ? chart.categories(i)
+                                                   : std::to_string(i + 1));
+      if (i >= chart.categories_size()) ++missing_labels;
+      ++total_slices;
+      slice->set_value(one.values_y(i));
+    }
   }
   if (missing_labels > 0) {
     arena.warn("chart '" + name + "': " + std::to_string(missing_labels)
-               + " of " + std::to_string(series[0].values_y_size())
+               + " of " + std::to_string(total_slices)
                + " slice labels were missing on the wire; positional "
                  "numbers invented");
   }
 }
 
-// Scatter and bubble share the scatter slot, and the wire's `sizes` arm
-// rides through on whichever kind carries it: a point with a size on the
-// wire keeps it, and a series short on sizes names the unsized points once
-// (bubble kinds declare sizes, so an empty arm is named too). A sizes arm
-// longer than the point list is truncated and the truncation is named.
-void add_scatter_annotation(const officev1::EmbeddedChart& chart,
-                            const std::string& name, bool bubble,
-                            DocumentArena& arena, docv1::PictureItem* picture) {
-  docv1::PictureScatterChartData* scatter =
-      picture->add_annotations()->mutable_scatter_chart();
-  scatter->set_kind("scatter_chart_data");
-  scatter->set_title(chart.title());
-  scatter->set_x_axis_label(chart.x_axis_title());
-  scatter->set_y_axis_label(chart.y_axis_title());
+// Scatter and bubble share the scatter slot, which holds one point list and
+// so one series: a chart with several gets one annotation per series, in
+// series order, rather than one list in which a point cannot be told from
+// its neighbour's series. The wire's `sizes` arm rides through on whichever
+// kind carries it: a point with a size on the wire keeps it, and a series
+// short on sizes names the unsized points once (bubble kinds declare sizes,
+// so an empty arm is named too). A sizes arm longer than the point list is
+// truncated and the truncation is named.
+void add_scatter_annotations(const officev1::EmbeddedChart& chart,
+                             const std::string& name, bool bubble,
+                             DocumentArena& arena, docv1::PictureItem* picture) {
   for (const officev1::EmbeddedChartSeries& one : chart.series()) {
+    docv1::PictureScatterChartData* scatter =
+        picture->add_annotations()->mutable_scatter_chart();
+    scatter->set_kind("scatter_chart_data");
+    scatter->set_title(chart.title());
+    scatter->set_x_axis_label(chart.x_axis_title());
+    scatter->set_y_axis_label(chart.y_axis_title());
     int points = std::min(one.values_x_size(), one.values_y_size());
     int sized = 0;
     for (int i = 0; i < points; i++) {
@@ -241,6 +252,39 @@ void mark_tabular_headers(docv1::TableData* data) {
   }
 }
 
+// Types one cell of a chart's tabular projection. The label row heads the
+// series columns and the first column names the categories (or numbers the
+// points); every other cell is a value, whose text is the shortest exact
+// form of a double and is typed back into the number it reads as.
+void type_tabular_cell(docv1::TableCell* cell) {
+  if (cell->start_row_offset_idx() == 0) {
+    cell->set_column_header(true);
+    return;
+  }
+  if (cell->start_col_offset_idx() == 0) {
+    cell->set_row_header(true);
+    return;
+  }
+  const std::string& text = cell->text();
+  const char* end = text.data() + text.size();
+  double number = 0;
+  const auto parsed = std::from_chars(text.data(), end, number);
+  if (!text.empty() && parsed.ec == std::errc() && parsed.ptr == end) {
+    cell->mutable_value()->set_number(number);
+  }
+}
+
+// The cell list and the grid each hold their own copy of every cell, so
+// both are typed.
+void type_tabular_projection(docv1::TableData* data) {
+  for (docv1::TableCell& cell : *data->mutable_table_cells()) {
+    type_tabular_cell(&cell);
+  }
+  for (docv1::TableRow& row : *data->mutable_grid()) {
+    for (docv1::TableCell& cell : *row.mutable_cells()) type_tabular_cell(&cell);
+  }
+}
+
 }  // namespace
 
 void ChartFold::hold(const officev1::EmbeddedObject& object) {
@@ -286,13 +330,13 @@ void ChartFold::add_annotations(const officev1::EmbeddedChart& chart,
       add_line_annotation(chart, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_PIE:
-      add_pie_annotation(chart, name, arena_, picture);
+      add_pie_annotations(chart, name, arena_, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_SCATTER:
-      add_scatter_annotation(chart, name, false, arena_, picture);
+      add_scatter_annotations(chart, name, false, arena_, picture);
       break;
     case officev1::EMBEDDED_CHART_KIND_BUBBLE:
-      add_scatter_annotation(chart, name, true, arena_, picture);
+      add_scatter_annotations(chart, name, true, arena_, picture);
       break;
     default:
       break;
@@ -305,6 +349,7 @@ void ChartFold::add_annotations(const officev1::EmbeddedChart& chart,
   tabular->set_title(chart.title());
   docv1::TableItem scratch;
   arena_.fold_table(chart.tabular(), &scratch);
+  type_tabular_projection(scratch.mutable_data());
   *tabular->mutable_chart_data() = scratch.data();
 }
 
@@ -518,6 +563,17 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
                         has_geometry);
   const bool typed = object != nullptr && object->has_chart();
   if (typed) add_annotations(object->chart(), picture);
+  if (object != nullptr) {
+    // What the office core could not finish reading of the chart: the
+    // object itself, and its tabular projection, which is a message of its
+    // own on the wire. Both are about this picture.
+    const std::string what = "chart '" + (name.empty() ? "untitled" : name) + "'";
+    arena_.report_gap_of(*object, what, object->page_index(), picture_ref);
+    if (typed) {
+      arena_.report_gap_of(object->chart().tabular(), "data table of " + what,
+                           object->page_index(), picture_ref);
+    }
+  }
 
   // The data, bound as the chart's own table.
   std::string table_ref;

@@ -29,6 +29,10 @@ using grparse_test::require;
 // typed document back.
 class FakeOfficeService final : public officev1::OfficeRenderService::Service {
  public:
+  // cut_paragraph marks the paragraph the way the worker marks an item the
+  // office core failed part way through reading.
+  explicit FakeOfficeService(bool cut_paragraph = false) : cut_paragraph_(cut_paragraph) {}
+
   grpc::Status StreamPages(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<officev1::StreamPagesResponse,
@@ -74,6 +78,9 @@ class FakeOfficeService final : public officev1::OfficeRenderService::Service {
     run->set_char_offset(0);
     run->set_char_length(12);
     run->set_hyperlink_url("https://example.test/office");
+    if (cut_paragraph_) {
+      paragraph->mutable_gap()->add_problems("paragraph 0 portion 1 extraction failed");
+    }
     stream->Write(event);
 
     event.Clear();
@@ -102,9 +109,13 @@ class FakeOfficeService final : public officev1::OfficeRenderService::Service {
     event.Clear();
     event.mutable_status()->set_state(officev1::RenderStatus::STATE_OK);
     event.mutable_status()->add_warnings("one office warning");
+    if (cut_paragraph_) event.mutable_status()->set_incomplete_items(1);
     stream->Write(event);
     return grpc::Status::OK;
   }
+
+ private:
+  bool cut_paragraph_ = false;
 };
 
 // Rejects the upload with a load-failure status, like the real worker does
@@ -265,6 +276,30 @@ void verify_collects_and_folds_typed_stream() {
           "the origin names the uploaded file, not the per-call document_id");
 }
 
+// An item the worker could not finish reading reaches the collector's caller
+// as a typed warning, not as words alone: the code, the page and the item
+// are what the coordinator stamps on Document.warnings.
+void verify_an_extraction_gap_is_a_typed_collector_warning() {
+  FakeOfficeService service(/*cut_paragraph=*/true);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-1", "letter.odt", "", std::string(64, 'x'));
+  require(outcome.success, "collection succeeds: " + outcome.error);
+  const grparse::Warning* gap = nullptr;
+  for (const grparse::Warning& warning : outcome.warnings) {
+    if (warning.code == ai::pipestream::document::v1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED) {
+      gap = &warning;
+    }
+  }
+  require(gap != nullptr, "the cut paragraph is a typed warning on the outcome");
+  require(gap->page_no == 1, "the warning names the paragraph's page");
+  require(gap->item_ref == outcome.document.texts(0).text().base().self_ref(),
+          "the warning names the item the paragraph became, got '" + gap->item_ref + "'");
+  require(gap->message.contains("paragraph 0 portion 1 extraction failed"),
+          "the worker's own finding stays in the words: " + gap->message);
+  require(outcome.warnings.size() == 2, "the gap and the worker's free-text note, nothing else");
+}
+
 void verify_load_failure_degrades_to_outcome() {
   RejectingOfficeService service;
   ServerFixture server(&service);
@@ -409,6 +444,7 @@ void verify_unreachable_endpoint_is_a_failure() {
 int main() {
   return grparse_test::run_test_main("office-collector-test", {
       verify_collects_and_folds_typed_stream,
+      verify_an_extraction_gap_is_a_typed_collector_warning,
       verify_load_failure_degrades_to_outcome,
       verify_passwords_ride_metadata_in_order,
       verify_encrypted_refusal_without_passwords,

@@ -28,9 +28,11 @@ void set_spans(docv1::TableCell* cell, int rows, int columns) {
   cell->set_end_col_offset_idx(cell->start_col_offset_idx() + columns);
 }
 
-// The direct table of every SHEET group, by sheet name. A sheet group holds
-// exactly one table; a second one (never produced by either fold) is left
-// alone rather than guessed at.
+// The direct table of every SHEET group under the body, by sheet name. A
+// sheet group holds exactly one table; a second one (never produced by
+// either fold) is left alone rather than guessed at. A sheet group deeper
+// down is a sheet of a workbook embedded in the document, which can share a
+// name with a sheet of the document and is none of them.
 std::map<std::string, int> sheet_tables(const docv1::Document& document) {
   std::map<std::string, int> tables;
   std::map<std::string_view, int> by_ref;
@@ -39,6 +41,7 @@ std::map<std::string, int> sheet_tables(const docv1::Document& document) {
   }
   for (const docv1::GroupItem& group : document.groups()) {
     if (group.label() != docv1::GROUP_LABEL_SHEET) continue;
+    if (group.parent().ref() != "#/body") continue;
     for (const docv1::RefItem& child : group.children()) {
       const auto found = by_ref.find(child.ref());
       if (found == by_ref.end()) continue;

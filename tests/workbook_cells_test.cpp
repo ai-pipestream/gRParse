@@ -439,6 +439,49 @@ void verify_declared_headers_survive_adoption() {
           "explicit zero headers is not overwritten by inference");
 }
 
+// A workbook embedded in a sheet folds into sheet groups of its own, under
+// the embedded object's group. One of them can share a sheet's name
+// ("Sheet1" inside "Sheet1" is the common case); calamine reads the
+// workbook's own sheets, so its cells go to the sheet under the body and
+// never to the embedded one.
+void verify_an_embedded_workbooks_sheet_is_not_adopted_into() {
+  Workbook libre("libreoffice");
+  docv1::Document& document = libre.document();
+  // The embedded workbook streams ahead of the sheets, so its groups come
+  // first in the arena.
+  docv1::GroupItem* book = document.add_groups();
+  book->set_self_ref("#/groups/0");
+  book->mutable_parent()->set_ref("#/body");
+  book->set_name("Object 1");
+  document.mutable_body()->add_children()->set_ref(book->self_ref());
+  docv1::GroupItem* inner = document.add_groups();
+  inner->set_self_ref("#/groups/1");
+  inner->mutable_parent()->set_ref(book->self_ref());
+  inner->set_name("Report");
+  inner->set_label(docv1::GROUP_LABEL_SHEET);
+  document.mutable_groups(0)->add_children()->set_ref(inner->self_ref());
+  docv1::TableItem* inner_table = document.add_tables();
+  inner_table->set_self_ref("#/tables/0");
+  inner_table->mutable_parent()->set_ref("#/groups/1");
+  inner_table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+  document.mutable_groups(1)->add_children()->set_ref(inner_table->self_ref());
+  text(inner_table->mutable_data(), 0, 0, "embedded cell");
+  report_libre(libre.sheet("Report"));
+
+  Workbook calamine("calamine");
+  report_calamine(calamine.sheet("Report"));
+  std::vector<std::string> warnings;
+  const int adopted =
+      grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
+  require_equal(adopted, 1, "the sheet under the body is adopted");
+  require_equal(document.tables(0).data().table_cells_size(), 1,
+                "the embedded workbook's table keeps its own cells");
+  require_equal(document.tables(0).data().table_cells(0).text(), std::string("embedded cell"),
+                "and its own text");
+  require_equal(at(document.tables(1).data(), 2, 1)->text(), std::string("1-31-16"),
+                "the real sheet takes calamine's reading");
+}
+
 }  // namespace
 
 int main() {
@@ -453,6 +496,7 @@ int main() {
       verify_sheet_without_table_is_named,
       verify_incomplete_sheet_keeps_the_first_reader_cells,
       verify_coordinator_holds_back_an_incomplete_sheet,
+      verify_an_embedded_workbooks_sheet_is_not_adopted_into,
       verify_coordinator_adopts_calamine_cells,
       verify_calamine_alone_is_the_body,
   });

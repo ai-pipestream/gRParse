@@ -162,7 +162,28 @@ void SheetFold::on_sheet(const officev1::Sheet& sheet) {
 
 void SheetFold::on_sheet_row(const officev1::SheetRow& row) {
   auto found = sheet_table_.find(row.sheet_index());
-  if (found == sheet_table_.end()) return;
+  const auto name = sheet_name_.find(row.sheet_index());
+  // A cell the office core failed on names its sheet's table, and its place
+  // in the grid in words (the wire's zero-based row and column, as GridCell
+  // counts them): CollectorWarning locates an item, not a cell.
+  const auto report_cell_gaps = [&](const std::string& table_ref) {
+    for (const officev1::SheetCell& cell : row.cells()) {
+      if (!cell.has_gap()) continue;
+      arena_.report_gap(cell.gap(),
+                        "cell at row " + std::to_string(row.row()) + ", column "
+                            + std::to_string(cell.column()) + " of sheet "
+                            + (name != sheet_name_.end()
+                                   ? "'" + name->second + "'"
+                                   : std::to_string(row.sheet_index())),
+                        row.sheet_index(), table_ref);
+    }
+  };
+  if (found == sheet_table_.end()) {
+    // The row folds into nothing; what its cells lost is still reported.
+    report_cell_gaps(std::string());
+    return;
+  }
+  report_cell_gaps(arena_.document().tables(found->second).self_ref());
   docv1::TableData* data =
       arena_.document().mutable_tables(found->second)->mutable_data();
   // One provenance entry per used row, locating it in the sheet grid; the
@@ -173,10 +194,7 @@ void SheetFold::on_sheet_row(const officev1::SheetRow& row) {
     docv1::GridCell* grid = row_prov->mutable_grid();
     grid->set_row(row.row());
     grid->set_col(row.cells(0).column());
-    if (auto name = sheet_name_.find(row.sheet_index());
-        name != sheet_name_.end()) {
-      grid->set_sheet(name->second);
-    }
+    if (name != sheet_name_.end()) grid->set_sheet(name->second);
   }
   for (const officev1::SheetCell& cell : row.cells()) {
     docv1::TableCell* out = place_sheet_cell(cell, row.row(), data);
