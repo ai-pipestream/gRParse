@@ -2286,11 +2286,11 @@ message Chunk {
   repeated string captions = 7;
   repeated string doc_items = 8;
   repeated int32 page_numbers = 9;
-  // Deprecated and no longer written: always empty. It was the stringified
-  // twin of `typed_metadata`, which carries the same keys with their types;
-  // read that (and `text_source`) instead. The tag is reserved in a later
-  // release.
-  map<string, string> metadata = 10 [deprecated = true];
+  // Was `map<string, string> metadata`: the stringified twin of
+  // `typed_metadata`, which carries the same keys with their types. Read
+  // that (and `text_source`).
+  reserved 10;
+  reserved "metadata";
   // Half-open [start_offset, end_offset) span of the chunk in the document's
   // concatenated text stream (furniture included), counted in UTF-8 CODE
   // POINTS, not bytes.
@@ -2371,10 +2371,11 @@ message ChunkDocumentResponse {
   repeated Chunk chunks = 1;
   repeated Document documents = 2;
   double processing_time = 3;
-  // The jobkit ChunkedDocumentResult dump of the active chunker options
-  // (Optional[dict] on the Python side), kept for callers that mirror
-  // docling-serve. `chunker_settings` states the same typed; read that.
-  map<string, ScalarValue> chunking_info = 4 [deprecated = true];
+  // Was `map<string, ScalarValue> chunking_info`: the jobkit
+  // ChunkedDocumentResult dump of the active chunker options as a bag.
+  // `chunker_settings` states the same, typed.
+  reserved 4;
+  reserved "chunking_info";
   // What `chunks` left out of the document (see
   // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
   // everything the chunker serializes.
