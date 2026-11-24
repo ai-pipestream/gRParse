@@ -2559,11 +2559,11 @@ grpc::Status parse_source(const ParseCall& call,
       // grpc-lighton-ocr has no Collector value of its own: its warnings
       // name it directly, the way its items' CollectorSource does.
       if (report.engine == VlmBodyEngine::kLightonOcr) {
-        for (const std::string& warning : report.warnings) {
+        for (const Warning& warning : report.warnings) {
           stamp_warning(warning, kLightonCollectorName, result.document.add_warnings());
         }
       } else {
-        for (const std::string& warning : report.warnings) {
+        for (const Warning& warning : report.warnings) {
           result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
         }
       }

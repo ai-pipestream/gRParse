@@ -6715,6 +6715,100 @@ void verify_vlm_pipeline_document_carries_the_parse_identity() {
           "the VLM document's chunk carries its producer and storage key");
 }
 
+// Answers the page it is sent with a page Document whose table grid the peer
+// dropped at a cap, then closes with a trailer that counts one page document
+// more than it sent.
+class LossyVlmConvertService final
+    : public ai::pipestream::vlm::v1::VlmConvertService::Service {
+ public:
+  grpc::Status ConvertPages(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::vlm::v1::ConvertPagesResponse,
+                               ai::pipestream::vlm::v1::ConvertPagesRequest>* stream) override {
+    ai::pipestream::vlm::v1::ConvertPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    ai::pipestream::vlm::v1::ConvertPagesResponse event;
+    auto* page = event.mutable_page_document();
+    page->set_page_no(1);
+    auto* text = page->mutable_document()->add_texts()->mutable_text();
+    text->mutable_base()->set_self_ref("#/texts/0");
+    text->mutable_base()->set_text("vlm page");
+    (*page->mutable_document()->mutable_pages())[1].set_page_no(1);
+    auto* warning = page->add_warnings();
+    warning->set_code(ai::pipestream::vlm::v1::PAGE_WARNING_CODE_TABLE_GRID_OMITTED);
+    warning->set_message("grid above the cell budget");
+    stream->Write(event);
+    ai::pipestream::vlm::v1::ConvertPagesResponse done;
+    done.mutable_complete()->set_pages_started(1);
+    done.mutable_complete()->set_pages_ok(2);
+    stream->Write(done);
+    return grpc::Status::OK;
+  }
+};
+
+// What the VLM leg lost reaches the caller typed: the peer's page warning
+// and the leg's own trailer check arrive on Document.warnings with their
+// code, their page and the collector's name, not as words alone.
+void verify_vlm_pipeline_losses_reach_the_caller_typed() {
+  LossyVlmConvertService vlm;
+  grpc::ServerBuilder vlm_builder;
+  int vlm_port = 0;
+  vlm_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &vlm_port);
+  vlm_builder.RegisterService(&vlm);
+  auto vlm_server = vlm_builder.BuildAndStart();
+  require(vlm_server && vlm_port != 0, "fake VLM convert peer failed to start");
+
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.vlm.target = "127.0.0.1:" + std::to_string(vlm_port);
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "VLM pipeline test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("page.png");
+  // A 1x1 PNG: the VLM leg renders the image itself.
+  source->set_base64_string(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+  request.mutable_request()->mutable_options()->set_pipeline(
+      pipestream::parse::v1::PROCESSING_PIPELINE_VLM);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  vlm_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  vlm_server->Wait();
+  require(status.ok(), "VLM pipeline conversion failed: " + status.error_message());
+
+  const docv1::CollectorWarning* grid = nullptr;
+  const docv1::CollectorWarning* counts = nullptr;
+  for (const auto& warning : response.response().document().doc().warnings()) {
+    if (warning.code() == docv1::WARNING_CODE_TABLE_GRID_OMITTED) grid = &warning;
+    if (warning.code() == docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH) counts = &warning;
+  }
+  require(grid != nullptr && grid->source().collector() == "vlm-convert" &&
+              grid->has_page_no() && grid->page_no() == 1 && !grid->message().empty(),
+          "the peer's page warning arrives with its code and page");
+  require(counts != nullptr && counts->source().collector() == "vlm-convert" &&
+              !counts->has_page_no() && !counts->message().empty(),
+          "a trailer that miscounts the stream arrives as a typed count mismatch");
+}
+
 // These RPC tests exercise orchestration, not model quality. Native model
 // acceptance is a separate gate against the packaged artifacts.
 class RecordingEmbedder final : public grparse::EmbeddingEngine {
@@ -7256,6 +7350,7 @@ int main() {
         verify_hybrid_chunk_rpc_merges_and_validates(&server);
         verify_stream_chunks_matches_the_unary_chunkers(&server);
         verify_vlm_pipeline_document_carries_the_parse_identity();
+        verify_vlm_pipeline_losses_reach_the_caller_typed();
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_on_every_chunk_rpc(&server);

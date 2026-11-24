@@ -2,6 +2,7 @@
 #include <chrono>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <set>
 #include <stdexcept>
 #include <string>
@@ -351,11 +352,21 @@ void verify_convert_rasters_dials_and_merges() {
     require(generation->finish_reason() == "length", "finish_reason keeps the verbatim value");
   }
   require(report.warnings.size() == 2 &&
-              report.warnings[0] ==
+              report.warnings[0].message ==
                   "vlm convert: page 1: PAGE_WARNING_CODE_TABLE_TRUNCATED: kept 500 of 90000 "
                   "rows (#/tables/0)" &&
-              report.warnings[1] == "vlm convert: page 1: page warning 77",
+              report.warnings[1].message == "vlm convert: page 1: page warning 77",
           "the fragment's cap warnings reach the report by code name");
+  require(report.warnings[0].code == docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED &&
+              report.warnings[0].page_no == 1 && report.warnings[0].item_ref.empty(),
+          "a cap warning is typed and names its page; the fragment's own ref is not an "
+          "item_ref of the merged document");
+  require(report.warnings[1].code == docv1::WARNING_CODE_UNSPECIFIED &&
+              report.warnings[1].page_no == 1,
+          "a page warning code this build does not know keeps its page and no code");
+  require(report.pages.size() == 1 && report.pages[0].page_no == 1 &&
+              report.pages[0].status == grparse::VlmPageStatus::kOk,
+          "the converted page has an ok outcome");
   const FakeVlmConvertService::Seen seen = fake.seen();
   require(seen.options_first && seen.options.preset() == vlmv1::VLM_PRESET_GRANITE_DOCLING &&
               seen.options.endpoint() == "http://vlm.test:9" && seen.page_nos.size() == 1 &&
@@ -691,6 +702,7 @@ class InterleavingVlmConvertService final : public vlmv1::VlmConvertService::Ser
       ++answered;
     }
     vlmv1::ConvertPagesResponse done;
+    done.mutable_complete()->set_pages_started(answered);
     done.mutable_complete()->set_pages_ok(answered);
     stream->Write(done);
     return grpc::Status::OK;
@@ -724,6 +736,233 @@ void verify_answers_are_read_while_pages_go_out() {
           "the convert finishes long before its deadline");
   require(report.success && report.pages_sent == kPages && report.pages_ok == kPages,
           "every page was answered: " + report.error);
+  require(report.warnings.empty(), "a stream that reconciles raises nothing");
+}
+
+// Reads every page, then answers from a script: one PageDocument per number
+// in `documents` (a number may repeat, or name a page that was never sent),
+// the PageRaw events as given, and the trailer when there is one. The stream
+// always ends OK, the way a peer that stops early without failing does.
+class ScriptedVlmConvertService final : public vlmv1::VlmConvertService::Service {
+ public:
+  struct Script {
+    std::vector<uint32_t> documents;
+    std::vector<vlmv1::PageRaw> raws;
+    std::optional<vlmv1::ConvertComplete> trailer;
+  };
+
+  explicit ScriptedVlmConvertService(Script script) : script_(std::move(script)) {}
+
+  grpc::Status ConvertPages(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<vlmv1::ConvertPagesResponse, vlmv1::ConvertPagesRequest>*
+          stream) override {
+    vlmv1::ConvertPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    for (const uint32_t page_no : script_.documents) {
+      vlmv1::ConvertPagesResponse event;
+      auto* page = event.mutable_page_document();
+      page->set_page_no(page_no);
+      auto* text = page->mutable_document()->add_texts()->mutable_text();
+      text->mutable_base()->set_self_ref("#/texts/0");
+      text->mutable_base()->set_text("page-" + std::to_string(page_no));
+      (*page->mutable_document()->mutable_pages())[page_no].set_page_no(page_no);
+      stream->Write(event);
+    }
+    for (const vlmv1::PageRaw& raw : script_.raws) {
+      vlmv1::ConvertPagesResponse event;
+      *event.mutable_page_raw() = raw;
+      stream->Write(event);
+    }
+    if (script_.trailer.has_value()) {
+      vlmv1::ConvertPagesResponse done;
+      *done.mutable_complete() = *script_.trailer;
+      stream->Write(done);
+    }
+    return grpc::Status::OK;
+  }
+
+ private:
+  const Script script_;
+};
+
+vlmv1::ConvertComplete trailer_of(uint32_t started, uint32_t ok, uint32_t failed) {
+  vlmv1::ConvertComplete complete;
+  complete.set_pages_started(started);
+  complete.set_pages_ok(ok);
+  complete.set_pages_failed(failed);
+  return complete;
+}
+
+vlmv1::PageRaw raw_of(uint32_t page_no, const std::string& text, const std::string& error) {
+  vlmv1::PageRaw raw;
+  raw.set_page_no(page_no);
+  raw.set_text(text);
+  raw.set_error(error);
+  return raw;
+}
+
+// A multi-page TIFF of `count` small pages.
+std::shared_ptr<const std::string> pages_tiff(int count) {
+  std::vector<cv::Mat> pages;
+  for (int index = 0; index < count; ++index) {
+    pages.emplace_back(16, 12, CV_8UC3, cv::Scalar(index + 1, 2, 3));
+  }
+  std::vector<unsigned char> tiff;
+  require(cv::imencodemulti(".tiff", pages, tiff), "encode the multi-page fixture");
+  return std::make_shared<const std::string>(reinterpret_cast<const char*>(tiff.data()),
+                                             tiff.size());
+}
+
+struct ScriptedConvert {
+  grparse::VlmConvertReport report;
+  docv1::Document document;
+};
+
+// Sends `pages` pages to a peer that answers from `script`.
+ScriptedConvert convert_against(ScriptedVlmConvertService::Script script, int pages,
+                                bool abort_on_error = false) {
+  ScriptedVlmConvertService peer(std::move(script));
+  ServerFixture server(&peer);
+  grparse::VlmConvertOptions options;
+  options.target = server.target();
+  options.timeout = std::chrono::milliseconds(5000);
+  options.abort_on_error = abort_on_error;
+  ScriptedConvert result;
+  result.document.mutable_body()->set_self_ref("#/body");
+  result.report = grparse::convert_vlm_pages(server.channel(), options, pages_tiff(pages),
+                                             /*pdf=*/false, &result.document);
+  return result;
+}
+
+std::vector<grparse::Warning> warnings_with(const grparse::VlmConvertReport& report,
+                                            docv1::WarningCode code) {
+  std::vector<grparse::Warning> found;
+  for (const grparse::Warning& warning : report.warnings) {
+    if (warning.code == code) found.push_back(warning);
+  }
+  return found;
+}
+
+// Three pages go out, the peer answers one and closes the stream OK without
+// ConvertComplete. gRPC calls that stream OK; the leg must not.
+void verify_a_stream_without_its_trailer_is_not_a_finished_convert() {
+  const ScriptedConvert convert =
+      convert_against({.documents = {1}, .raws = {}, .trailer = std::nullopt}, 3);
+  const grparse::VlmConvertReport& report = convert.report;
+  require(report.pages_sent == 3 && report.pages_ok == 1,
+          "three pages went out and one came back: " + report.error);
+  require(!report.success && report.code == grpc::StatusCode::INTERNAL &&
+              report.error.contains("ConvertComplete"),
+          "a stream that ends without its trailer fails the leg: success=" +
+              std::to_string(report.success) + " error='" + report.error + "'");
+}
+
+// The peer finishes with its trailer but answered one page of three: the
+// document stands, and each page with no answer is named by a typed warning
+// and in the per-page outcomes. Under abort_on_error the same loss fails.
+void verify_sent_pages_without_an_answer_are_reported_by_page() {
+  const ScriptedVlmConvertService::Script script{
+      .documents = {1}, .raws = {}, .trailer = trailer_of(3, 1, 0)};
+  const ScriptedConvert convert = convert_against(script, 3);
+  const grparse::VlmConvertReport& report = convert.report;
+  require(report.success && report.pages_sent == 3 && report.pages_ok == 1,
+          "the answered page still converts: " + report.error);
+  const auto unanswered = warnings_with(report, docv1::WARNING_CODE_PAGE_UNANSWERED);
+  require(unanswered.size() == 2 && unanswered[0].page_no == 2 && unanswered[1].page_no == 3,
+          "pages 2 and 3 are reported unanswered, by page: " +
+              std::to_string(unanswered.size()) + " of " +
+              std::to_string(report.warnings.size()) + " warnings");
+  require(report.warnings.size() == 2, "the trailer's counts match, so nothing else is raised");
+  require(report.pages.size() == 3 && report.pages[0].page_no == 1 &&
+              report.pages[0].status == grparse::VlmPageStatus::kOk &&
+              report.pages[1].page_no == 2 &&
+              report.pages[1].status == grparse::VlmPageStatus::kUnanswered &&
+              report.pages[2].page_no == 3 &&
+              report.pages[2].status == grparse::VlmPageStatus::kUnanswered,
+          "every sent page has an outcome");
+
+  const ScriptedConvert aborted = convert_against(script, 3, /*abort_on_error=*/true);
+  require(!aborted.report.success && aborted.report.code == grpc::StatusCode::INTERNAL &&
+              aborted.report.error.contains("page 2"),
+          "abort_on_error makes an unanswered page the leg's failure: " + aborted.report.error);
+}
+
+// Both pages arrive, but the trailer claims five page documents.
+void verify_trailer_counts_are_reconciled_with_what_arrived() {
+  const ScriptedConvert convert =
+      convert_against({.documents = {1, 2}, .raws = {}, .trailer = trailer_of(2, 5, 0)}, 2);
+  const grparse::VlmConvertReport& report = convert.report;
+  require(report.success && report.pages_ok == 2, "both pages convert: " + report.error);
+  require(report.warnings.size() == 1 &&
+              report.warnings[0].code == docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH &&
+              !report.warnings[0].page_no.has_value(),
+          "a trailer that disagrees with the stream is a typed count mismatch: " +
+              std::to_string(report.warnings.size()) + " warnings");
+
+  const ScriptedConvert started = convert_against(
+      {.documents = {1, 2}, .raws = {}, .trailer = trailer_of(1, 2, 0)}, 2);
+  require(started.report.success &&
+              warnings_with(started.report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH)
+                      .size() == 1,
+          "a trailer that started fewer pages than were sent is a count mismatch too");
+}
+
+// A page whose model output could not be mapped arrives as PageRaw.text. The
+// text is the model's work for that page: it stays in the page's outcome and
+// on the Document, and the warning says by code that the page was unmapped.
+// A PageRaw with only an error is a failed model call: nothing to keep.
+void verify_raw_page_text_is_kept_and_typed() {
+  const std::string raw_text = "<doctag><text>half a page<loc_1>";
+  const ScriptedConvert convert = convert_against(
+      {.documents = {1},
+       .raws = {raw_of(2, raw_text, "unbalanced doctags"), raw_of(3, "", "endpoint HTTP 503")},
+       .trailer = trailer_of(3, 1, 2)},
+      3);
+  const grparse::VlmConvertReport& report = convert.report;
+  require(report.success && report.pages_ok == 1 && report.pages_failed == 2,
+          "one page converts beside two failures: " + report.error);
+  require(report.pages.size() == 3 &&
+              report.pages[1].status == grparse::VlmPageStatus::kFailed &&
+              report.pages[1].raw_text == raw_text &&
+              report.pages[1].error == "unbalanced doctags" &&
+              report.pages[2].status == grparse::VlmPageStatus::kFailed &&
+              report.pages[2].raw_text.empty() && report.pages[2].error == "endpoint HTTP 503",
+          "the failed pages' outcomes keep the raw text and the peer's reason");
+  const auto unmapped = warnings_with(report, docv1::WARNING_CODE_PAGE_OUTPUT_UNMAPPED);
+  require(unmapped.size() == 1 && unmapped[0].page_no == 2 &&
+              unmapped[0].message == "vlm convert: page 2 raw: unbalanced doctags",
+          "the unmapped page is reported by code and page");
+  require(report.warnings.size() == 2 && report.warnings[1].page_no == 3 &&
+              report.warnings[1].message == "vlm convert: page 3 raw: endpoint HTTP 503",
+          "the failed call keeps the peer's words and its page");
+  require(report.warnings[1].code == docv1::WARNING_CODE_PAGE_MODEL_CALL_FAILED,
+          "the failed call is typed as a failed model call, not left to its words: " +
+              docv1::WarningCode_Name(report.warnings[1].code));
+  require(convert.document.generation_traces_size() == 1 &&
+              convert.document.generation_traces(0).page_no() == 2 &&
+              convert.document.generation_traces(0).text() == raw_text &&
+              convert.document.generation_traces(0).source().collector() == "vlm-convert",
+          "the model's raw output for the unmapped page reaches the Document: " +
+              std::to_string(convert.document.generation_traces_size()) + " traces");
+}
+
+// Each sent page is answered once. A second answer would merge the page
+// twice and an answer for a page that never went out belongs to no page of
+// this document, so either ends the leg.
+void verify_an_answer_for_no_sent_page_is_refused() {
+  const ScriptedConvert twice = convert_against(
+      {.documents = {1, 1}, .raws = {}, .trailer = trailer_of(2, 2, 0)}, 2);
+  require(!twice.report.success && twice.report.code == grpc::StatusCode::INTERNAL &&
+              twice.report.error.contains("page 1 was answered twice"),
+          "a second answer for one page is refused: " + twice.report.error);
+
+  const ScriptedConvert stray = convert_against(
+      {.documents = {1, 7}, .raws = {}, .trailer = trailer_of(2, 2, 0)}, 2);
+  require(!stray.report.success && stray.report.code == grpc::StatusCode::INTERNAL &&
+              stray.report.error.contains("page 7 was not sent"),
+          "an answer for a page that was not sent is refused: " + stray.report.error);
 }
 
 // A render stuck on the PDF backend ends with the request: the page source
@@ -819,6 +1058,11 @@ int main() {
       verify_cancel_and_deadline_stop_before_rendering,
       verify_cancel_after_upload_ends_the_read,
       verify_answers_are_read_while_pages_go_out,
+      verify_a_stream_without_its_trailer_is_not_a_finished_convert,
+      verify_sent_pages_without_an_answer_are_reported_by_page,
+      verify_trailer_counts_are_reconciled_with_what_arrived,
+      verify_raw_page_text_is_kept_and_typed,
+      verify_an_answer_for_no_sent_page_is_refused,
       verify_cancel_reaches_a_stalled_render,
       verify_cancel_reaches_a_hung_open,
       verify_endpoints_lazy_channel,

@@ -280,7 +280,7 @@ void verify_out_of_order_pages_merge_in_page_order() {
   require(document.texts(0).text().base().source(0).generation().stop_reason() ==
               docv1::VLM_STOP_REASON_END_OF_SEQUENCE,
           "the merged generation carries a typed stop reason");
-  require(report.warnings == std::vector<std::string>{
+  require(report.warnings == std::vector<grparse::Warning>{
                                  "lighton ocr: page 1: FINISH_REASON_TOKEN_LIMIT"},
           "the page cut at its token cap is reported by reason name");
   const auto seen = fake.seen();
