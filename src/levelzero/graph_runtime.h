@@ -30,6 +30,12 @@ struct GraphOptions {
   // Activations stored as half and the GEMM-shaped layers run on the matrix
   // engines (XMX), F32 sums; otherwise everything is float.
   bool fp16 = false;
+  // Each output comes back reduced over its last axis to four floats a row:
+  // the best column and its value over every column, then over every column
+  // but the last (graph_kernels.cl reduce_rows).  For a recognizer whose
+  // caller only takes each time step's best class, it saves reading the
+  // whole score tensor back.
+  bool reduce_rows = false;
 };
 
 class GraphModel {
@@ -68,6 +74,7 @@ class GraphModel {
   std::vector<size_t> last_use_;  // per value, the last node index that reads it
   std::unique_ptr<Kernels> kernels_;
   bool fp16_ = false;
+  bool reduce_rows_ = false;
   size_t esize_ = 4;               // bytes per activation element
   float* weights_ = nullptr;       // the IR's weight block, float
   void* weights_real_ = nullptr;   // FP16: the same block as half, index for index

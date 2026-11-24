@@ -87,6 +87,7 @@ struct GraphModel::Kernels {
       shift_copy;
   // kernels_mobile.cl
   ze_kernel_handle_t channel_scale, binary_same;
+  ze_kernel_handle_t reduce_rows;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -101,7 +102,8 @@ struct GraphModel::Value {
 };
 
 GraphModel::GraphModel(Device& device, const std::filesystem::path& model, GraphOptions options)
-    : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), esize_(options.fp16 ? 2 : 4) {
+    : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), reduce_rows_(options.reduce_rows),
+      esize_(options.fp16 ? 2 : 4) {
   last_use_.assign(ir_.values.size(), 0);
   for (size_t index = 0; index < ir_.nodes.size(); ++index) {
     for (int input : ir_.nodes[index].inputs) {
@@ -121,7 +123,7 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
       k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
       fp16_ ? k("conv_planes_xmx", 64, 1) : nullptr, fp16_ ? k("shift_copy", 256, 1) : nullptr,
-      k("channel_scale", 16, 16), k("binary_same", 256, 1)});
+      k("channel_scale", 16, 16), k("binary_same", 256, 1), k("reduce_rows", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   if (fp16_) build_fp16_weights();
@@ -937,7 +939,10 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
     *memory = static_cast<char*>(device_.allocate(*have * element));
   };
   size_t output_floats = 0;
-  for (int id : ir_.outputs) output_floats += (numel(values[size_t(id)].shape) + 15) / 16 * 16;
+  for (int id : ir_.outputs) {
+    const Shape& shape = values[size_t(id)].shape;
+    output_floats += ((reduce_rows_ ? numel(shape) / size_t(shape.back()) * 4 : numel(shape)) + 15) / 16 * 16;
+  }
   grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_);
   grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float));
   grow(&io_out_, &io_out_floats_, output_floats, sizeof(float));
@@ -964,12 +969,21 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
     const Value& v = values[size_t(id)];
     HostTensor& t = outputs->emplace_back();
     t.shape = v.shape;
-    t.data.resize(numel(v.shape));
     const char* src = ptr(v, arena_);
     char* dst = io_out_ + out_at * sizeof(float);
-    const int count = int(t.data.size());
-    args(kernels_->from_real, {P(src), P(dst), P(count)});
-    launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
+    if (reduce_rows_) {
+      const int cols = int(v.shape.back());
+      const size_t rows = numel(v.shape) / size_t(cols);
+      t.shape.back() = 4;
+      t.data.resize(rows * 4);
+      args(kernels_->reduce_rows, {P(src), P(dst), P(cols)});
+      launch(kernels_->reduce_rows, {uint32_t(rows), 1, 1});
+    } else {
+      t.data.resize(numel(v.shape));
+      const int count = int(t.data.size());
+      args(kernels_->from_real, {P(src), P(dst), P(count)});
+      launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
+    }
     ze_check(zeCommandListAppendMemoryCopy(list_, t.data.data(), dst, t.data.size() * sizeof(float), nullptr, 0,
                                            nullptr),
              "output readback");

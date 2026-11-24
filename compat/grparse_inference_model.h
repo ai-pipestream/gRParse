@@ -149,6 +149,13 @@ std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net);
 // there, so nothing is bucketed or warmed.
 bool level_zero_ocr();
 
+// Whether the recognition net's output arrives reduced on the device: per
+// line and time step four floats, the best class and its score over every
+// class and then over every class but the last, in place of a score per
+// class (patches/rapidocr-reduced-scores.patch decodes them).  True exactly
+// when level_zero_ocr().
+bool ocr_rec_reduced();
+
 // A RapidOCR net on the process selection: native TensorRT under a CUDA
 // selection in a TensorRT build; native Level Zero when level_zero_ocr();
 // otherwise the ONNX Runtime session the nets used before (built through
