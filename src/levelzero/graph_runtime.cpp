@@ -47,6 +47,10 @@ struct ConvArgs {
   int n, ci, ih, iw, co, oh, ow, kh, kw, sh, sw, ph, pw, groups, act;
   float alpha, beta;
 };
+struct MergeArgs {
+  int c, c_total, c_off, oh, ow, xh, xw, fx, yh, yw, fy, has_s, has_y;
+};
+constexpr size_t kGapChunk = 4096;  // GAP_CHUNK of kernels_detector.cl
 
 uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + group - 1) / group); }
 
@@ -55,6 +59,8 @@ uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + gro
 struct GraphModel::Kernels {
   ze_kernel_handle_t gemm, conv_gemm, conv_depthwise, conv_direct, conv_transpose, pool2d, row_mean, layer_norm, softmax_rows,
       binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool;
+  // kernels_detector.cl
+  ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -83,7 +89,8 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model)
       k("gemm", 256, 1), k("conv_gemm", 256, 1), k("conv_depthwise", 16, 4), k("conv_direct", 16, 4), k("conv_transpose", 16, 4),
       k("pool2d", 16, 4), k("row_mean", 256, 1), k("layer_norm", 256, 1), k("softmax_rows", 256, 1),
       k("binary", 256, 1), k("unary", 256, 1), k("gather_nd", 256, 1), k("copy_blocks", 256, 1),
-      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1)});
+      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1), k("gap_partial", 256, 1), k("gap_finish", 256, 1),
+      k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
@@ -446,6 +453,12 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
               } else if (depthwise) {
                 args(kernels_->conv_depthwise, {P(src), P(dst), P(wp), P(bp), P(c)});
                 launch(kernels_->conv_depthwise, spatial);
+              } else if (node.op == IrOp::kConvTranspose && c.kh == 2 && c.kw == 2 && c.sh == 2 && c.sw == 2) {
+                const int tile = c.co >= 8 ? 8 : 1;
+                ze_kernel_handle_t kernel = tile == 8 ? kernels_->conv_transpose2_8 : kernels_->conv_transpose2_1;
+                args(kernel, {P(src), P(dst), P(wp), P(bp), P(c)});
+                launch(kernel, {groups_for(size_t(c.iw), 16), groups_for(size_t(c.ih), 4),
+                                uint32_t(c.n * ((c.co + tile - 1) / tile))});
               } else if (node.op == IrOp::kConvTranspose) {
                 args(kernels_->conv_transpose, {P(src), P(dst), P(wp), P(bp), P(c)});
                 launch(kernels_->conv_transpose, spatial);
@@ -587,11 +600,22 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = {a.shape[0], a.shape[1], 1, 1};
             place(out);
             const int planes = int(a.shape[0] * a.shape[1]), hw = int(a.shape[2] * a.shape[3]);
+            // A chunk of a plane per sub-group, then the chunk sums per plane.
+            const int chunks = int((size_t(hw) + kGapChunk - 1) / kGapChunk);
+            Value sums;
+            sums.shape = {int64_t(planes) * chunks};
+            place(sums);
+            release(sums);
+            const size_t sums_at = sums.offset;
             body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
               const float* x = ptr(a_ref, arena);
               float* dst = ptr(o_ref, arena);
-              args(kernels_->global_average_pool, {P(x), P(dst), P(planes), P(hw)});
-              launch(kernels_->global_average_pool, {groups_for(size_t(planes), 16), 1, 1});
+              float* partial = arena + sums_at;
+              args(kernels_->gap_partial, {P(x), P(partial), P(dst), P(planes), P(hw), P(chunks)});
+              launch(kernels_->gap_partial, {groups_for(size_t(planes) * size_t(chunks), 16), 1, 1});
+              if (chunks == 1) return;
+              args(kernels_->gap_finish, {P(partial), P(dst), P(planes), P(hw), P(chunks)});
+              launch(kernels_->gap_finish, {groups_for(size_t(planes), 16), 1, 1});
             };
             break;
           }
@@ -620,6 +644,60 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
               float* dst = ptr(o_ref, arena);
               args(kernels_->resize_nearest, {P(x), P(dst), P(ih), P(iw), P(oh), P(ow), P(scale_h), P(scale_w)});
               launch(kernels_->resize_nearest, {groups_for(size_t(ow), 16), groups_for(size_t(oh), 4), planes});
+            };
+            break;
+          }
+          case IrOp::kScaleMerge:
+          case IrOp::kConcatScaled: {
+            // Parts of (x, gate, up factor); a merge is one part plus an upsampled addend.
+            const bool merge = node.op == IrOp::kScaleMerge;
+            const size_t parts = merge ? 1 : node.inputs.size() / 2;
+            const Value* addend = merge && node.inputs[2] >= 0 ? &operand(2) : nullptr;
+            if (a.shape.size() != 4) fail("a 4-D input, got " + shown(a.shape));
+            MergeArgs m{};
+            m.oh = int(a.shape[2] * node.ints[0]);
+            m.ow = int(a.shape[3] * node.ints[0]);
+            for (size_t part = 0; part < parts; ++part) m.c_total += int(operand(2 * part).shape.at(1));
+            out.shape = {a.shape[0], m.c_total, m.oh, m.ow};
+            place(out);
+            std::vector<std::function<void(float*)>> bodies;
+            for (size_t part = 0; part < parts; ++part) {
+              const Value& x = operand(2 * part);
+              const Value* gate = node.inputs[2 * part + 1] >= 0 ? &operand(2 * part + 1) : nullptr;
+              MergeArgs q = m;
+              q.c = int(x.shape.at(1));
+              q.xh = int(x.shape[2]);
+              q.xw = int(x.shape[3]);
+              q.fx = int(node.ints[part]);
+              if (x.shape[0] != a.shape[0] || q.xh * q.fx != m.oh || q.xw * q.fx != m.ow) {
+                fail("parts of one size, got " + shown(x.shape) + " x" + std::to_string(q.fx) + " in " + shown(out.shape));
+              }
+              if (gate != nullptr && gate->shape != Shape{x.shape[0], x.shape[1], 1, 1}) {
+                fail("a per-channel gate, got " + shown(gate->shape) + " for " + shown(x.shape));
+              }
+              q.has_s = gate != nullptr;
+              if (addend != nullptr) {
+                q.yh = int(addend->shape.at(2));
+                q.yw = int(addend->shape.at(3));
+                q.fy = int(node.ints[1]);
+                q.has_y = 1;
+                if (addend->shape[1] != x.shape[1] || q.yh * q.fy != m.oh || q.yw * q.fy != m.ow) {
+                  fail("an addend of " + shown(addend->shape) + " x" + std::to_string(q.fy) + " for " + shown(out.shape));
+                }
+              }
+              const uint32_t planes = uint32_t(x.shape[0] * q.c);
+              bodies.push_back([=, this, &x_ref = x, &o_ref = out](float* arena) {
+                const float* xp = ptr(x_ref, arena);
+                const float* sp = gate != nullptr ? ptr(*gate, arena) : xp;
+                const float* yp = addend != nullptr ? ptr(*addend, arena) : xp;
+                float* dst = ptr(o_ref, arena);
+                args(kernels_->scale_merge, {P(xp), P(sp), P(yp), P(dst), P(q)});
+                launch(kernels_->scale_merge, {groups_for(size_t(q.ow), 16), groups_for(size_t(q.oh), 4), planes});
+              });
+              m.c_off += q.c;
+            }
+            body = [bodies = std::move(bodies)](float* arena) {
+              for (const auto& part : bodies) part(arena);
             };
             break;
           }
