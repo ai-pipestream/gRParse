@@ -37,7 +37,11 @@ service VlmConvertService {
   // is PERMISSION_DENIED; pages above the byte or page-count cap are
   // RESOURCE_EXHAUSTED; malformed input (missing options, non-PNG page
   // bytes, a page_no of zero or above 2147483647) is INVALID_ARGUMENT;
-  // PDF input without a rasterizer built in is UNIMPLEMENTED.
+  // PDF input without a rasterizer built in is UNIMPLEMENTED. A stream
+  // where no page converted and every page failed at the endpoint (it
+  // could not be reached, it timed out, or it answered with an HTTP
+  // error) ends UNAVAILABLE after its PageRaw events and its trailer:
+  // nothing was converted, and the status must not say otherwise.
   rpc ConvertPages(stream ConvertPagesRequest) returns (stream ConvertPagesResponse);
 
   // Reports the server build, the configured endpoint's scheme, host and
@@ -303,8 +307,9 @@ message PageDocument {
   // markdown/HTML/plaintext responses carry the full-page box only.
   ai.pipestream.document.v1.Document document = 2;
   // Where the fragment is less than it should be: something cut to a
-  // server cap rather than mapped whole, or a Nemotron Parse pass that
-  // fell short. Empty when nothing was lost.
+  // server cap rather than mapped whole, a Nemotron Parse pass that fell
+  // short, or part of the answer the mapper could not read. Empty when
+  // nothing was lost.
   repeated PageWarning warnings = 3;
   // The model call that produced this page: the model that answered, the
   // endpoint origin, the stop reason verbatim and classified, the token
@@ -326,7 +331,8 @@ message PageWarning {
   string ref = 3;
 }
 
-// What a page can lose: to a server cap, or to a model call that failed.
+// What a page can lose: to a server cap, to a model call that failed or
+// was cut off, or to output the mapper could not read.
 enum PageWarningCode {
   // Not set. Never emitted by the server.
   PAGE_WARNING_CODE_UNSPECIFIED = 0;
@@ -345,15 +351,41 @@ enum PageWarningCode {
   // page under common client message limits), or the page raster is
   // larger than the server decodes. Every PictureItem is still there.
   PAGE_WARNING_CODE_PICTURE_IMAGES_SKIPPED = 3;
-  // A Nemotron Parse double or triple pass fell short: the detection call
-  // or some region crop calls failed, or the raster could not be cropped.
-  // Those regions keep the page pass text; the message gives the counts.
+  // A Nemotron Parse double or triple pass fell short: the page call did
+  // not finish (so nothing was cropped), the detection call or some region
+  // crop calls failed, the raster could not be cropped, or the page held
+  // more regions than the server crops. Those regions keep the page pass
+  // text; the message gives the counts.
   PAGE_WARNING_CODE_NEMOTRON_PASS_INCOMPLETE = 4;
   // The model returned no text at all for the page, so the fragment has no
   // items. A model that answers with its format's own empty layout (dots.ocr
   // "[]", a Chandra Blank-Page block) declared the page empty and raises no
   // warning; an answer with text that maps to no items is a PageRaw.
   PAGE_WARNING_CODE_EMPTY_RESPONSE = 5;
+  // The model's answer ended before the model was done: cut off at
+  // max_tokens, or ended by the endpoint's content filter or an inference
+  // error. The fragment holds what mapped from the part that arrived and
+  // the rest of the page is missing. The page's generation says which:
+  // its stop_reason is VLM_STOP_REASON_LENGTH,
+  // VLM_STOP_REASON_CONTENT_FILTERED or VLM_STOP_REASON_INFERENCE_ERROR.
+  PAGE_WARNING_CODE_GENERATION_TRUNCATED = 6;
+  // The answer breaks off inside its own layout: a dots.ocr array with no
+  // closing bracket after an unfinished element, a Nemotron Parse region
+  // or block that opens and never closes. The fragment holds the complete
+  // elements; the unfinished tail is not mapped. The message gives its
+  // size in bytes.
+  PAGE_WARNING_CODE_OUTPUT_TRUNCATED = 7;
+  // The answer holds elements the mapper could not read and built nothing
+  // from: a dots.ocr array entry that is not an object, or one with
+  // neither a usable box nor text; a Nemotron Parse 3.5 block with text
+  // and fewer than two corner tokens; a DocTags <link_> token whose target
+  // is not a number. The message counts them.
+  PAGE_WARNING_CODE_ELEMENTS_SKIPPED = 8;
+  // The model wrote a location the mapper could not read: a dots.ocr
+  // element whose bbox is missing or is not four numbers, a DocTags <loc_>
+  // token that is not a number. The item is in the fragment with its text,
+  // on the full-page box instead of its own. The message counts them.
+  PAGE_WARNING_CODE_LOCATION_UNREADABLE = 9;
 }
 
 // Unmapped model output or a page failure.
@@ -363,14 +395,67 @@ message PageRaw {
   // The model's raw response text, when the call succeeded but mapping
   // failed. Empty on endpoint failure.
   string text = 2;
-  // What went wrong, when this event reports a failure (endpoint error,
-  // or the mapping failure reason alongside text). Empty when unset.
+  // What went wrong, in words: the endpoint failure, or the mapping
+  // failure reason alongside text. For people and logs; error_code is the
+  // value to branch on.
   string error = 3;
   // The model call behind text, when the call succeeded but mapping failed:
   // a stop reason of VLM_STOP_REASON_LENGTH says the answer was cut off,
   // which is the usual reason it no longer parses. Unset on endpoint
   // failure.
   ai.pipestream.document.v1.GenerationSource generation = 4;
+  // Why the page failed, as a value a caller can branch on; error says the
+  // same in words. Set on every PageRaw.
+  PageErrorCode error_code = 5;
+  // What the endpoint answered, when error_code is
+  // PAGE_ERROR_CODE_ENDPOINT_HTTP_ERROR. Unset otherwise.
+  EndpointError endpoint_error = 6;
+}
+
+// Why a page produced a PageRaw instead of a PageDocument.
+enum PageErrorCode {
+  // Not set. Never emitted by the server.
+  PAGE_ERROR_CODE_UNSPECIFIED = 0;
+  // No connection to the VLM endpoint could be made or kept, after the
+  // retries the client makes.
+  PAGE_ERROR_CODE_ENDPOINT_UNREACHABLE = 1;
+  // The endpoint answered with an HTTP status other than 200, after the
+  // retries the client makes for 429 and 5xx. endpoint_error carries the
+  // status and what the endpoint said.
+  PAGE_ERROR_CODE_ENDPOINT_HTTP_ERROR = 2;
+  // The call did not finish within the server's per-page time budget,
+  // retries included.
+  PAGE_ERROR_CODE_TIMEOUT = 3;
+  // The endpoint answered 200 with a body that is not a chat completion
+  // carrying message content.
+  PAGE_ERROR_CODE_MALFORMED_RESPONSE = 4;
+  // The model answered, but not in the response format asked for, so
+  // nothing could be mapped. text holds the answer verbatim.
+  PAGE_ERROR_CODE_UNMAPPABLE_OUTPUT = 5;
+  // The page as sent cannot be converted: it names no width or height and
+  // its PNG header gives none.
+  PAGE_ERROR_CODE_INVALID_PAGE = 6;
+  // The server failed while converting the page, through no fault of the
+  // page or the endpoint.
+  PAGE_ERROR_CODE_INTERNAL = 7;
+}
+
+// The endpoint's own account of a call it refused or failed.
+message EndpointError {
+  // The HTTP status of the reply (the last one, when the call was
+  // retried).
+  uint32 http_status = 1;
+  // The reply's error message: the OpenAI error object's message
+  // ("error.message"), or the text other servers put in its place (an
+  // "error" or "detail" string, a top-level "message", a plain-text body).
+  // Empty when the reply carried none that could be read. At most 2048
+  // bytes; message_truncated says when it was cut.
+  string message = 2;
+  // The reply's error type ("error.type", e.g. "invalid_request_error"),
+  // at most 128 bytes. Empty when the reply named none.
+  string type = 3;
+  // True when the endpoint's message was longer than message holds.
+  bool message_truncated = 4;
 }
 
 // Trailer summarizing the finished conversion.
@@ -381,6 +466,14 @@ message ConvertComplete {
   uint32 pages_ok = 2;
   // Pages that produced a PageRaw (mapping failure or endpoint error).
   uint32 pages_failed = 3;
+  // Pages whose model answer ended before the model was done (cut off at
+  // max_tokens, content filter, inference error), whichever event they
+  // produced: a PageDocument carrying
+  // PAGE_WARNING_CODE_GENERATION_TRUNCATED, or a PageRaw whose generation
+  // names the stop reason. Each is also counted in pages_ok or
+  // pages_failed, so a stream with pages_failed 0 and pages_truncated 2
+  // returned two short pages.
+  uint32 pages_truncated = 4;
 }
 
 // Request for GetServiceInfo. Empty by design.
