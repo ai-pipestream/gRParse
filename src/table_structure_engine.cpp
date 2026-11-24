@@ -17,6 +17,7 @@
 
 #include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
+#include "levelzero/table_decoder.h"
 
 namespace grparse {
 namespace {
@@ -143,7 +144,8 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    const bool split = native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda;
+    const OrtEp ep = ort_ep_selection().ep;
+    const bool split = (native_tensorrt_build() && ep == OrtEp::kCuda) || ep == OrtEp::kOpenVino;
     const std::string characters =
         split ? load_split_model(model_path) : load_released_model(model_path);
     std::istringstream lines(characters);
@@ -161,13 +163,14 @@ class TableStructureEngine::Impl {
     vocab_.push_back("eos");
   }
 
-  // Native TensorRT cannot import the released model: its decoder is one
-  // ONNX Loop whose carried tensors grow each step.  The same network runs
-  // as two static graphs instead (scripts/split_slanet.py): the encoder once
-  // per crop, the decoder one fixed-shape step per token, driven by
-  // decode_split.  A missing file fails startup, naming the script; the
-  // released model is never run on ONNX Runtime in its place.  Returns the
-  // token vocabulary, one token per line.
+  // Neither TensorRT nor OpenVINO can import the released model: its decoder
+  // is one ONNX Loop whose carried tensors grow each step.  The same network
+  // runs split (scripts/split_slanet.py): the encoder once per crop, then on
+  // TensorRT one fixed-shape step per token (decode_split), and under
+  // OpenVINO the native Level Zero decoder (src/levelzero/), every step of a
+  // table in one launch, after the encoder on native OpenVINO at FP32 (FP16
+  // changes tokens).  A missing file fails startup, naming the script.
+  // Returns the token vocabulary, one token per line.
   std::string load_split_model(const std::filesystem::path& model_path) {
     const auto directory = model_path.parent_path();
     const auto encoder_path = directory / "slanet_plus_encoder.onnx";
@@ -178,28 +181,52 @@ class TableStructureEngine::Impl {
       throw std::runtime_error("Table structure file is missing: " + derived.string() +
                                " (scripts/fetch-models.sh derives it from slanet_plus.onnx)");
     }
-    encoder_ = make_inference_model(ModelSpec{encoder_path, "table structure encoder",
-                                              OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
-    step_ = make_inference_model(ModelSpec{step_path, "table structure decoder",
-                                           OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
+      encoder_ = make_openvino_model(ModelSpec{encoder_path, "table structure encoder",
+                                               OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+      level_zero_ = level_zero_decoder(step_path);
+    } else {
+      encoder_ = make_inference_model(ModelSpec{encoder_path, "table structure encoder",
+                                                OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+      step_ = make_inference_model(ModelSpec{step_path, "table structure decoder",
+                                             OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
+    }
     std::ifstream vocab_file(vocab_path);
     return std::string(std::istreambuf_iterator<char>(vocab_file), std::istreambuf_iterator<char>());
   }
 
-  // ONNX Runtime: the same provider decision point as the other models, with
-  // #355's declared exception: on ONNX Runtime's OpenVINO provider this model
-  // is pinned to CPU in the open, since its dynamic-rank Loop does not
-  // compile on the GPU plugin.  Returns the token vocabulary, which rides in
-  // the model metadata, one token per line, exactly as the reference reads
-  // it.
-  std::string load_released_model(const std::filesystem::path& model_path) {
-    if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-      session_ = make_pinned_cpu_session(
-          env_, model_path, "table structure",
-          "slanet_plus has a dynamic-rank Loop the OpenVINO GPU plugin cannot compile");
-    } else {
-      session_ = make_session(env_, model_path, "table structure");
+  // The process's Level Zero decoder on the selection's OpenVINO GPU: GPU is
+  // Level Zero GPU 0, GPU.<n> GPU n.  Any other device, or a build without
+  // the decoder, refuses the model.
+  static levelzero::TableDecoder* level_zero_decoder(const std::filesystem::path& step_path) {
+    const std::string device = ort_ep_selection().openvino_device;
+    int index = -1;
+    if (device == "GPU") index = 0;
+    if (device.starts_with("GPU.")) index = std::atoi(device.c_str() + 4);
+    if (index < 0) {
+      throw ep_refusal("table structure decoder", step_path,
+                       "the native decoder runs on an Intel GPU; GRPARSE_OPENVINO_DEVICE is " + device);
     }
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+    levelzero::TableDecoder* decoder = nullptr;
+    try {
+      decoder = &levelzero::TableDecoder::shared(step_path, index);
+    } catch (const std::exception& error) {
+      throw ep_refusal("table structure decoder", step_path, error.what());
+    }
+    record_level_zero_placement("table structure decoder");
+    return decoder;
+#else
+    throw ep_refusal("table structure decoder", step_path,
+                     "this build carries no Level Zero decoder (GRPARSE_TABLE_LEVEL_ZERO)");
+#endif
+  }
+
+  // ONNX Runtime: the same provider decision point as the other models.
+  // Returns the token vocabulary, which rides in the model metadata, one
+  // token per line, exactly as the reference reads it.
+  std::string load_released_model(const std::filesystem::path& model_path) {
+    session_ = make_session(env_, model_path, "table structure");
     Ort::AllocatorWithDefaultOptions allocator;
     input_name_ = session_.GetInputNameAllocated(0, allocator).get();
     if (session_.GetOutputCount() != 2) {
@@ -253,7 +280,9 @@ class TableStructureEngine::Impl {
 
     std::vector<float> box_values;
     std::vector<float> prob_values;
-    if (encoder_ != nullptr) {
+    if (level_zero_ != nullptr) {
+      decode_level_zero(tensor, &box_values, &prob_values);
+    } else if (encoder_ != nullptr) {
       decode_split(tensor, &box_values, &prob_values);
     } else {
       run_session(tensor, &box_values, &prob_values);
@@ -356,6 +385,38 @@ class TableStructureEngine::Impl {
   // sos, feeding back the argmax as a one-hot, until eos after the first
   // step or kMaxSteps (the released loop's 501), with the softmax the
   // released graph applies to the structure scores.
+  // Encoder features in, every step's logits and boxes out of one launch,
+  // turned into probabilities as decode_split does.
+  void decode_level_zero(const std::vector<float>& tensor, std::vector<float>* boxes,
+                         std::vector<float>* probs) {
+    const TensorView image{TensorElement::kFloat32, tensor.data(), {1, 3, kInputSize, kInputSize}};
+    const Tensor features = encoder_->run(std::span(&image, 1)).front();
+    if (features.element_count() != size_t(levelzero::kPositions) * levelzero::kChannels) {
+      throw std::runtime_error("Table structure encoder output shape mismatch");
+    }
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+    const levelzero::DecodedTable decoded =
+        level_zero_->decode(std::span(features.floats(), features.element_count()));
+    for (int step = 0; step < decoded.steps; ++step) {
+      append_probabilities(decoded.logits.data() + size_t(step) * levelzero::kVocab, probs);
+    }
+    boxes->assign(decoded.location.begin(), decoded.location.end());
+#else
+    (void)boxes;
+    (void)probs;
+#endif
+  }
+
+  void append_probabilities(const float* scores, std::vector<float>* probs) const {
+    const auto vocab_size = static_cast<int64_t>(vocab_.size());
+    const float highest = *std::max_element(scores, scores + vocab_size);
+    double total = 0.0;
+    for (int64_t index = 0; index < vocab_size; ++index) total += std::exp(scores[index] - highest);
+    for (int64_t index = 0; index < vocab_size; ++index) {
+      probs->push_back(static_cast<float>(std::exp(scores[index] - highest) / total));
+    }
+  }
+
   void decode_split(const std::vector<float>& tensor, std::vector<float>* boxes,
                      std::vector<float>* probs) {
     constexpr int kMaxSteps = 501;
@@ -388,11 +449,7 @@ class TableStructureEngine::Impl {
           best = index;
         }
       }
-      double total = 0.0;
-      for (int64_t index = 0; index < vocab_size; ++index) total += std::exp(scores[index] - highest);
-      for (int64_t index = 0; index < vocab_size; ++index) {
-        probs->push_back(static_cast<float>(std::exp(scores[index] - highest) / total));
-      }
+      append_probabilities(scores, probs);
       boxes->insert(boxes->end(), location, location + 8);
       std::ranges::fill(previous, 0.0F);
       previous[static_cast<size_t>(best)] = 1.0F;
@@ -405,6 +462,7 @@ class TableStructureEngine::Impl {
   Ort::Session session_{nullptr};
   std::unique_ptr<InferenceModel> encoder_;
   std::unique_ptr<InferenceModel> step_;
+  levelzero::TableDecoder* level_zero_ = nullptr;  // process-wide, see TableDecoder::shared
   std::string input_name_;
   std::vector<std::string> output_names_;
   std::vector<const char*> output_name_pointers_;

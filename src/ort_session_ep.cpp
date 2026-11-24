@@ -39,7 +39,8 @@ std::string device_label(OrtEp ep, const OrtEpSelection& selection) {
   switch (ep) {
     case OrtEp::kCuda:
     case OrtEp::kTensorRt: return std::to_string(selection.cuda_device);
-    case OrtEp::kOpenVino: return selection.openvino_device;
+    case OrtEp::kOpenVino:
+    case OrtEp::kLevelZero: return selection.openvino_device;
     case OrtEp::kCpu: break;
   }
   return {};
@@ -197,6 +198,7 @@ std::string_view ort_ep_name(OrtEp ep) {
     case OrtEp::kCuda: return "CUDA";
     case OrtEp::kTensorRt: return "TensorRT";
     case OrtEp::kOpenVino: return "OpenVINO";
+    case OrtEp::kLevelZero: return "LevelZero";
     case OrtEp::kCpu: break;
   }
   return "CPU";
@@ -206,6 +208,9 @@ void set_ort_ep_selection(OrtEpSelection selection) {
   if (selection.ep == OrtEp::kTensorRt) {
     throw std::invalid_argument(
         "TensorRT is not a selection: select CUDA in a build that carries native TensorRT");
+  }
+  if (selection.ep == OrtEp::kLevelZero) {
+    throw std::invalid_argument("Level Zero is not a selection: select OpenVINO on a GPU device");
   }
   std::lock_guard<std::mutex> lock(selection_mutex);
   current_selection = std::move(selection);
@@ -308,7 +313,8 @@ void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_inde
       options.AppendExecutionProvider_OpenVINO_V2(openvino_options);
       return;
     }
-    case OrtEp::kTensorRt:  // never a selection (set_ort_ep_selection refuses it)
+    case OrtEp::kTensorRt:  // never selections (set_ort_ep_selection refuses them)
+    case OrtEp::kLevelZero:
     case OrtEp::kCpu:
       return;
   }
@@ -360,6 +366,10 @@ void apply_strict_placement(Ort::SessionOptions& options, OrtEp ep) {
 void record_native_placement(std::string_view what) {
   const OrtEp selected = selection_copy().ep;
   record_placement(what, selected == OrtEp::kCuda ? OrtEp::kTensorRt : selected, {});
+}
+
+void record_level_zero_placement(std::string_view what) {
+  record_placement(what, OrtEp::kLevelZero, {});
 }
 
 std::vector<OrtPlacement> ort_placements() {

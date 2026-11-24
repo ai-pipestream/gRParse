@@ -1393,6 +1393,13 @@ message SheetCell {
   // error; 0 when the cell holds a value. display carries the rendered
   // error literal.
   int32 error_code = 13;
+  // What a formula cell evaluated to: SHEET_CELL_TYPE_VALUE when number
+  // holds the numeric result (is_datetime and is_boolean then say how to
+  // read it), SHEET_CELL_TYPE_TEXT when the result is text and display
+  // carries it. Unset for cells that are not formulas and for a formula
+  // that evaluates to an error (error_code says so). Without it a formula
+  // yielding 0 and a formula yielding text look the same in number.
+  SheetCellType formula_result = 14;
 }
 
 // SheetRow is one used row of a sheet, streamed the moment it is parsed.
