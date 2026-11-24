@@ -35,6 +35,8 @@ enum class IrOp {
   kAveragePool,
   kMaxPool,
   kResize,         // nearest, asymmetric, floor
+  kScaleMerge,     // x * (1 + s) + nearest(y): inputs x, s, y (s, y may be -1); ints = up factors of x and y
+  kConcatScaled,   // channel concat of nearest(x_i) * (1 + s_i): inputs x0, s0, x1, s1, ...; ints = up factors
   kTranspose,
   kSlice,
   kConcat,
@@ -89,5 +91,12 @@ struct IrGraph {
 };
 
 IrGraph lower_onnx(const std::filesystem::path& model);
+
+// Rewrites, in place, the launches a feature pyramid with squeeze-excite
+// blocks spends on whole-tensor arithmetic (graph_fuse.cpp): the excite
+// Mul and its residual Add into one kScaleMerge; a constant integer nearest
+// Resize and the Add that reads it into the same node; and a channel Concat
+// of such results into one kConcatScaled that writes each part in place.
+void fuse_merges(IrGraph* graph);
 
 }  // namespace grparse::levelzero::graph

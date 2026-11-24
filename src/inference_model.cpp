@@ -7,6 +7,12 @@
 #ifdef GRPARSE_NATIVE_TENSORRT
 #include "tensorrt/tensorrt_model.h"
 #endif
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+#include <cstdlib>
+#include <cstring>
+
+#include "levelzero/graph_runtime.h"
+#endif
 
 namespace grparse {
 namespace {
@@ -160,9 +166,94 @@ std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec) {
       make_session(env, spec.path, spec.what, spec.precision, spec.intra_op_threads));
 }
 
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+namespace {
+
+// The Level Zero GPU an OpenVINO device names: GPU is 0, GPU.<n> is n; -1 for any other device.
+int level_zero_gpu(const std::string& device) {
+  if (device == "GPU") return 0;
+  if (device.starts_with("GPU.") && device.size() > 4) return std::atoi(device.c_str() + 4);
+  return -1;
+}
+
+// GRPARSE_OCR_FP16 names the nets whose activations are stored as half and
+// whose GEMM-shaped layers run on the matrix engines: a comma list of det,
+// cls and rec, or all.  Unset, every net computes in float.
+bool ocr_net_fp16(OcrNet net) {
+  const char* value = std::getenv("GRPARSE_OCR_FP16");
+  if (value == nullptr || *value == '\0') return false;
+  const std::string list = std::string(",") + value + ",";
+  if (list == ",all,") return true;
+  const char* name = net == OcrNet::kDetection ? ",det," : net == OcrNet::kDirection ? ",cls," : ",rec,";
+  return list.find(name) != std::string::npos;
+}
+
+// A model on the Level Zero graph runtime (src/levelzero/graph_runtime.h).
+class LevelZeroModel final : public InferenceModel {
+ public:
+  LevelZeroModel(const std::filesystem::path& path, int gpu, bool fp16)
+      : graph_(levelzero::Device::shared(gpu), path, levelzero::graph::GraphOptions{.fp16 = fp16}) {
+    const auto& ir = graph_.ir();
+    input_names_.push_back(ir.values[static_cast<size_t>(ir.input)].name);
+    for (const int output : ir.outputs) output_names_.push_back(ir.values[static_cast<size_t>(output)].name);
+  }
+
+  std::vector<Tensor> run(std::span<const TensorView> inputs) override {
+    if (inputs.size() != 1 || inputs[0].element != TensorElement::kFloat32) {
+      throw std::invalid_argument("a Level Zero model takes one float input");
+    }
+    std::vector<levelzero::graph::HostTensor> outputs =
+        graph_.run(static_cast<const float*>(inputs[0].data), inputs[0].shape);
+    std::vector<Tensor> result;
+    result.reserve(outputs.size());
+    for (levelzero::graph::HostTensor& output : outputs) {
+      Tensor tensor;
+      tensor.element = TensorElement::kFloat32;
+      tensor.shape = std::move(output.shape);
+      tensor.bytes.resize(output.data.size() * sizeof(float));
+      std::memcpy(tensor.bytes.data(), output.data.data(), tensor.bytes.size());
+      result.push_back(std::move(tensor));
+    }
+    return result;
+  }
+
+  void prewarm(std::span<const std::vector<TensorSpec>>) override {}
+  const std::vector<std::string>& input_names() const override { return input_names_; }
+  const std::vector<std::string>& output_names() const override { return output_names_; }
+  std::string_view backend_name() const override { return "LevelZero"; }
+
+ private:
+  levelzero::graph::GraphModel graph_;
+  std::vector<std::string> input_names_;
+  std::vector<std::string> output_names_;
+};
+
+}  // namespace
+
+bool level_zero_ocr() {
+  const OrtEpSelection selection = ort_ep_selection();
+  return selection.ep == OrtEp::kOpenVino && level_zero_gpu(selection.openvino_device) >= 0;
+}
+#else
+bool level_zero_ocr() { return false; }
+#endif
+
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread) {
   const std::string what(ocr_net_name(net));
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+  if (level_zero_ocr()) {
+    std::unique_ptr<InferenceModel> model;
+    try {
+      model = std::make_unique<LevelZeroModel>(path, level_zero_gpu(ort_ep_selection().openvino_device),
+                                               ocr_net_fp16(net));
+    } catch (const std::exception& error) {
+      throw ep_refusal(what, path, error.what());
+    }
+    record_level_zero_placement(what);
+    return model;
+  }
+#endif
 #ifdef GRPARSE_NATIVE_TENSORRT
   if (ort_ep_selection().ep == OrtEp::kCuda) {
     return tensorrt_model(path, what, ocr_net_shapes(net).profiles);
