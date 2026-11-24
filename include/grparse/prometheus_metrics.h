@@ -82,17 +82,48 @@ struct CollectorMetrics {
   uint64_t status(CollectorCallStatus s) const { return calls[static_cast<size_t>(s)]; }
 };
 
+// What a consensus read of a PDF (GRPARSE_PDF_BACKEND naming several
+// backends) went without. Every one of these is also a typed warning on
+// the document it happened to (WARNING_CODE_CONSENSUS_*), which names the
+// backend; the counter is what an operator alerts on, and carries no
+// backend label because no gRParse metric is keyed by a configured target.
+enum class ConsensusEvent : size_t {
+  // A configured backend could not open a document and sat out its vote.
+  kLegOpenFailed = 0,
+  // A backend failed one page's text or raster; the others served it.
+  kLegPageFailed = 1,
+  // A backend was taken out of a document's vote after repeated page
+  // failures.
+  kLegDisabled = 2,
+  // The backends disagreed on how many pages a document has.
+  kPageCountDisagreement = 3,
+  // A page's text was decided by fewer backends than were configured.
+  kPageUndervoted = 4,
+};
+
+inline constexpr std::array<std::string_view, 5> kConsensusEvents = {
+    "leg_open_failed", "leg_page_failed", "leg_disabled", "page_count_disagreement",
+    "page_undervoted"};
+
 struct PipelineTelemetry {
   std::array<DoctypeMetrics, kMetricDoctypes.size()> doctypes{};
   std::array<CollectorMetrics, kMetricCollectors.size()> collectors{};
+  std::array<uint64_t, kConsensusEvents.size()> consensus{};
 
   DoctypeMetrics& doctype(std::string_view name);
   const DoctypeMetrics& doctype(std::string_view name) const;
   CollectorMetrics& collector(std::string_view name);
   const CollectorMetrics& collector(std::string_view name) const;
+  uint64_t& consensus_events(ConsensusEvent event) {
+    return consensus[static_cast<size_t>(event)];
+  }
+  uint64_t consensus_events(ConsensusEvent event) const {
+    return consensus[static_cast<size_t>(event)];
+  }
 };
 
-// Snapshot or reset the process-wide per-doctype and per-collector counters.
+// Snapshot or reset the process-wide per-doctype, per-collector and
+// consensus counters.
 PipelineTelemetry pipeline_telemetry();
 void reset_pipeline_telemetry();
 
@@ -106,6 +137,7 @@ void record_collector_call(ai::pipestream::parse::v1::Collector collector,
 void record_collector_warnings(std::string_view collector, uint64_t count = 1);
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector,
                                uint64_t count = 1);
+void record_consensus_event(ConsensusEvent event, uint64_t count = 1);
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code);
 std::string_view metric_collector_name(ai::pipestream::parse::v1::Collector collector);
@@ -146,7 +178,9 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
 // latency export as grparse_documents_completed_total and
 // grparse_document_duration_seconds; per-collector calls, latency, and
 // warnings export as grparse_collector_calls_total,
-// grparse_collector_duration_seconds, and grparse_collector_warnings_total.
+// grparse_collector_duration_seconds, and grparse_collector_warnings_total;
+// what consensus reads of PDFs went without exports as
+// grparse_pdf_consensus_events_total{kind=...} (every ConsensusEvent).
 // This overload is pure in its inputs.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,

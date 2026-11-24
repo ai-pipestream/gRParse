@@ -991,6 +991,67 @@ void verify_source_warnings_ride_on_every_delivered_page() {
   }
 }
 
+// A source with two things to say that no text-layer read brings on: one it
+// knows from the moment it opened (a consensus backend that could not open
+// the document), and one it learns while rendering the page (a backend
+// taken out of the document after its renders kept failing).
+class LateWarnedSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    return std::nullopt;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    rendered_.store(true);
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+  std::vector<grparse::Warning> page_warnings(int) const override {
+    namespace docv1 = ai::pipestream::document::v1;
+    std::vector<grparse::Warning> warnings = {grparse::Warning(
+        docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED, "backend a could not open the document")};
+    if (rendered_.load()) {
+      warnings.emplace_back(docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED,
+                            "backend b was taken out after its renders failed");
+    }
+    return warnings;
+  }
+
+ private:
+  mutable std::atomic<bool> rendered_{false};
+};
+
+// The scheduler asks a source what it has to say about a page once it has
+// finished reading the page from it, raster included, and asks whether or
+// not the page's text layer was read: forced recognition never reads the
+// text layer, and a document read that way still has to hear which backends
+// its source went without.
+void verify_source_warnings_are_asked_after_the_last_read() {
+  for (const bool forced : {false, true}) {
+    const std::string what = forced ? "forced recognition" : "selective recognition";
+    BodyRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {1, 2, 1, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+          return std::make_shared<LateWarnedSource>();
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    if (forced) tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kForce;
+    Result result;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                     callbacks_for(&result));
+    wait_until_finished(&result);
+    require(!result.failure && result.pages.size() == 1, what + ": the page is delivered");
+    const auto& warnings = result.pages.at(1)->source_warnings;
+    require(!warnings.empty() && warnings[0].message.contains("could not open"),
+            what + ": what the source knew from its open is on the delivered page");
+    require(warnings.size() == 2 && warnings[1].message.contains("renders failed"),
+            what + ": and so is what it learned while rendering the page");
+  }
+}
+
 // Collects each delivered page alongside the shared Result bookkeeping.
 grparse::PageScheduler::Callbacks capturing_callbacks_for(
     Result* result, std::mutex* pages_mutex,
@@ -1859,6 +1920,7 @@ int main() {
       verify_barcode_gate_and_forced_mode,
       verify_partial_digital_merges_with_ocr,
       verify_source_warnings_ride_on_every_delivered_page,
+      verify_source_warnings_are_asked_after_the_last_read,
       verify_inspector_page_set_restricts_ocr,
       verify_recognition_modes_outrank_the_page_set,
       verify_ocr_off_reads_only_the_embedded_layer,

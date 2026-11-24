@@ -255,7 +255,7 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageSource> source;
     std::shared_ptr<Ticket::State> request;
     int page_number = 0;
-    // What the source said about its read of this page's text layer
+    // What the source said about its read of this page
     // (PageSource::page_warnings), held from the render stage until the
     // page is assembled, so it reaches the delivered page whichever way the
     // page ends up being read. Stage-ordered like the timings below.
@@ -728,7 +728,6 @@ class PageScheduler::Impl final {
           const BusyTimer timer(render_busy_ns_);
           const StageTimer stage(page->timings.digital_ms);
           digital = page->source->extract_digital_page(page->page_number);
-          page->source_warnings = page->source->page_warnings(page->page_number);
         }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
@@ -744,7 +743,8 @@ class PageScheduler::Impl final {
                   : mode == OcrTuning::Mode::kOff || digital->skip_ocr;
           if (embedded_settles && region_detector_ == nullptr &&
               !captures_page_images(page->request->tuning)) {
-            digital->source_warnings = std::move(page->source_warnings);
+            // The text layer was this page's last read from its source.
+            digital->source_warnings = page->source->page_warnings(page->page_number);
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
@@ -768,6 +768,12 @@ class PageScheduler::Impl final {
           const StageTimer stage(page->timings.render_ms);
           image = page->source->render_page(page->page_number);
         }
+        // Asked once the page's last read from its source is done, and
+        // whether or not its text layer was read: a source can have learned
+        // something on the render (a consensus backend taken out after its
+        // renders kept failing), and forced recognition reads no text layer
+        // yet must still hear what the source went without from its open on.
+        page->source_warnings = page->source->page_warnings(page->page_number);
         pages_rendered_.fetch_add(1);
         if (page->request->cancelled.load()) {
           complete_page(page, PageOutcome::kCancelled);

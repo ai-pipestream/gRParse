@@ -117,6 +117,7 @@ struct AtomicCollectorMetrics {
 
 std::array<AtomicDoctypeMetrics, kMetricDoctypes.size()> g_doctypes{};
 std::array<AtomicCollectorMetrics, kMetricCollectors.size()> g_collectors{};
+std::array<std::atomic<uint64_t>, kConsensusEvents.size()> g_consensus{};
 
 size_t doctype_index(std::string_view name) {
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -308,6 +309,9 @@ PipelineTelemetry pipeline_telemetry() {
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out.collectors[i] = g_collectors[i].snapshot();
   }
+  for (size_t i = 0; i < kConsensusEvents.size(); ++i) {
+    out.consensus[i] = g_consensus[i].load(std::memory_order_relaxed);
+  }
   return out;
 }
 
@@ -317,6 +321,9 @@ void reset_pipeline_telemetry() {
   }
   for (auto& collector : g_collectors) {
     collector.reset();
+  }
+  for (auto& count : g_consensus) {
+    count.store(0, std::memory_order_relaxed);
   }
 }
 
@@ -353,6 +360,10 @@ void record_collector_warnings(std::string_view collector, uint64_t count) {
 
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector, uint64_t count) {
   record_collector_warnings(metric_collector_name(collector), count);
+}
+
+void record_consensus_event(ConsensusEvent event, uint64_t count) {
+  g_consensus[static_cast<size_t>(event)].fetch_add(count, std::memory_order_relaxed);
 }
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code) {
@@ -770,6 +781,16 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out << "grparse_collector_warnings_total{collector=\"" << kMetricCollectors[i] << "\"} "
         << telemetry.collectors[i].warnings << '\n';
+  }
+
+  out << "# HELP grparse_pdf_consensus_events_total What consensus reads of PDFs went "
+         "without, by kind: backends that could not open a document, failed a page or were "
+         "taken out of a vote, page-count disagreements, and pages decided by fewer backends "
+         "than configured.\n"
+         "# TYPE grparse_pdf_consensus_events_total counter\n";
+  for (size_t i = 0; i < kConsensusEvents.size(); ++i) {
+    out << "grparse_pdf_consensus_events_total{kind=\"" << kConsensusEvents[i] << "\"} "
+        << telemetry.consensus[i] << '\n';
   }
 
   return out.str();

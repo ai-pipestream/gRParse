@@ -371,6 +371,41 @@ streaming surface, `DocumentComplete.typed_warnings`. In consensus mode
 every leg's warnings are kept, whichever leg won the page. An answer with
 no trailer is not flagged: the call's status is then the only word on it.
 
+## A vote that ran short (said since 2026-11-24, gRParse#402)
+
+Consensus keeps a document readable when a backend fails, and until this
+change it did so without a word to the caller: three backends configured,
+two down, and every page came back as one backend's reading with nothing in
+the response or the metrics to say the vote had not happened. The stderr
+lines for the operator are still there; the caller now gets the same facts
+typed, through the path the trailer warnings take
+(`PageSource::page_warnings` into `Document.warnings` and
+`DocumentComplete.typed_warnings`):
+
+- `WARNING_CODE_CONSENSUS_BACKEND_FAILED`, naming the target, for a backend
+  that could not open the document, and for one taken out of the document
+  after three page failures in a row. About the document: no `page_no`.
+- `WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT`, with each backend's
+  count, when the backends that opened the document disagree on its length.
+- `WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED` on each page (`page_no`) whose
+  text was decided by fewer backends than were configured, naming each
+  missing backend and why: it could not open the document, was taken out of
+  the vote, failed on this page (with its error), or reads fewer pages. A
+  backend that answered "no text on this page" did answer; that page is not
+  undervoted.
+
+`grparse_pdf_consensus_events_total{kind=...}` counts the same events
+process-wide: `leg_open_failed`, `leg_page_failed` (text or raster),
+`leg_disabled`, `page_count_disagreement`, `page_undervoted`. It has no
+backend label, since no gRParse metric is keyed by a configured target; the
+warning names the backend. A document no backend could open still fails as
+before, and a failed leg still counts in the metric then. The page
+scheduler asks a source for its warnings after its last read of the page
+(raster included) and under forced recognition too, so a document that is
+only rendered hears which backends are out. The VLM pipeline and the page
+previews render through the same source without asking, so there a dropped
+backend shows in the metric and on stderr only.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying
