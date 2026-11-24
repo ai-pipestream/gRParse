@@ -15,16 +15,36 @@ namespace grparse::office_fold {
 namespace {
 
 // The cell's typed value: text stays the display string, and the value says
-// what the sheet actually holds. An error beats a formula, because a
-// formula that failed has no value to report. False when the cell holds
-// nothing the schema types.
+// what the sheet actually holds. A formula cell keeps both halves: its
+// source in formula_source and its cached result in kind, typed exactly as
+// a value cell's would be. A failed formula's result is its error literal;
+// a formula that yields text has no kind arm to fill, and the text stays
+// the cell's text. False when the cell holds nothing the schema types.
 bool typed_cell_value(const officev1::SheetCell& cell, docv1::CellValue* out) {
   bool typed = true;
-  if (cell.error_code() != 0) {
+  const bool is_formula = cell.type() == officev1::SHEET_CELL_TYPE_FORMULA;
+  // Only formula_result says what a formula evaluated to. Without it number
+  // reads 0 for a text result as for a zero, and older workers set
+  // is_datetime and is_boolean from the cell's number format alone, text
+  // results included, so neither mark is a statement about the result.
+  const bool numeric_result =
+      is_formula && cell.formula_result() == officev1::SHEET_CELL_TYPE_VALUE;
+  const bool text_result =
+      is_formula && cell.formula_result() == officev1::SHEET_CELL_TYPE_TEXT;
+  const bool failed = cell.error_code() != 0;
+  if (is_formula && !cell.formula().empty()
+      && (failed || numeric_result || text_result)) {
+    out->set_formula_source(cell.formula());
+  }
+  if (failed) {
     out->set_error(cell.display().empty()
                        ? "Err:" + std::to_string(cell.error_code())
                        : cell.display());
-  } else if (cell.type() == officev1::SHEET_CELL_TYPE_FORMULA) {
+  } else if (text_result) {
+    typed = out->has_formula_source();
+  } else if (is_formula && !numeric_result) {
+    // The worker did not say what the formula evaluated to, so no result
+    // is claimed: the legacy formula arm, with no cached value.
     out->set_formula(cell.formula());
   } else if (cell.is_boolean()) {
     out->set_boolean(cell.number() != 0);
@@ -37,7 +57,7 @@ bool typed_cell_value(const officev1::SheetCell& cell, docv1::CellValue* out) {
     when->set_hour(cell.datetime().hour());
     when->set_minute(cell.datetime().minute());
     when->set_second(cell.datetime().second());
-  } else if (cell.type() == officev1::SHEET_CELL_TYPE_VALUE) {
+  } else if (cell.type() == officev1::SHEET_CELL_TYPE_VALUE || numeric_result) {
     out->set_number(cell.number());
   } else {
     typed = false;

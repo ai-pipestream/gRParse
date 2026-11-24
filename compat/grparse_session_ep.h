@@ -23,10 +23,12 @@
 
 namespace grparse {
 
-// kTensorRt is never a selection: it is where a model actually runs when the
-// selection is kCuda in a build that carries native TensorRT
-// (native_tensorrt_build), and it appears only as a placement's `actual`.
-enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt };
+// kTensorRt and kLevelZero are never selections.  kTensorRt is where a model
+// actually runs when the selection is kCuda in a build that carries native
+// TensorRT (native_tensorrt_build); kLevelZero is where the table structure
+// decoder runs under a kOpenVino GPU selection (src/levelzero/).  Both
+// appear only as a placement's `actual`.
+enum class OrtEp { kCpu, kCuda, kOpenVino, kTensorRt, kLevelZero };
 
 // Numeric precision a session asks its provider for.  kProviderDefault leaves
 // the provider's own choice alone, which for the OpenVINO GPU plugin is half
@@ -168,6 +170,10 @@ struct OrtPlacement {
 // a CUDA selection, src/inference_model.cpp) in the same placements as the
 // ONNX Runtime sessions, so grparse_ort_sessions shows every model.
 void record_native_placement(std::string_view what);
+
+// Records one model run by the native Level Zero decoder on the selection's
+// OpenVINO GPU device: actual kLevelZero, device the OpenVINO device name.
+void record_level_zero_placement(std::string_view what);
 
 // Every placement recorded so far, one entry per (model, requested, actual,
 // device), in first-built order.  Deterministic for a fixed build sequence.

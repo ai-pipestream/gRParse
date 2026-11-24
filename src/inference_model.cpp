@@ -171,6 +171,14 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
   return std::make_unique<OrtModel>(make_rapidocr_session(env, path, what, num_thread));
 }
 
+#ifndef GRPARSE_NATIVE_OPENVINO
+bool native_openvino_build() { return false; }
+
+std::unique_ptr<InferenceModel> make_openvino_model(const ModelSpec& spec) {
+  throw std::runtime_error(std::string(spec.what) + ": this build carries no native OpenVINO");
+}
+#endif
+
 bool tensorrt_device_present(int cuda_device, std::string* detail) {
 #ifdef GRPARSE_NATIVE_TENSORRT
   return trt::device_present(cuda_device, detail);
