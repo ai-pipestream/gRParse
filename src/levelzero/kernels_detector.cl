@@ -166,7 +166,10 @@ __kernel void conv_few_terms(__global const real* in, __global real* out, __glob
 // tap falls outside the image, where the shifted run wraps to the
 // neighbouring row or leaves the plane, contributes zero.  Needs
 // ih * iw to be a multiple of 32, so every plane starts on a 64-byte
-// boundary and is a whole number of runs.  The block read places a run only
+// boundary and is a whole number of runs.  A read always spans 32 planes:
+// with fewer channels left it runs past the tensor, into arena the runtime
+// reserves, and the terms it brings from there are zeroed.  The block read
+// places a run only
 // on an even element (4 bytes), in its base and in its coordinate alike, so
 // a tap whose offset is odd reads `in1`, the input moved down one element
 // (shift_copy): in1[i] = in[i + 1].  Weights are [tap][co pad 16]
@@ -174,6 +177,13 @@ __kernel void conv_few_terms(__global const real* in, __global real* out, __glob
 __attribute__((overloadable)) void intel_sub_group_2d_block_write_16b_8r16x1c(__global void* base, int width,
                                                                               int height, int pitch, int2 coord,
                                                                               __private ushort* src);
+
+// The first `terms` of the 16 terms a transform read packs two to an int,
+// the even term in the low half; the others zero.
+static inline int8 keep_terms(int8 packed, int terms) {
+  const int8 first = (int8)(0, 2, 4, 6, 8, 10, 12, 14), have = (int8)(terms);
+  return packed & ((have >= first + 2) | ((have == first + 1) & (int8)(0xFFFF)));
+}
 
 // out[i] = in[i + 1] for i from -32 up to `count`, 32 elements a work item
 // as eight 64-bit words, each the word above it moved down one element, so
@@ -224,9 +234,17 @@ void conv_planes_xmx(__global const half* in, __global const half* in1, __global
         const int s = q0 + 16 * j + dy * p.iw + dx - odd, base = (s >> 5) << 5;
         int8 r[2];
         intel_sub_group_2d_block_read_transform_16b_32r16x1c(
-            (__global void*)(src + (ptrdiff_t)c0 * hw + base), 128, min(32, p.ci - c0), hw * 2, (int2)(s - base, 0),
+            (__global void*)(src + (ptrdiff_t)c0 * hw + base), 128, 32, hw * 2, (int2)(s - base, 0),
             (__private uint*)r);
         if (!valid[j]) r[0] = r[1] = (int8)(0);
+        // The read takes 32 planes whatever the height it is given: past
+        // the last channel it holds whatever follows the tensor, which the
+        // arena keeps mapped (GraphModel::record) and which must not reach
+        // a sum, since stale Inf or NaN times a zero weight is NaN.
+        if (p.ci - c0 < 32) {
+          r[0] = keep_terms(r[0], p.ci - c0);
+          r[1] = keep_terms(r[1], p.ci - c0 - 16);
+        }
         acc[0][j] = intel_sub_group_f16_f16_matrix_mad_k16(blk[0], r[0], acc[0][j]);
         acc[1][j] = intel_sub_group_f16_f16_matrix_mad_k16(blk[1], r[0], acc[1][j]);
         acc[0][j] = intel_sub_group_f16_f16_matrix_mad_k16(blk[2], r[1], acc[0][j]);

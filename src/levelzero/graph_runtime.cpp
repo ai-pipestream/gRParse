@@ -105,6 +105,7 @@ struct GraphModel::Value {
 
 GraphModel::GraphModel(Device& device, const std::filesystem::path& model, GraphOptions options)
     : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), reduce_rows_(options.reduce_rows),
+      poison_arena_(options.poison_arena),
       esize_(options.fp16 ? 2 : 4) {
   last_use_.assign(ir_.values.size(), 0);
   for (size_t index = 0; index < ir_.nodes.size(); ++index) {
@@ -330,6 +331,8 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
   std::map<size_t, size_t> free_blocks;  // offset -> floats
   std::map<size_t, int> holders;         // offset -> values (a tensor and its views) holding it
   size_t arena_end = kArenaSlack;
+  // Elements past the last block that conv_planes_xmx's 32-plane reads may touch.
+  size_t arena_tail = 0;
   const auto place = [&](Value& v) {
     const size_t want = (numel(v.shape) + kBlock - 1) / kBlock * kBlock;
     for (auto it = free_blocks.begin(); it != free_blocks.end(); ++it) {
@@ -602,9 +605,14 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
             const bool depthwise = node.op == IrOp::kConv && c.groups == c.ci && c.groups == c.co;
             const int max_pool = node.op == IrOp::kMaxPool, include_pad = node.count_include_pad;
             // A size-keeping dense convolution over whole runs reads its input planes in place.
-            const size_t planes = fp16_ && node.op == IrOp::kConv && c.oh == c.ih && c.ow == c.iw && (c.ih * c.iw) % 32 == 0
+            const size_t planes = fp16_ && node.op == IrOp::kConv && !a.in_weights && c.oh == c.ih && c.ow == c.iw &&
+                                              (c.ih * c.iw) % 32 == 0
                                       ? planes_offsets_[index]
                                       : SIZE_MAX;
+            // Its last read spans 32 planes from the last whole block of 32 channels.
+            if (planes != SIZE_MAX && c.ci % 32 != 0) {
+              arena_tail = std::max(arena_tail, size_t(32 - c.ci % 32) * size_t(c.ih) * size_t(c.iw));
+            }
             // A dense kxk convolution with few terms an output reads them directly, in either precision.
             const bool few = node.op == IrOp::kConv && c.groups == 1 && planes == SIZE_MAX && c.kh * c.kw > 1 &&
                              c.ci * c.kh * c.kw <= 32;
@@ -1020,7 +1028,7 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
     const Shape& shape = values[size_t(id)].shape;
     output_floats += ((reduce_rows_ ? numel(shape) / size_t(shape.back()) * 4 : numel(shape)) + 15) / 16 * 16;
   }
-  grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_, false);
+  grow(&arena_, &arena_elements_, arena_end + kArenaSlack + arena_tail, esize_, false);
   grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float), true);
   grow(&io_out_, &io_out_floats_, output_floats, sizeof(float), true);
   if (moved) drop_plans();
@@ -1031,6 +1039,13 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
     ze_check(zeCommandListReset(plan->list), "command list reset");
   }
   list_ = plan->list;
+  if (poison_arena_) {
+    const uint32_t nan = fp16_ ? 0x7E007E00U : 0x7FC00000U;  // a quiet NaN in each element
+    ze_check(zeCommandListAppendMemoryFill(list_, arena_, &nan, sizeof(nan), arena_elements_ * esize_ / 4 * 4, nullptr, 0,
+                                           nullptr),
+             "arena poison");
+    ze_check(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr), "graph barrier");
+  }
   plan->shape = input_shape;
   plan->output_shapes.clear();
   plan->output_floats.clear();

@@ -41,6 +41,11 @@ struct GraphOptions {
   // caller only takes each time step's best class, it saves reading the
   // whole score tensor back.
   bool reduce_rows = false;
+  // For tests: every call first fills the whole arena with NaN, so a kernel
+  // that lets anything it was not given into a result (stale blocks, the
+  // slack between them, the rows a block read takes past a tensor) returns
+  // NaN, where the previous call's leftovers would have hidden it.
+  bool poison_arena = false;
 };
 
 class GraphModel {
@@ -110,6 +115,7 @@ class GraphModel {
   std::unique_ptr<Kernels> kernels_;
   bool fp16_ = false;
   bool reduce_rows_ = false;
+  bool poison_arena_ = false;
   size_t esize_ = 4;               // bytes per activation element
   float* weights_ = nullptr;       // the IR's weight block, float
   void* weights_real_ = nullptr;   // FP16: the same block as half, index for index
