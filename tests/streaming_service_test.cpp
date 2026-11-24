@@ -2926,6 +2926,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   // Adds one picture the fold labels a chart and holds the pixels of: what
   // the enrichment leg sends for its data table.
   void set_chart_picture(std::string png) { chart_png_ = std::move(png); }
+  // Ends the call with INTERNAL after the info event: an inspector that
+  // classified the document and then died reading it.
+  void fail_after_info() { fail_after_info_ = true; }
   // When the trailer went out (steady clock); the epoch until then.
   std::chrono::steady_clock::time_point trailer_sent_at() const {
     std::lock_guard<std::mutex> lock(trailer_mutex_);
@@ -2968,6 +2971,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
       }
     }
     if (trailer_delay_ > 0ms) std::this_thread::sleep_for(trailer_delay_);
+    if (fail_after_info_) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "inspector died after its info event");
+    }
     docv1::Document document;
     document.mutable_body()->set_self_ref("#/body");
     document.mutable_furniture()->set_self_ref("#/furniture");
@@ -3057,6 +3063,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   std::atomic<int> dials_{0};
   std::chrono::milliseconds trailer_delay_{0};
   std::string chart_png_;
+  bool fail_after_info_ = false;
   mutable std::mutex trailer_mutex_;
   std::chrono::steady_clock::time_point trailer_sent_at_{};
 };
@@ -7365,6 +7372,123 @@ void verify_streamed_cv_route_carries_what_the_unary_route_does() {
   }
 }
 
+// A PDF whose inspector is down is read by the CV path on both surfaces.
+// The unary Document says so with a typed warning. The stream must say it
+// too, in the same words, beside the failure entry it already carries: a
+// client that reads warnings to learn how a document was read does not
+// look in collector_failures.
+void verify_streamed_pdf_fallback_is_a_typed_warning() {
+  FailingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target());
+  require(unary.status.ok(), "unary parse with a down inspector failed: " +
+                                 unary.status.error_message());
+  const auto& unary_warnings = unary.response.response().document().doc().warnings();
+  const auto fallback = [](const docv1::CollectorWarning& warning) {
+    return warning.code() == docv1::WARNING_CODE_COLLECTOR_FALLBACK;
+  };
+  const auto said = std::ranges::find_if(unary_warnings, fallback);
+  require(said != unary_warnings.end(), "the unary Document carries the typed fallback warning");
+
+  const StreamPdfRun stream = run_stream_pdf(inspector_server.target());
+  require(stream.status.ok(), "stream with a down inspector failed: " +
+                                  stream.status.error_message());
+  require(!stream.events.empty() && stream.events.back().has_complete(),
+          "the stream closes with the complete event");
+  const auto& complete = stream.events.back().complete();
+  require_equal(complete.collector_failures_size(), 1,
+                "the complete event still names the failed inspector");
+  const auto typed = std::ranges::find_if(complete.typed_warnings(), fallback);
+  require(typed != complete.typed_warnings().end(),
+          "the complete event carries the typed fallback warning");
+  require_equal(typed->message(), said->message(),
+                "the stream states the fallback in the unary Document's words");
+  require_equal(complete.warnings_size(), complete.typed_warnings_size(),
+                "the string list stays in step with the typed one");
+  require(std::ranges::find(complete.warnings(), said->message()) != complete.warnings().end(),
+          "the string list carries the same message");
+}
+
+// The stream starts the CV run on an info event that recommends OCR for
+// the whole document, before the inspector has finished. An inspector that
+// then fails is a failure entry, and it must be a typed warning too: the
+// pages were read without the inspector's result.
+void verify_inspector_failure_after_an_early_cv_start_is_a_typed_warning() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  inspector.set_ocr_recommended(true);
+  inspector.fail_after_info();
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun stream = run_stream_pdf(inspector_server.target());
+  require(stream.status.ok(), "stream whose inspector died failed: " +
+                                  stream.status.error_message());
+  require(!stream.events.empty() && stream.events.back().has_complete(),
+          "the stream closes with the complete event");
+  const auto& complete = stream.events.back().complete();
+  require_equal(complete.collector_failures_size(), 1,
+                "the complete event names the failed inspector");
+  const auto typed = std::ranges::find_if(
+      complete.typed_warnings(), [](const docv1::CollectorWarning& warning) {
+        return warning.code() == docv1::WARNING_CODE_COLLECTOR_FALLBACK;
+      });
+  require(typed != complete.typed_warnings().end(),
+          "the complete event carries the typed fallback warning");
+  require(typed->message().contains("inspector died after its info event") &&
+              typed->message().contains("already reading the document"),
+          "it says what failed and that recognition had already started: " + typed->message());
+  require_equal(complete.warnings_size(), complete.typed_warnings_size(),
+                "the string list stays in step with the typed one");
+}
+
+// Document.claims is the unary merge's record of each collector's
+// document-level account, kept because the merge resolves between them.
+// The stream merges nothing, so it carries no claim list; what each claim
+// of a CV-read PDF holds is on the complete event under the same
+// attribution: the service's own origin, and the inspector's source
+// metadata with every field naming the collector the claim names.
+void verify_stream_carries_what_the_unary_claims_hold() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target());
+  require(unary.status.ok(), "unary parse failed: " + unary.status.error_message());
+  const StreamPdfRun stream = run_stream_pdf(inspector_server.target());
+  require(stream.status.ok(), "stream failed: " + stream.status.error_message());
+  require(!stream.events.empty() && stream.events.back().has_complete(),
+          "the stream closes with the complete event");
+  const docv1::Document& document = unary.response.response().document().doc();
+  const auto& complete = stream.events.back().complete();
+
+  int source_meta_claims = 0;
+  int origin_claims = 0;
+  for (const docv1::CollectorClaim& claim : document.claims()) {
+    const std::string who = claim.source().collector();
+    require(claim.page_styles_size() == 0 && !claim.has_email() && !claim.has_media(),
+            "a CV-read PDF's claims hold an origin or source metadata only: " + who);
+    if (claim.has_source_meta()) {
+      ++source_meta_claims;
+      docv1::DocumentMeta streamed = complete.source_meta();
+      require(streamed.field_sources_size() > 0,
+              "the stream attributes the source metadata field by field");
+      for (const docv1::FieldSource& field : streamed.field_sources()) {
+        require_equal(field.source().collector(), who,
+                      "source_meta." + field.field() + " names the collector the claim names");
+      }
+      streamed.clear_field_sources();
+      require_equal(streamed.ShortDebugString(), claim.source_meta().ShortDebugString(),
+                    "the complete event's source metadata is the claim's account");
+    }
+    if (claim.has_origin()) {
+      ++origin_claims;
+      require_equal(who, std::string("grparse"), "the only origin claim is the service's own");
+      require_equal(complete.origin().filename(), claim.origin().filename(),
+                    "the complete event's origin names the claim's file");
+      require(complete.origin().binary_hash() == claim.origin().binary_hash(),
+              "the complete event's origin carries the claim's content hash");
+    }
+  }
+  require_equal(source_meta_claims, 1, "the unary Document holds the inspector's one claim");
+  require_equal(origin_claims, 1, "the unary Document holds the service's one claim");
+}
+
 // The inspector's fast path: the PDF's collector Document carries the form
 // subtree ConvertSource builds, and a client that folds the pages gets the
 // same from the repair event.
@@ -9049,6 +9173,9 @@ int main() {
         verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
         verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_streamed_cv_route_carries_what_the_unary_route_does();
+        verify_streamed_pdf_fallback_is_a_typed_warning();
+        verify_inspector_failure_after_an_early_cv_start_is_a_typed_warning();
+        verify_stream_carries_what_the_unary_claims_hold();
         verify_streamed_fast_path_carries_the_form_fields();
         verify_streamed_fast_path_runs_the_enrichment_leg();
         verify_streamed_cv_route_runs_the_enrichment_leg();

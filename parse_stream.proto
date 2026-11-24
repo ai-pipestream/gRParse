@@ -333,10 +333,26 @@ message SourceReconciliation {
 }
 
 // DocumentComplete contains document-wide metadata emitted after the last page.
+//
+// The stream carries no Document.claims. Claims are the unary merge's record
+// of each collector's document-level account, kept because the merge
+// resolves between them and a value that lost would otherwise be gone. The
+// stream merges nothing, so nothing is resolved away: each collector's
+// account arrives whole on its own collector_document (that Document's
+// source_meta, origin, page_styles, email and media, under the event's
+// collector), the service's own account is `origin` here, and the PDF
+// inspector's account of a PDF the CV path read is `source_meta` here, each
+// field attributed in its field_sources to the collector the unary claim
+// names.
 message DocumentComplete {
+  // What the service itself says of the source: the name the request gave,
+  // the type the bytes resolved to and its evidence, and the content hash.
+  // The unary Document's origin, and the account its "grparse" claim holds.
   ai.pipestream.document.v1.DocumentOrigin origin = 1;
   // Collectors that failed during this parse; empty when every selected
-  // collector contributed.
+  // collector contributed. A PDF inspector that failed while the CV path
+  // read the document is named here and in `typed_warnings`, as
+  // WARNING_CODE_COLLECTOR_FALLBACK, the warning the unary Document carries.
   repeated CollectorFailure collector_failures = 2;
   // Heading depth per section-header self_ref. Depth clusters over the
   // whole document's heading heights, so it cannot be known while pages

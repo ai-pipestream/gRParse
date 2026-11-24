@@ -120,6 +120,11 @@ Warning cv_route_warning(const PdfClassification& classification,
                      " page(s) needing OCR"));
 }
 
+Warning pdf_fallback_warning(const std::string& error) {
+  return Warning(docv1::WARNING_CODE_COLLECTOR_FALLBACK,
+                 "pdf collector failed (" + error + "); fell back to the in-process CV path");
+}
+
 bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
   return !needs_ocr && !encoding_issues && !blank(markdown);
 }
