@@ -248,6 +248,56 @@ void verify_structured_cells_override_geometry() {
           "unclaimed positions blank-fill with their own offsets");
 }
 
+// A table whose structure decode was cut off carries the cut on its region.
+// Assembly says so with a typed warning on the page and on that table's own
+// ref, and a table extended from line geometry names both producers. A
+// table whose decode reached its end raises nothing.
+void verify_a_cut_off_structure_decode_is_a_typed_warning_on_its_table() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {line("Whole", 110), line("Head", 300), line("North", 360),
+                         line("South", 420), line("Alone", 610)}};
+  grparse::LayoutRegion whole{"table", 0.8F, 0, 100, 1000, 150};
+  whole.structured_cells = {{0, 0, 1, 1, false, 0, 100, 500, 150}};
+  // The model placed two cells; the third was built from the line under them.
+  grparse::LayoutRegion extended{"table", 0.8F, 0, 250, 1000, 450};
+  extended.structured_cells = {{0, 0, 1, 1, true, 0, 290, 500, 340},
+                               {1, 0, 1, 1, false, 0, 350, 500, 400},
+                               {2, 0, 1, 1, false, 0, 410, 500, 440}};
+  extended.structure_cut = 2;
+  // Cut off as well, with no text under the model's last cell to add.
+  grparse::LayoutRegion bare{"table", 0.8F, 0, 600, 1000, 650};
+  bare.structured_cells = {{0, 0, 1, 1, false, 0, 600, 500, 650}};
+  bare.structure_cut = 1;
+  page.regions = {whole, extended, bare};
+
+  std::vector<grparse::Warning> warnings;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 7, &cursor, &data, &warnings);
+  require(data.tables_size() == 3, "three tables on the page");
+  require(warnings.size() == 2, "one warning per cut-off table, none for the whole one: " +
+                                    std::to_string(warnings.size()));
+  for (const grparse::Warning& warning : warnings) {
+    require(warning.code == docv1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED && warning.page_no == 7,
+            "the cut-off is typed and on its page: " + warning.message);
+  }
+  require(warnings[0].item_ref == "#/tables/1" && warnings[1].item_ref == "#/tables/2",
+          "each warning names its own table: " + warnings[0].item_ref + ", " +
+              warnings[1].item_ref);
+  require(warnings[0].message.contains("placed by line geometry") &&
+              warnings[1].message.contains("no row was added"),
+          "the words say whether rows were added: " + warnings[0].message + " | " +
+              warnings[1].message);
+  require(data.tables(0).source_size() == 1 && data.tables(2).source_size() == 1 &&
+              data.tables(2).source(0).collector().model() == "slanet-plus",
+          "a table with no cell from line geometry keeps the model as its one source");
+  require(data.tables(1).source_size() == 2 &&
+              data.tables(1).source(0).collector().model() == "slanet-plus" &&
+              data.tables(1).source(1).collector().model() == "geometry",
+          "the extended table names the model and line geometry");
+}
+
 // A figure region carrying captured PNG bytes becomes an ImageRef data URI
 // whose pixel size is read from the PNG header itself.
 void verify_captured_figure_bytes_become_image_refs() {
@@ -1001,6 +1051,7 @@ int main() {
       verify_whitespace_only_line_is_no_item,
       verify_layout_regions_map_labels_and_emit_items,
       verify_unknown_region_label_falls_back_loudly,
+      verify_a_cut_off_structure_decode_is_a_typed_warning_on_its_table,
       verify_every_region_label_reaches_the_document,
       verify_headers_and_footers_are_furniture,
       verify_structured_cells_override_geometry,

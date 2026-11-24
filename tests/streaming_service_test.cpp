@@ -1395,6 +1395,140 @@ StreamRun run_chunks(pipestream::parse::v1::ParseStreamingService::Stub* client,
   return run;
 }
 
+// One raster page holding a four-row table: a header row, a body row, and
+// two more body rows the structure model below never reaches.
+class LongTableSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(500, 700, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+class LongTableRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat&) override {
+    const auto word = [](std::string text, int left, int top, int width) {
+      return grparse::OcrLine{std::move(text),
+                              {{left, top}, {left + width, top}, {left + width, top + 20},
+                               {left, top + 20}},
+                              0.95F};
+    };
+    return {700, 500,
+            {word("Model", 100, 100, 60), word("MSE", 300, 100, 40), word("MAE", 440, 100, 40),
+             word("ETT", 100, 140, 40), word("0.429", 290, 140, 50), word("0.421", 430, 140, 50),
+             word("ECL", 100, 180, 40), word("0.154", 300, 180, 50), word("0.153", 440, 180, 50),
+             word("Avg", 100, 220, 40), word("0.240", 300, 220, 50), word("0.241", 445, 220, 50)}};
+  }
+};
+
+class LongTableDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
+    return {grparse::LayoutRegion{"table", 0.9F, 80, 80, 600, 400}};
+  }
+};
+
+// The structure model's answer for that table, in crop coordinates: the
+// header row and the first body row. `truncated` is what the engine sets
+// when its decode used every step without reaching eos.
+class TwoRowStructurer final : public grparse::TableStructurer {
+ public:
+  explicit TwoRowStructurer(bool truncated) : truncated_(truncated) {}
+  grparse::TableStructure recognize(const cv::Mat&) override {
+    grparse::TableStructure structure;
+    structure.rows = 2;
+    structure.cols = 3;
+    structure.score = 0.9F;
+    structure.cells = {{0, 0, 1, 1, true, 10, 15, 120, 45},   {0, 1, 1, 1, true, 200, 15, 300, 45},
+                       {0, 2, 1, 1, true, 340, 15, 440, 45},  {1, 0, 1, 1, false, 10, 55, 120, 85},
+                       {1, 1, 1, 1, false, 160, 55, 220, 85}, {1, 2, 1, 1, false, 300, 55, 360, 85}};
+    structure.truncated = truncated_;
+    return structure;
+  }
+
+ private:
+  bool truncated_;
+};
+
+struct LongTableRun {
+  docv1::TableItem table;
+  pipestream::parse::v1::DocumentComplete complete;
+};
+
+LongTableRun stream_long_table(bool truncated) {
+  LongTableRecognizer recognizer;
+  LongTableDetector detector;
+  TwoRowStructurer structurer(truncated);
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<LongTableSource>();
+      },
+      &detector, &structurer);
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "long-table test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  const StreamRun run = run_chunks(client.get(), {recognition_chunk("in-memory-source", true)});
+  server->Shutdown();
+  require(run.status.ok(), "long-table stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete(),
+          "the long-table stream closes with the complete event");
+  LongTableRun out;
+  out.complete = run.events.back().complete();
+  for (const auto& event : run.events) {
+    if (event.has_page() && event.page().tables_size() == 1) out.table = event.page().tables(0);
+  }
+  return out;
+}
+
+// A table longer than the structure model's decode: the model's cells stop
+// part way down and the rows under them are placed from line geometry. The
+// caller must be told so, typed, by page and by table: the item alone reads
+// like a complete decode. A decode that reached its end says nothing.
+void verify_a_cut_off_table_structure_decode_reaches_the_caller_typed() {
+  const LongTableRun cut = stream_long_table(/*truncated=*/true);
+  require(cut.table.self_ref() == "#/tables/0" && cut.table.data().num_rows() == 4,
+          "the cut-off table is extended from its lines to four rows: " +
+              std::to_string(cut.table.data().num_rows()));
+  std::vector<docv1::CollectorWarning> found;
+  for (const docv1::CollectorWarning& warning : cut.complete.typed_warnings()) {
+    if (warning.code() == docv1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED) found.push_back(warning);
+  }
+  require(found.size() == 1,
+          "the cut-off decode is one typed warning on the complete event: " +
+              std::to_string(found.size()) + " of " +
+              std::to_string(cut.complete.typed_warnings_size()) + " typed warnings");
+  require(found[0].has_page_no() && found[0].page_no() == 1 && found[0].has_item_ref() &&
+              found[0].item_ref() == "#/tables/0" && found[0].source().collector() == "grparse-cv",
+          "the warning names its page and the table item: " + found[0].ShortDebugString());
+  require(std::ranges::find(cut.complete.warnings(), found[0].message()) !=
+              cut.complete.warnings().end(),
+          "the same words ride the string list");
+  require(cut.table.source_size() == 2 &&
+              cut.table.source(0).collector().model() == "slanet-plus" &&
+              cut.table.source(1).collector().model() == "geometry",
+          "the table names both producers of its cells: " +
+              std::to_string(cut.table.source_size()) + " sources");
+
+  const LongTableRun whole = stream_long_table(/*truncated=*/false);
+  require(whole.table.data().num_rows() == 2 && whole.table.source_size() == 1 &&
+              whole.table.source(0).collector().model() == "slanet-plus",
+          "a decode that reached its end stands as the model gave it");
+  for (const docv1::CollectorWarning& warning : whole.complete.typed_warnings()) {
+    require(warning.code() != docv1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED,
+            "a decode that reached its end raises no cut-off warning");
+  }
+}
+
 // The streaming chunk fields do_ocr, force_ocr, and render_scale resolve from
 // the first chunk that sets each one, steer the CV leg exactly like the unary
 // options, and fail the stream by name when invalid.
@@ -6386,6 +6520,7 @@ int main() {
         verify_unary_zip_target_delivers_an_archive(&server);
         verify_unary_unimplemented_targets_are_refused(&server);
         verify_stream_resolves_recognition_options();
+        verify_a_cut_off_table_structure_decode_reaches_the_caller_typed();
         verify_unary_digital_path_bypasses_ocr();
         verify_wide_page_window_streams_completely();
         verify_deadline_cancels_scheduler_work();
