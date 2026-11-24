@@ -37,6 +37,7 @@
 #include "picture_image.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -80,6 +81,11 @@ std::string render_dclx(const docv1::Document& document) {
 }
 
 std::string render_dclx(const docv1::Document& document, const DoclangOptions& options) {
+  return render_dclx(document, options, nullptr);
+}
+
+std::string render_dclx(const docv1::Document& document, const DoclangOptions& options,
+                        parsev1::RenderOmissions* omissions) {
   using Mode = DoclangOptions::ImageMode;
   // docling-core's save_as_doclang_archive default.
   const Mode mode = options.image_mode.value_or(Mode::kReferenced);
@@ -115,8 +121,8 @@ std::string render_dclx(const docv1::Document& document, const DoclangOptions& o
       return path;
     };
   }
-  std::string markup =
-      render::render_doclang_markup(document, options.include_namespace, picture_uri);
+  std::string markup = render::render_doclang_markup(document, options.include_namespace,
+                                                     picture_uri, omissions);
   markup.push_back('\n');  // docling writes the serialization plus a newline
 
   members.push_back({"[Content_Types].xml", kContentTypes});

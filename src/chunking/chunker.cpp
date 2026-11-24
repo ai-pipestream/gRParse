@@ -288,8 +288,13 @@ std::string serialize_table_markdown(const docv1::TableData& data,
 // How deep the walk follows nested groups and items. The recursion is one
 // frame per level, so a markup source nested tens of thousands deep would
 // otherwise overflow a worker's stack; a subtree past this depth is left
-// out with one log line per document.
+// out with one log line per document, and counted for the caller.
 constexpr int kMaximumNesting = 256;
+
+// The references the omission report names per kind, the bound the grid
+// budget lists its tables under: the counts cover everything, the lists
+// stay small on a document built to overflow them.
+constexpr std::size_t kMaximumListedRefs = render::GridBudget::kMaximumListedTables;
 
 class Chunker {
  public:
@@ -318,6 +323,23 @@ class Chunker {
     return std::move(chunks_);
   }
 
+  // What the walk left out of the chunks, for the caller (chunker.h): the
+  // tables its grid budget cut, the subtrees past kMaximumNesting, and the
+  // items text/1 has no form for. Leaves `out` untouched when run() chunked
+  // everything it serializes.
+  void report(parsev1::RenderOmissions* out) const {
+    if (out == nullptr) return;
+    render::report_omissions(grid_budget_, document_, out);
+    if (too_deep_ > 0) {
+      out->set_subtrees_too_deep(too_deep_);
+      for (const auto& ref : too_deep_refs_) out->add_too_deep_refs(ref);
+    }
+    if (not_serialized_ > 0) {
+      out->set_items_not_serialized(not_serialized_);
+      for (const auto& ref : not_serialized_refs_) out->add_not_serialized_refs(ref);
+    }
+  }
+
  private:
   const docv1::Document& document_;
   const OffsetTable& offsets_;
@@ -333,8 +355,39 @@ class Chunker {
   // recorded it.
   std::vector<std::pair<int, std::string>> trail_;
   std::vector<WorkChunk> chunks_;
-  // Subtrees the walk left out for nesting past kMaximumNesting.
+  // Subtrees the walk left out for nesting past kMaximumNesting, and the
+  // group or item each hangs from (the first kMaximumListedRefs).
   int too_deep_ = 0;
+  std::vector<std::string> too_deep_refs_;
+  // Key-value and form items the walk reached and could not serialize, and
+  // their references (the first kMaximumListedRefs).
+  int not_serialized_ = 0;
+  std::vector<std::string> not_serialized_refs_;
+
+  // Records that nothing below `ref` chunks: it sits past kMaximumNesting.
+  void leave_out(const std::string& ref) {
+    ++too_deep_;
+    if (too_deep_refs_.size() < kMaximumListedRefs) too_deep_refs_.push_back(ref);
+  }
+
+  // Counts `ref` when it names a key-value or form item of a layer that
+  // chunks. Anything else that reaches the end of the walk is a reference
+  // to no item, which is not content the chunks are missing.
+  void note_not_serialized(const std::string& ref) {
+    const ArenaRef parsed = parse_ref(ref);
+    docv1::ContentLayer layer = docv1::CONTENT_LAYER_UNSPECIFIED;
+    if (parsed.kind == ArenaRef::kKeyValue &&
+        parsed.index < document_.key_value_items_size()) {
+      layer = document_.key_value_items(parsed.index).content_layer();
+    } else if (parsed.kind == ArenaRef::kForm && parsed.index < document_.form_items_size()) {
+      layer = document_.form_items(parsed.index).content_layer();
+    } else {
+      return;
+    }
+    if (excluded(layer)) return;
+    ++not_serialized_;
+    if (not_serialized_refs_.size() < kMaximumListedRefs) not_serialized_refs_.push_back(ref);
+  }
 
   // Captions and footnotes both chunk through the floating item that names
   // them, never on their own.
@@ -594,7 +647,7 @@ class Chunker {
 
   void walk(const std::string& ref, int depth) {
     if (depth > kMaximumNesting) {
-      ++too_deep_;
+      leave_out(ref);
       return;
     }
     if (!visited_.insert(ref).second) return;
@@ -638,6 +691,8 @@ class Chunker {
     // Key-value and form areas hold graph cells, not text items, and have no
     // text/1 serialization; they contribute no chunk rather than a guessed
     // one.
+    // They are counted, so that no chunk is not read as no content.
+    note_not_serialized(ref);
   }
 
   void emit_text(const std::string& ref, const docv1::BaseTextItem& item) {
@@ -687,12 +742,12 @@ class Chunker {
 
   // A list's entries, depth first: each item's line, then whatever the item
   // holds. Tables and pictures inside the list go to `floating` and chunk on
-  // their own once the list has.
-  void collect_list_entries(const docv1::GroupItem& group, WorkChunk* chunk,
-                            std::vector<std::string>* lines,
+  // their own once the list has. `group_ref` is the group's own reference.
+  void collect_list_entries(const std::string& group_ref, const docv1::GroupItem& group,
+                            WorkChunk* chunk, std::vector<std::string>* lines,
                             std::vector<std::string>* floating, int depth) {
     if (depth > kMaximumNesting) {
-      ++too_deep_;
+      leave_out(group_ref);
       return;
     }
     const bool ordered = group.label() == docv1::GROUP_LABEL_ORDERED_LIST;
@@ -705,7 +760,7 @@ class Chunker {
         chunk->doc_items.push_back(ref);
         // A nested list flattens into the same chunk; its own numbering
         // restarts, matching how it reads on the page.
-        collect_list_entries(*nested, chunk, lines, floating, depth + 1);
+        collect_list_entries(ref, *nested, chunk, lines, floating, depth + 1);
         continue;
       }
       const auto* text = text_at(ref);
@@ -720,18 +775,19 @@ class Chunker {
         lines->push_back((ordered ? std::to_string(position) + ". " : std::string("- ")) +
                          body);
       }
-      collect_item_children(*text, chunk, lines, floating, depth + 1);
+      collect_item_children(ref, *text, chunk, lines, floating, depth + 1);
     }
   }
 
   // What a list item holds rides inside its list, the way docling-core
   // nests a sub-list under its ListItem: a nested group flattens in place
-  // and any other text item takes a line of its own.
-  void collect_item_children(const docv1::BaseTextItem& item, WorkChunk* chunk,
-                             std::vector<std::string>* lines,
+  // and any other text item takes a line of its own. `item_ref` is the
+  // item's own reference.
+  void collect_item_children(const std::string& item_ref, const docv1::BaseTextItem& item,
+                             WorkChunk* chunk, std::vector<std::string>* lines,
                              std::vector<std::string>* floating, int depth) {
     if (depth > kMaximumNesting) {
-      ++too_deep_;
+      leave_out(item_ref);
       return;
     }
     const auto* base =
@@ -743,7 +799,7 @@ class Chunker {
       if (const auto* nested = group_at(ref)) {
         visited_.insert(ref);
         chunk->doc_items.push_back(ref);
-        collect_list_entries(*nested, chunk, lines, floating, depth + 1);
+        collect_list_entries(ref, *nested, chunk, lines, floating, depth + 1);
         continue;
       }
       const auto* text = text_at(ref);
@@ -754,7 +810,7 @@ class Chunker {
       absorb(chunk, ref);
       const std::string body = text_of(*text);
       if (!trimmed(body).empty()) lines->push_back(body);
-      collect_item_children(*text, chunk, lines, floating, depth + 1);
+      collect_item_children(ref, *text, chunk, lines, floating, depth + 1);
     }
   }
 
@@ -764,7 +820,7 @@ class Chunker {
     chunk.doc_items.push_back(ref);
     std::vector<std::string> lines;
     std::vector<std::string> floating;
-    collect_list_entries(group, &chunk, &lines, &floating, depth + 1);
+    collect_list_entries(ref, group, &chunk, &lines, &floating, depth + 1);
     chunk.text = join(lines, "\n");
     if (!trimmed(chunk.text).empty()) chunks_.push_back(std::move(chunk));
     for (const auto& item : floating) walk(item, depth + 1);
@@ -1350,12 +1406,15 @@ std::string hybrid_rules_digest(int max_tokens, bool merge_peers, std::string_vi
 std::vector<parsev1::Chunk> chunk_hierarchical(const docv1::Document& document,
                                                const OffsetTable& offsets,
                                                const ChunkOptions& options,
-                                               std::string_view filename) {
+                                               std::string_view filename,
+                                               parsev1::RenderOmissions* omissions) {
   Chunker chunker(document, offsets, options);
+  const std::vector<WorkChunk> work = chunker.run();
+  chunker.report(omissions);
   // The hierarchical chunker has no tokenizer option; its informational
   // num_tokens is always the wordish/1 count.
   const TokenCounter counter;
-  return materialize(chunker.run(), filename, options, std::string(kHierarchicalRules), counter,
+  return materialize(work, filename, options, std::string(kHierarchicalRules), counter,
                      document);
 }
 
@@ -1420,7 +1479,8 @@ grpc::Status validate_hybrid_options(const parsev1::HybridChunkerOptions& option
 
 grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& offsets,
                           const parsev1::HybridChunkerOptions& options,
-                          std::string_view filename, std::vector<parsev1::Chunk>* out) {
+                          std::string_view filename, std::vector<parsev1::Chunk>* out,
+                          parsev1::RenderOmissions* omissions) {
   const ChunkOptions serialization = chunk_options_from(options);
   const int max_tokens = options.max_tokens();
   // The wire default of an unset merge_peers is on: peers merge unless the
@@ -1448,6 +1508,7 @@ grpc::Status chunk_hybrid(const docv1::Document& document, const OffsetTable& of
   }
   Chunker chunker(document, offsets, serialization);
   std::vector<WorkChunk> work = chunker.run();
+  chunker.report(omissions);
   if (peers) work = merge_peers(std::move(work), max_tokens, counter);
   work = split_oversized(std::move(work), max_tokens, counter);
   *out = materialize(work, filename, serialization,

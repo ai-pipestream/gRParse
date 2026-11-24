@@ -61,6 +61,7 @@
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse::render {
 namespace {
@@ -172,6 +173,8 @@ void mark_covered(std::vector<std::vector<bool>>* covered, std::size_t row,
 class GdocsRenderer : RendererBase {
  public:
   explicit GdocsRenderer(const docv1::Document& document) : RendererBase(document) {}
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     writer_.begin_object();
@@ -624,7 +627,15 @@ class GdocsRenderer : RendererBase {
 }  // namespace
 
 std::string render_gdocs_json(const docv1::Document& document) {
-  return GdocsRenderer(document).render();
+  return render_gdocs_json(document, nullptr);
+}
+
+std::string render_gdocs_json(const docv1::Document& document,
+                              parsev1::RenderOmissions* omissions) {
+  GdocsRenderer renderer(document);
+  std::string json = renderer.render();
+  renderer.report_omissions(omissions);
+  return json;
 }
 
 }  // namespace grparse

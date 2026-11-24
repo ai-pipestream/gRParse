@@ -2096,7 +2096,8 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
     // NATIVE asked for the text layer as it is; say what the models would
     // have been run for, so a caller can tell a thin result from a thin
     // document.
-    fast.outcome.warnings.push_back(
+    fast.outcome.warnings.push_back(Warning(
+        pipestream::document::v1::WARNING_CODE_TEXT_LAYER_TAKEN_AS_IS,
         "pipeline NATIVE took the pdf collector's extraction although the inspector "
         "classified the document as " +
         std::string(pdf_class_name(parsed.classification.pdf_class)) +
@@ -2104,7 +2105,7 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
                                                : "") +
         (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
         (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
-        "; no layout, OCR, or table-structure model ran");
+        "; no layout, OCR, or table-structure model ran"));
   }
   return fast.outcome;
 }
@@ -2145,8 +2146,10 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
     record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                           collector_call_status_for(outcome.success, outcome.code),
                           cv_elapsed_ns, 0);
-    outcome.warnings.push_back("pdf collector failed (" + parsed.outcome.error +
-                               "); fell back to the in-process CV path");
+    outcome.warnings.push_back(
+        Warning(pipestream::document::v1::WARNING_CODE_COLLECTOR_FALLBACK,
+                "pdf collector failed (" + parsed.outcome.error +
+                    "); fell back to the in-process CV path"));
     return outcome;
   }
   PageScheduler::OcrTuning routed_tuning = inputs.tuning;
@@ -2164,7 +2167,8 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
                         collector_call_status_for(outcome.success, outcome.code),
                         cv_elapsed_ns, 0);
   lend_source_meta(parsed.outcome, &outcome);
-  outcome.warnings.push_back(cv_route_warning(parsed.classification, route, forced));
+  outcome.warnings.push_back(Warning(pipestream::document::v1::WARNING_CODE_ROUTED_TO_CV,
+                                     cv_route_warning(parsed.classification, route, forced)));
   return outcome;
 }
 
@@ -2323,10 +2327,8 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
 // under the collector that raised it, so nothing the collectors reported is
 // dropped.
 void stamp_collector_warnings(CoordinatorResult* result) {
-  for (const auto& [collector, text] : result->warnings) {
-    auto* warning = result->document.add_warnings();
-    warning->mutable_source()->set_collector(collector_name(collector));
-    warning->set_message(text);
+  for (const auto& [collector, warning] : result->warnings) {
+    stamp_warning(warning, collector_name(collector), result->document.add_warnings());
   }
 }
 
@@ -2558,9 +2560,7 @@ grpc::Status parse_source(const ParseCall& call,
       // name it directly, the way its items' CollectorSource does.
       if (report.engine == VlmBodyEngine::kLightonOcr) {
         for (const std::string& warning : report.warnings) {
-          auto* stamped = result.document.add_warnings();
-          stamped->mutable_source()->set_collector(kLightonCollectorName);
-          stamped->set_message(warning);
+          stamp_warning(warning, kLightonCollectorName, result.document.add_warnings());
         }
       } else {
         for (const std::string& warning : report.warnings) {
@@ -2593,9 +2593,11 @@ grpc::Status parse_source(const ParseCall& call,
         }
       }
       if (!pdf && form_fields_requested) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                     "extract_form_fields: the input is not a PDF, so it has "
-                                     "no AcroForm widgets to read");
+        result.warnings.emplace_back(
+            pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+            Warning(pipestream::document::v1::WARNING_CODE_OPTION_NOT_APPLICABLE,
+                    "extract_form_fields: the input is not a PDF, so it has no AcroForm "
+                    "widgets to read"));
         record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
       }
       const grpc::Status structure_status = check_structure(
@@ -2644,9 +2646,11 @@ grpc::Status parse_source(const ParseCall& call,
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
     // below describing the same items.
     if (!pdf && form_fields_requested) {
-      result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                   "extract_form_fields: the input is not a PDF, so it has no "
-                                   "AcroForm widgets to read");
+      result.warnings.emplace_back(
+          pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+          Warning(pipestream::document::v1::WARNING_CODE_OPTION_NOT_APPLICABLE,
+                  "extract_form_fields: the input is not a PDF, so it has no AcroForm "
+                  "widgets to read"));
       record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
     }
     if (pdf && !form_fields_off && !call.cancelled()) {

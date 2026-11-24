@@ -867,6 +867,7 @@ add_library(grparse_core STATIC
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/workbook_cells.cpp
+  src/warning.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
   src/epub_book.cpp
@@ -951,6 +952,7 @@ add_library(grparse_core STATIC
   src/prometheus_metrics.cpp
   src/reading_order.cpp
   src/region_geometry.cpp
+  src/table_column_anchor.cpp
   src/table_structure.cpp
   src/table_structure_engine.cpp
   src/targets/bundle.cpp
@@ -1056,6 +1058,7 @@ if(BUILD_TESTING)
     streaming-service-test
     table-structure-engine-test
     table-structure-test
+    table-column-anchor-test
     targets-test
     text-geometry-test
     warc-stub-wire-test
@@ -1534,7 +1537,8 @@ if(BUILD_TESTING)
     renderer-base-test
     server-config-test
     target-step-test
-    vtt-renderer-test)
+    vtt-renderer-test
+    warning-test)
   foreach(test_name IN LISTS GRPARSE_UNIT_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")

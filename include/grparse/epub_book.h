@@ -4,6 +4,7 @@
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -81,6 +82,6 @@ inline constexpr size_t kEpubInlineTotalCap = 64 * 1024 * 1024;
 void fold_epub_book(std::vector<ParsedChapter> chapters,
                     const std::vector<EpubResource>& resources,
                     ai::pipestream::document::v1::Document* book,
-                    std::vector<std::string>* warnings);
+                    std::vector<Warning>* warnings);
 
 }  // namespace grparse

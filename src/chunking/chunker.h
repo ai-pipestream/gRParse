@@ -150,10 +150,17 @@ void fill_chunking_info(
 
 // The hierarchical chunker: one chunk per emitted unit in body-tree walk
 // order, each carrying the heading trail in force where it was emitted.
+// The walk does not chunk everything: a table over the grid budget
+// serializes its leading rows and columns only (render/renderer_base.h), a
+// subtree nested deeper than the walk follows is left out, and key-value
+// and form items hold graph cells that text/1 has no form for. `omissions`,
+// when not null, receives the count of each and the self_refs concerned; it
+// is left untouched when the chunks hold everything the walk serializes.
 std::vector<ai::pipestream::parse::v1::Chunk> chunk_hierarchical(
     const ai::pipestream::document::v1::Document& document,
     const OffsetTable& offsets, const ChunkOptions& options,
-    std::string_view filename);
+    std::string_view filename,
+    ai::pipestream::parse::v1::RenderOmissions* omissions = nullptr);
 
 // Rejects a hybrid request whose options cannot produce a deterministic
 // chunking: max_tokens is required, and the optional tokenizer field must
@@ -168,13 +175,16 @@ grpc::Status validate_hybrid_options(
 // token budget, then a sentence-wise split of anything still over it.
 // `options` must have passed validate_hybrid_options; a counter that still
 // fails to load (its file changed after validation) is an INTERNAL error
-// rather than a silent fallback to wordish/1 counts.
+// rather than a silent fallback to wordish/1 counts. `omissions` is filled
+// as chunk_hierarchical fills it: the hybrid passes regroup the walk's
+// chunks and leave nothing more out.
 grpc::Status chunk_hybrid(
     const ai::pipestream::document::v1::Document& document,
     const OffsetTable& offsets,
     const ai::pipestream::parse::v1::HybridChunkerOptions& options,
     std::string_view filename,
-    std::vector<ai::pipestream::parse::v1::Chunk>* out);
+    std::vector<ai::pipestream::parse::v1::Chunk>* out,
+    ai::pipestream::parse::v1::RenderOmissions* omissions = nullptr);
 
 }  // namespace grparse::chunking
 

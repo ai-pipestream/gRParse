@@ -149,7 +149,7 @@ void verify_chapters_plug_into_their_groups() {
   std::vector<grparse::ParsedChapter> chapters;
   chapters.push_back({"OPS/ch01.xhtml", chapter_document("One", "")});
   chapters.push_back({"OPS/ch02.xhtml", chapter_document("Two", "")});
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   grparse::fold_epub_book(std::move(chapters), {}, &book, &warnings);
 
   require(warnings.empty(), "a clean fold reports nothing");
@@ -185,7 +185,7 @@ void verify_images_are_placed_and_inlined() {
       {"OPS/images/a.jpg", "image/jpeg", "JPEGBYTES"},
       {"OPS/cover.png", "image/png", "PNGBYTES"},
   };
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   grparse::fold_epub_book(std::move(chapters), resources, &book, &warnings);
 
   require(warnings.empty(), "a fold with every image present reports nothing");
@@ -243,7 +243,7 @@ void verify_degradations_are_reported() {
   absent->mutable_image()->set_uri("epub:OPS/images/missing.jpg");
   *book.mutable_body()->add_children() = ref("#/pictures/1");
 
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   grparse::fold_epub_book(std::move(chapters), resources, &book, &warnings);
 
   require(group_named(book, "OPS/ch01.xhtml")->children_size() == 3,
@@ -268,9 +268,9 @@ void verify_degradations_are_reported() {
   int huge = 0;
   int missing = 0;
   for (const auto& warning : warnings) {
-    if (warning.contains("OPS/stray.xhtml") && warning.contains("no chapter group")) stray++;
-    if (warning.contains("huge.jpg") && warning.contains("inline cap")) huge++;
-    if (warning.contains("missing.jpg") && warning.contains("not in the stream")) missing++;
+    if (warning.message.contains("OPS/stray.xhtml") && warning.message.contains("no chapter group")) stray++;
+    if (warning.message.contains("huge.jpg") && warning.message.contains("inline cap")) huge++;
+    if (warning.message.contains("missing.jpg") && warning.message.contains("not in the stream")) missing++;
   }
   require(stray == 1 && huge == 1 && missing == 1,
           "each degradation is reported exactly once");
@@ -288,7 +288,7 @@ void verify_inlining_is_once_per_image_and_budgeted() {
   for (const char* big : {"OPS/b1.jpg", "OPS/b2.jpg", "OPS/b3.jpg", "OPS/b4.jpg", "OPS/b5.jpg"}) {
     resources.push_back({big, "image/jpeg", std::string(kImage, 'x')});
   }
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   grparse::fold_epub_book({}, resources, &book, &warnings);
 
   require(book.pictures(0).image().uri().starts_with("data:image/png;base64,") &&
@@ -306,8 +306,8 @@ void verify_inlining_is_once_per_image_and_budgeted() {
   int repeated = 0;
   int budget = 0;
   for (const auto& warning : warnings) {
-    if (warning.contains("logo.png") && warning.contains("inlined once")) ++repeated;
-    if (warning.contains("inline budget")) ++budget;
+    if (warning.message.contains("logo.png") && warning.message.contains("inlined once")) ++repeated;
+    if (warning.message.contains("inline budget")) ++budget;
   }
   require(repeated == 1 && budget == static_cast<int>(kept),
           "the repeat is reported once and each image past the budget once");

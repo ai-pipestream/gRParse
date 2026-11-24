@@ -22,8 +22,10 @@ using CellTextResolver = std::function<std::string(const std::string& ref)>;
 // The cell text of the model's computed grid (derived_table_grid), with the
 // two characters a Markdown row cannot carry rewritten. A cell with a
 // reference resolves once; its repeats at the other positions it spans
-// spend their resolved length from `budget` and render empty past it.
+// spend their resolved length from `budget` and render empty past it, which
+// `budget` records against `data`, the table the grid was built from.
 std::vector<std::vector<std::string>> table_rows(
+    const ai::pipestream::document::v1::TableData& data,
     const std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>>& grid,
     const CellTextResolver& resolve_ref, GridBudget& budget);
 

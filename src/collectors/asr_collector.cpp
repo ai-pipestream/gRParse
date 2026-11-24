@@ -131,7 +131,7 @@ CollectorOutcome collect_asr_document(
       });
   return drain_stream<asrv1::TranscribeResponse>(
       "asr", *stream, upload,
-      [](const asrv1::TranscribeResponse& event, std::vector<std::string>&) {
+      [](const asrv1::TranscribeResponse& event, std::vector<Warning>&) {
         return event.has_complete();
       });
 }

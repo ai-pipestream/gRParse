@@ -409,7 +409,7 @@ class CalamineFold {
 // warnings.
 bool fold_range_event(CalamineFold& fold, const std::string& sheet_name,
                       const calaminev1::StreamWorksheetRangeResponse& event,
-                      std::vector<std::string>& warnings, std::string& error) {
+                      std::vector<Warning>& warnings, std::string& error) {
   switch (event.event_case()) {
     case calaminev1::StreamWorksheetRangeResponse::kStarted:
       fold.merged(event.started());
@@ -442,7 +442,7 @@ bool fold_range_event(CalamineFold& fold, const std::string& sheet_name,
 
 // Closes a folded sheet, warning when its header band was inferred.
 void end_sheet(CalamineFold& fold, const std::string& sheet_name,
-               std::vector<std::string>& warnings) {
+               std::vector<Warning>& warnings) {
   if (fold.end_sheet() > 0) {
     warnings.push_back("sheet '" + sheet_name
                        + "': header row inferred by the labels-over-data band "

@@ -188,7 +188,7 @@ void verify_unknown_region_label_falls_back_loudly() {
   grparse::OcrPage page{1000, 1000, {line("mystery block", 10)}};
   page.regions = {{"aside", 0.9F, 0, 0, 1000, 40}};
 
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data, &warnings);
   require(data.texts_size() == 1, "one region, one block");
@@ -197,10 +197,10 @@ void verify_unknown_region_label_falls_back_loudly() {
           "an unknown label lands on the TEXT catch-all");
   require(base.has_label_raw() && base.label_raw() == "aside",
           "the raw spelling rides label_raw, so version skew loses nothing");
-  require(warnings.size() == 1 && warnings[0].contains("unknown region label") &&
-              warnings[0].contains("'aside'"),
+  require(warnings.size() == 1 && warnings[0].message.contains("unknown region label") &&
+              warnings[0].message.contains("'aside'"),
           "the fallback is named, once: "
-          + (warnings.empty() ? std::string("no warning") : warnings[0]));
+          + (warnings.empty() ? std::string("no warning") : warnings[0].message));
 
   grparse::OcrPage plain{1000, 1000, {line("inside", 10)}};
   plain.regions = {{"text", 0.9F, 0, 0, 1000, 40}};
@@ -234,8 +234,9 @@ void verify_structured_cells_override_geometry() {
   require(header.text() == "Region" && header.col_span() == 2 && header.column_header() &&
               header.start_col_offset_idx() == 0 && header.end_col_offset_idx() == 2,
           "header cell keeps its span and thead flag");
-  require(header.bbox().t() == 290 && header.bbox().r() == 500,
-          "structured cell bbox is the model box");
+  require(header.bbox().l() == 10 && header.bbox().t() == 300 && header.bbox().r() == 90 &&
+              header.bbox().b() == 310,
+          "a structured cell with text takes its words' box, not the model box");
   require(table_data.table_cells(1).text() == "North" && !table_data.table_cells(1).column_header(),
           "body cell binds its line and stays unflagged");
   require(table_data.grid_size() == 2 && table_data.grid(0).cells_size() == 2,

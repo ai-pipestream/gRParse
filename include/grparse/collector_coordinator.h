@@ -12,6 +12,7 @@
 #include "ai/pipestream/markup/v1/markup.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/collector_cancel.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -66,8 +67,9 @@ struct CollectorOutcome {
   // collector's own status class instead of a generic INTERNAL.
   std::string error;
   grpc::StatusCode code = grpc::StatusCode::INTERNAL;
-  // The collector's extraction warnings, verbatim.
-  std::vector<std::string> warnings;
+  // The collector's extraction warnings: a peer's own words verbatim, and
+  // what this leg itself decided with its typed code (grparse/warning.h).
+  std::vector<Warning> warnings;
   ai::pipestream::document::v1::Document document;
   CollectorProtocol protocol = CollectorProtocol::kCurrent;
 };
@@ -109,7 +111,7 @@ struct CollectorFailureInfo {
 struct CoordinatorResult {
   ai::pipestream::document::v1::Document document;
   std::vector<CollectorFailureInfo> failures;
-  std::vector<std::pair<ai::pipestream::parse::v1::Collector, std::string>> warnings;
+  std::vector<std::pair<ai::pipestream::parse::v1::Collector, Warning>> warnings;
   int succeeded = 0;
 };
 

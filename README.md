@@ -155,9 +155,9 @@ its stage, and the counts say whether the page is simply denser.
 
 `ConvertSourceAsync`, `ChunkHierarchicalSourceAsync` and `ChunkHybridSourceAsync` check the request the way their synchronous RPC does before it parses, register a task, queue the same work on the unary executor, and answer at once with the task's `TaskStatusPollResponse` (`TASK_STATUS_PENDING`, its `task_id`, `task_kind`, and `task_position`, the number of pending tasks ahead of it). The work moves the task to `STARTED`, then to `SUCCESS` with the result stored or `FAILURE` with `error_message` and a classified `failure`. `PollTaskStatus` returns the current status; with `wait_time` it answers as soon as the task finishes or when that many seconds pass, without holding a thread. `GetConvertResult` and `GetChunkResult` return the stored result as many times as asked: `FAILED_PRECONDITION` while the task runs, the task's own failure status when it failed, `INVALID_ARGUMENT` for a task of the other kind, and the `GRPARSE_MAX_RESPONSE_BYTES` cap as on the unary RPCs. `WatchConvertSource`, `WatchChunkHierarchicalSource` and `WatchChunkHybridSource` submit the same task and stream every status it takes, from the pending one to the terminal one, each once and in order, then close OK; the result is read with the `task_id` every message carries. `ClearResults` drops the finished tasks older than `older_than` seconds (3600 when unset, every finished task at 0); `ClearConverters` is acknowledged, since this server keeps no per-task converters.
 
-Tasks live in memory only, in keeping with the diskless rule: ids are per process, and a poll after a restart answers `NOT_FOUND`, as does an unknown, expired or cleared id. The registry holds at most `GRPARSE_MAX_TASKS` tasks (default 256, 1 to 65536; finished ones included until they go) and a submission past it is refused with `RESOURCE_EXHAUSTED` naming the variable; a finished task is kept for `GRPARSE_TASK_RESULT_TTL_SECONDS` (default 3600, 1 to 604800), then expires; at most `GRPARSE_MAX_WATCHERS` (default 256, 1 to 65536) watch streams and waiting polls run at once. A stored result is charged to `GRPARSE_MAX_INFLIGHT_BYTES` for its serialized size until it expires or is cleared, and a result the budget has no room for fails its task with `RESOURCE_EXHAUSTED`. The request is charged while its task is queued or running, as on the unary RPCs. A task's document passwords come from the submitting call's metadata, read at submission. No RPC cancels a task; on shutdown, queued and running tasks are cancelled before the executor drains.
+Tasks live in memory only, in keeping with the diskless rule: ids are per process, and a poll after a restart answers `NOT_FOUND`, as does an unknown, expired or cleared id. The registry holds at most `GRPARSE_MAX_TASKS` tasks (default 256, 1 to 65536; finished ones included until they go) and a submission past it is refused with `RESOURCE_EXHAUSTED` naming the variable; a finished task is kept for `GRPARSE_TASK_RESULT_TTL_SECONDS` (default 3600, 1 to 604800), then expires; at most `GRPARSE_MAX_WATCHERS` (default 256, 1 to 65536) watch streams and waiting polls run at once (a watcher's place is returned before its call ends, and a waiting poll of a task that already finished takes none, so a client can poll or watch again the moment it has its answer). A stored result is charged to `GRPARSE_MAX_INFLIGHT_BYTES` for its serialized size until it expires or is cleared, and a result the budget has no room for fails its task with `RESOURCE_EXHAUSTED`. The request is charged while its task is queued or running, as on the unary RPCs. A task's document passwords come from the submitting call's metadata, read at submission. No RPC cancels a task; on shutdown, queued and running tasks are cancelled before the executor drains.
 
-Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). The export responses carry no warning channel, so a truncated export is reported only by one line on the server's stderr per document.
+Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). A rendering that reaches one of these budgets says so on the response, typed: `DocumentExports.omissions` carries one `ExportOmissions` entry per export format that was cut (the formats read a table differently, so one export can be cut while another is whole), and `chunk_omissions` on `ConvertDocumentResponse`, `ChunkDocumentResponse`, the `StreamChunks` summary and `StreamDocument`'s `StreamSourceOutputs` says the same for the chunk list. Each is a `RenderOmissions`: the tables cut and the rows and columns they lost, the spanned cells that did not repeat, and the first 64 tables by `self_ref` with their declared and kept grid. For chunks it also counts the subtrees nested deeper than the 256 levels the chunker follows and the key-value and form items, which hold graph cells and have no chunk serialization. An absent report means the rendering holds everything its format serializes. The server still writes one stderr line per document for the operator.
 
 ### Chunking
 
@@ -310,11 +310,16 @@ The bundle is one canonical file set, identical whichever target delivers it:
 | `manifest.json` | every other member with its SHA-256 and byte size, plus the generator and schema version |
 | `document.pb` | the `Document`, deterministically serialized |
 | `document.json` | the canonical JSON dialect of the same document |
+| `response.pb` | a `ConvertDocumentResponse`, deterministically serialized: the conversion's `status`, `errors`, `chunks`, `structure_findings`, `confidence` and `text_offsets`, `document.filename`, and `target_result.image_issues` |
 | `exports/<name>.<ext>` | one file per output format the request asked for |
-| `pages/page_NNNN.png` | each page image the document embeds |
-| `pictures/pic_NNNN.png` | each picture image the document embeds |
+| `pages/page_NNNN.<ext>` | each page image the document embeds |
+| `pictures/pic_NNNN.<ext>` | each picture image the document embeds |
 
-Determinism is the point here too: members are sorted by path, archive timestamps are fixed at the MS-DOS epoch, the compressor is held to one setting, and the manifest carries no whitespace, no clock, and sorted keys. The same document and the same requested formats produce a byte-identical archive on every machine and every run.
+`response.pb` is what a reader of the bucket has in place of the RPC response, so a `CONVERSION_STATUS_PARTIAL_SUCCESS` conversion and its error items read as partial there too. It does not repeat the document or the exports (they are the members above), and it carries no `processing_time`, `timings` or `profiling`, which would differ between two runs. A delivery that fails after the bundle is built is reported on the RPC response alone.
+
+An image member's extension is what the bytes' own signature says, else what the document declares for the image (the data URI's media type, then `ImageRef.mimetype`), from a closed table: `png`, `jpg`, `tif`, `webp`, `gif`, `bmp`, `svg`, `jp2`, `emf`, `wmf`. An image neither names is written as `.bin`, never as a guessed `.png`. Every image the document carries that did not become a member of a known type is listed as a typed `BundleImageIssue` in `TargetResult.image_issues` and, identically, in `response.pb`: `BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED` (the `uri` is a reference, not a `data:` URI; no member), `BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE` (the payload is not readable base64; no member) or `BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE` (the `.bin` member, with its `path`), each naming its `page_no` or `picture_index`. These do not change the conversion's `status`.
+
+Determinism is the point here too: members are sorted by path, archive timestamps are fixed at the MS-DOS epoch, the compressor is held to one setting, and the manifest carries no whitespace, no clock, and sorted keys. The same conversion and the same requested formats produce a byte-identical archive on every machine and every run.
 
 `S3Target` signs each PUT with AWS Signature V4 over libcurl; path style, no SDK, no ambient credential chain by default. The credentials come from the request, are never logged, and never appear in an error message. A request that omits both keys is rejected unless the deployment sets `GRPARSE_S3_AMBIENT_CREDENTIALS=1`; only then do the server's own `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) sign for the caller's bucket, and only on an endpoint listed in `GRPARSE_S3_AMBIENT_ENDPOINTS` (comma-separated `host[:port]`, a scheme is allowed and ignored; unset lists none), so enable it only where every caller may write wherever that identity can on those endpoints. A session token is never sent over `http://` or with `verify_ssl: false`, and ambient credentials are never used over `http://`, with `verify_ssl: false`, or for an unlisted endpoint: such a target is refused as `INVALID_ARGUMENT`. An endpoint carrying userinfo, whitespace or a control character is refused the same way. `endpoint` may name any S3-compatible store (with or without a scheme, defaulting to https), and the region is read from the endpoint host (`s3.<region>`, `s3-<region>`, past a `dualstack` or `fips` qualifier) or defaults to `us-east-1`; `region` on the target overrides both. TLS peer and hostname verification is ON unless the request explicitly sets `verify_ssl: false` for a self-signed internal store; an absent field means verify. Uploads run on their own pool, sized by `GRPARSE_UPLOAD_WORKERS` (default 4) and `GRPARSE_UPLOAD_QUEUE` (default 32). A store that refuses an upload does not cost the caller the conversion: the response keeps its full `DocumentResponse`, the failure lands as an error item, the objects already written before the refusal are still listed in `target_result.objects` so the caller can clean up or retry, and the status reports partial success; only a misconfigured target itself (missing bucket, unusable endpoint) fails the RPC, as `INVALID_ARGUMENT`.
 
@@ -462,7 +467,10 @@ sets `repair_delta_omitted` on the complete event. The page events,
 collector documents and `section_header_levels` are unchanged, so pages
 that streamed before the whole-document passes stay unrepaired; combined
 with `slim_collector_documents`, nothing on the stream carries the
-repaired items. Unset or `true` keeps the repair event.
+repaired items. Unset or `true` keeps the repair event. A stream that
+asks for `structure_validation` keeps the fold either way, since the fold
+is the document the check reads; `repair_delta = false` then only drops
+the repair event.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
@@ -578,7 +586,9 @@ both numbers bound concurrent conversions rather than CPU use.
 (default 64, 1 to 4096) caps the streams open at once across the whole
 server, where `GRPARSE_MAX_CONCURRENT_STREAMS` is a per-connection HTTP/2
 setting; one more stream finishes `RESOURCE_EXHAUSTED` naming the variable
-before it reads a chunk. Each admitted stream's plan and every collector leg
+before it reads a chunk. A stream's slot is returned before its final status
+is sent, so a client that has seen its stream end can open the next at once.
+Each admitted stream's plan and every collector leg
 it starts run on a pool sized by `GRPARSE_STREAM_WORKERS` (default 64) with
 `GRPARSE_STREAM_QUEUE` (default 256) waiting tasks, instead of a thread of
 their own; a leg the full queue refuses fails that collector with a capacity
@@ -698,12 +708,21 @@ source runs; and last `PHASE_COMPLETED` when any source converted, else
 `PHASE_FAILED`. The call then finishes OK. `source_outputs`
 (`StreamSourceOutputs`) carries the rest of the conversion as
 `ConvertDocumentResponse` does for the same request, filled by the same
-code: the `exports` `to_formats` asked for, the `chunks`, the
+code: the `exports` `to_formats` asked for, the `chunks` and what they
+left out (`chunk_omissions`), the
 `structure_findings`, the `confidence` and the `text_offsets`. It is sent
 for every converted source, so an empty field means the conversion
 produced nothing for it. A source whose outputs fail to render, or whose
 `final_document` or `source_outputs` is past the message limit, fails as a
-whole. Every
+whole. Every `source_result` types how its source ended in `status`, with
+the `ConversionStatus` the unary response uses: `SUCCESS`,
+`PARTIAL_SUCCESS` when a collector failed while another produced the
+Document, or `FAILURE`. A partial conversion lists each failed collector in
+`collector_failures` (its `Collector`, error and `FailureCategory`, the
+classification the unary `ErrorItem` carries). `success` says only that a
+Document was produced, so it is true for a partial conversion too, and
+`error_message` repeats the typed fields as one line for older readers.
+Every
 envelope echoes `request_id` and carries `sequence_number`, counting from 1
 with no gaps, and `timestamp_ms`; source-scoped envelopes set
 `source_index`. The `part` arm is not sent: what streams is each source's
@@ -953,7 +972,15 @@ unset, so existing output does not change; `REPORT` returns one typed
 `ConvertDocumentResponse.structure_findings`, and `ENFORCE` fails the
 request with `FAILED_PRECONDITION` listing them (docling-core's
 `raise_on_error`). `structure_validation_rules` narrows the check to the
-named rules (a list with validation off is rejected). The rules: the
+named rules (a list with validation off is rejected).
+`StreamProcessDocument` takes the same options on `DocumentChunk`: each
+collector `Document` is checked as it lands (`REPORT` on
+`CollectorDocument.structure_findings`), and pages that stream with no
+collector `Document` behind them (the CV path) are checked once the last one
+is out, as the `Document` they fold to with the heading levels and the repair
+event applied (`REPORT` on `DocumentComplete.structure_findings`); `ENFORCE`
+ends the stream with the same `FAILED_PRECONDITION` either way, and
+`repair_delta = false` does not switch the check off. The rules: the
 deprecated furniture tree lists children; a key-value or form item exists
 (docling-core migrates both to field regions); a list group (`LIST` or
 `ORDERED_LIST`) lists a child that is not a list item; a list item's parent

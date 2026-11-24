@@ -1111,7 +1111,7 @@ void verify_epub_book_folds_chapters_and_images() {
   require(book.source_meta().title() == "The Book",
           "a chapter's page title never overrides the book's");
   for (const auto& warning : outcome.warnings) {
-    require(!warning.contains("OPS/plate.svg"), "the image spine item folds cleanly: " + warning);
+    require(!warning.message.contains("OPS/plate.svg"), "the image spine item folds cleanly: " + warning.message);
   }
 }
 
@@ -1319,8 +1319,8 @@ void verify_epub_book_folds_chapters_in_spine_order() {
   }
   int not_xhtml = 0;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("OPS/notes.txt") && warning.contains("is not XHTML")) ++not_xhtml;
-    require(!warning.contains("were not parsed"), "no chapter was cut: " + warning);
+    if (warning.message.contains("OPS/notes.txt") && warning.message.contains("is not XHTML")) ++not_xhtml;
+    require(!warning.message.contains("were not parsed"), "no chapter was cut: " + warning.message);
   }
   require(not_xhtml == 1, "the non-XHTML item is reported once");
 }
@@ -1336,7 +1336,7 @@ void verify_epub_book_without_markup_keeps_the_skeleton() {
           "without the fold the picture keeps its reference");
   bool named = false;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+    if (warning.message.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the degradation names the variable that would fix it");
 }
@@ -1451,7 +1451,7 @@ void verify_email_html_body_without_markup_warns() {
   require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
   bool named = false;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+    if (warning.message.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the missing HTML body names the variable that would fix it");
 }
@@ -1522,7 +1522,7 @@ void verify_epub_book_survives_a_failing_chapter() {
   require(outcome.document.texts_size() == 0, "the rejected chapters contribute nothing");
   int reported = 0;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("could not be parsed by the markup collector")) reported++;
+    if (warning.message.contains("could not be parsed by the markup collector")) reported++;
   }
   require(reported == 2, "each rejected chapter is reported");
 }
@@ -2619,7 +2619,7 @@ void verify_fastwarc_framing_error_keeps_records() {
   require(outcome.success && outcome.document.groups_size() == 1,
           "a non-recoverable framing error keeps the records already folded");
   require(outcome.warnings.size() == 2 &&
-              outcome.warnings[1].contains("framing error at stream offset 128"),
+              outcome.warnings[1].message.contains("framing error at stream offset 128"),
           "the framing error surfaces as a warning, not a failure");
 }
 
@@ -2671,7 +2671,7 @@ void verify_fastwarc_payload_text_is_utf8() {
           "a character split by the cap is dropped, not replaced");
   std::string serialized;
   require(outcome.document.SerializeToString(&serialized), "the document serializes");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("charset gbk"),
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].message.contains("charset gbk"),
           "the undecoded charset is named once");
 }
 
@@ -3056,8 +3056,8 @@ void verify_calamine_falls_back_to_handles_on_unimplemented() {
   require(outcome.success, "the handle path succeeds: " + outcome.error);
   require(outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
           "the fallback is recorded in the outcome's protocol");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("ParseWorkbook")
-              && outcome.warnings[0].contains("handle path"),
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].message.contains("ParseWorkbook")
+              && outcome.warnings[0].message.contains("handle path"),
           "the fallback is announced as a warning, never silent");
   require(service.closed() == 1, "the workbook handle is closed on success");
   require_calamine_fold(outcome);
@@ -3145,7 +3145,7 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
 
 bool has_calamine_warning(const grparse::CollectorOutcome& outcome, const std::string& needle) {
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains(needle)) return true;
+    if (warning.message.contains(needle)) return true;
   }
   return false;
 }
@@ -3721,7 +3721,7 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
           "the trailer's has_encoding_issues rides the classification");
   bool warned = false;
   for (const auto& warning : result.outcome.warnings) {
-    if (warning.contains("encoding issues")) warned = true;
+    if (warning.message.contains("encoding issues")) warned = true;
   }
   require(warned, "the untrustworthy text layer is warned about");
   const auto route = grparse::route_pdf_by_classification(result.classification);
@@ -3817,7 +3817,7 @@ void verify_pdf_searchable_scan_refuses_the_fast_path() {
           "every empty page of a document that drew invisible text needs OCR");
   bool warned = false;
   for (const auto& warning : result.outcome.warnings) {
-    if (warning.contains("invisible text")) warned = true;
+    if (warning.message.contains("invisible text")) warned = true;
   }
   require(warned, "the invisible text layer is warned about");
   const auto route = grparse::route_pdf_by_classification(result.classification);

@@ -33,10 +33,15 @@ docv1::Document sample_document() {
   return document;
 }
 
-parsev1::DocumentExports sample_exports() {
-  parsev1::DocumentExports exports;
-  exports.set_md("one paragraph");
-  return exports;
+// The response ConvertSource would hold for the sample document when its
+// target runs.
+parsev1::ConvertDocumentResponse sample_conversion() {
+  parsev1::ConvertDocumentResponse converted;
+  converted.set_status(parsev1::CONVERSION_STATUS_SUCCESS);
+  *converted.mutable_document()->mutable_doc() = sample_document();
+  converted.mutable_document()->set_filename("sample.pdf");
+  converted.mutable_document()->mutable_exports()->set_md("one paragraph");
+  return converted;
 }
 
 void verify_only_a_delivering_target_asks_for_the_step() {
@@ -63,14 +68,14 @@ void verify_no_target_at_all_is_a_clean_no_op() {
   parsev1::TargetResult result;
   parsev1::Target target;
   const grpc::Status status =
-      targets::deliver(target, sample_document(), sample_exports(), &result);
+      targets::deliver(target, sample_conversion(), &result);
   require(status.ok(), "an unset target succeeds without doing anything");
   require(!result.has_archive(), "an unset target writes no archive");
   require_equal(result.objects_size(), 0, "an unset target writes no objects");
 
   target.mutable_inbody();
   parsev1::TargetResult in_body_result;
-  require(targets::deliver(target, sample_document(), sample_exports(), &in_body_result).ok(),
+  require(targets::deliver(target, sample_conversion(), &in_body_result).ok(),
           "an explicit in-body target succeeds without doing anything");
   require(!in_body_result.has_archive(), "an in-body target writes no archive");
 }
@@ -80,7 +85,7 @@ void verify_a_zip_target_fills_the_archive() {
   target.mutable_zip();
   parsev1::TargetResult result;
   const grpc::Status status =
-      targets::deliver(target, sample_document(), sample_exports(), &result);
+      targets::deliver(target, sample_conversion(), &result);
   require(status.ok(), "a zip target is served: " + status.error_message());
   require(result.has_archive(), "a zip target fills the archive field");
   require(result.archive().starts_with("PK\x03\x04"),
@@ -93,9 +98,9 @@ void verify_the_archive_is_a_pure_function_of_its_input() {
   target.mutable_zip();
   parsev1::TargetResult first;
   parsev1::TargetResult second;
-  require(targets::deliver(target, sample_document(), sample_exports(), &first).ok(),
+  require(targets::deliver(target, sample_conversion(), &first).ok(),
           "the first delivery succeeds");
-  require(targets::deliver(target, sample_document(), sample_exports(), &second).ok(),
+  require(targets::deliver(target, sample_conversion(), &second).ok(),
           "the second delivery succeeds");
   require_equal(first.archive() == second.archive(), true,
                 "two deliveries of the same document produce byte-identical archives");
@@ -114,7 +119,7 @@ void verify_the_declared_but_unserved_targets_are_refused_by_name() {
     one.set(&target);
     parsev1::TargetResult result;
     const grpc::Status status =
-        targets::deliver(target, sample_document(), sample_exports(), &result);
+        targets::deliver(target, sample_conversion(), &result);
     require_equal(static_cast<int>(status.error_code()),
                   static_cast<int>(grpc::StatusCode::UNIMPLEMENTED),
                   "a declared but unserved target is UNIMPLEMENTED");
@@ -160,7 +165,7 @@ void verify_an_incomplete_store_target_is_the_callers_fault() {
     one.set(target.mutable_s3());
     parsev1::TargetResult result;
     const grpc::Status status =
-        targets::deliver(target, sample_document(), sample_exports(), &result);
+        targets::deliver(target, sample_conversion(), &result);
     require_equal(static_cast<int>(status.error_code()),
                   static_cast<int>(grpc::StatusCode::INVALID_ARGUMENT),
                   one.what + " is INVALID_ARGUMENT, not a store failure");
@@ -194,7 +199,7 @@ void verify_s3_credentials_are_paired() {
     parsev1::Target target;
     fill(target.mutable_s3());
     parsev1::TargetResult result;
-    return targets::deliver(target, sample_document(), sample_exports(), &result);
+    return targets::deliver(target, sample_conversion(), &result);
   };
 
   const grpc::Status one_key = deliver_s3([](parsev1::S3Target* s3) {
@@ -306,7 +311,7 @@ void verify_a_failed_delivery_leaks_no_credentials() {
   s3->set_secret_key("s3cr3t-value-that-must-never-print");
   parsev1::TargetResult result;
   const grpc::Status status =
-      targets::deliver(target, sample_document(), sample_exports(), &result);
+      targets::deliver(target, sample_conversion(), &result);
   require(!status.ok(), "a store target with no endpoint fails");
   require(!status.error_message().contains("s3cr3t-value-that-must-never-print"),
           "the failure must not carry the secret key: " + status.error_message());

@@ -530,7 +530,7 @@ void verify_deep_nesting_is_bounded() {
           "the text under a hostile nest survives the flattening");
   int depth_warnings = 0;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("nested deeper than")) ++depth_warnings;
+    if (warning.message.contains("nested deeper than")) ++depth_warnings;
   }
   require(depth_warnings == 1, "the flattening is reported once");
 }
