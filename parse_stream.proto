@@ -348,6 +348,39 @@ message DocumentComplete {
   // Empty when every page came from a collector Document, whose findings
   // ride its CollectorDocument event instead.
   repeated StructureFinding structure_findings = 8;
+  // What the PDF inspector read from the file's own dictionaries (title,
+  // authors, dates, the catalog /Lang) when it classified a PDF and the CV
+  // path read it: the Document.source_meta ConvertSource puts on the same
+  // document. No collector_document event stands for the CV pages, so the
+  // metadata rides here. Absent when no inspector read the document, when
+  // the inspector failed (collector_failures names it), and when the file
+  // has none; an inspector whose own Document was taken carries it on that
+  // collector_document instead.
+  optional ai.pipestream.document.v1.DocumentMeta source_meta = 9;
+  // The steps ConvertSource runs on this document under its default options
+  // that this stream did not run, in enum order. What they add is absent
+  // from the page events for that reason alone; the document itself may or
+  // may not have had any of it. Empty when the stream left no step out.
+  repeated StreamOmittedStep omitted_steps = 10;
+}
+
+// A step ConvertSource runs on the finished Document and
+// StreamProcessDocument does not run at all: each needs the whole document
+// and a call to another service, after the pages are already on the wire.
+// DocumentComplete.omitted_steps names each one this deployment is
+// configured for, so a reader of the stream knows a difference from the
+// unary result is the surface's and not the document's.
+enum StreamOmittedStep {
+  STREAM_OMITTED_STEP_UNSPECIFIED = 0;
+  // The AcroForm widgets of a PDF. ConvertSource asks the PDF backend
+  // (GRPARSE_PDF_BACKEND) for them and folds them in as field items unless
+  // extract_form_fields is false; the stream's events carry no field item,
+  // whether or not the PDF has a form.
+  STREAM_OMITTED_STEP_FORM_FIELDS = 1;
+  // The enrichment leg (GRPARSE_ENRICH_TARGET): the tables of raster
+  // charts, and the picture, code and formula annotations a ConvertSource
+  // request can ask of it. The stream's items carry none of them.
+  STREAM_OMITTED_STEP_ENRICHMENT = 2;
 }
 
 message StreamDocumentRequest {

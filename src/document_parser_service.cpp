@@ -916,8 +916,9 @@ grpc::Status refuse_oversized_response(const google::protobuf::MessageLite& resp
       surface + ": the response is " + std::to_string(bytes) + " bytes, over the " +
           std::to_string(cap) +
           " byte unary response limit (GRPARSE_MAX_RESPONSE_BYTES); convert this document "
-          "over StreamProcessDocument, which delivers the same conversion as a sequence of "
-          "messages, or request fewer to_formats");
+          "over StreamProcessDocument, which delivers the document page by page and names "
+          "on its complete event the steps it does not run (DocumentComplete.omitted_steps), "
+          "or request fewer to_formats");
 }
 
 grpc::Status DocumentParserService::convert_source(

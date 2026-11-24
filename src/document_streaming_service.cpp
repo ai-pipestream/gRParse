@@ -36,6 +36,7 @@
 #include "grparse/document_repair.h"
 #include "grparse/page_previews.h"
 #include "grparse/page_projection.h"
+#include "grparse/pdf_form_widgets.h"
 #include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
@@ -935,20 +936,26 @@ class DocumentStreamReactor final
         std::chrono::duration_cast<std::chrono::nanoseconds>(
             std::chrono::steady_clock::now() - pdf_started)
             .count());
+    const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
+    // The request's own mode, before the route touches it: the CV run was
+    // forced exactly when the route had a selective request to force.
+    const bool forced =
+        route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective;
     if (submitted_early) {
       // The CV run owns the result; the drained inspector settles the hold
-      // it kept on the terminal event, adding its failure if it failed.
+      // it kept on the terminal event, adding its failure if it failed and
+      // what the CV pages take from it if it did not.
       preview_session.reset();
       record_collector_call(
           pipestream::parse::v1::COLLECTOR_PDF,
           collector_call_status_for(parsed.outcome.success, parsed.outcome.code),
           pdf_elapsed_ns, parsed.outcome.warnings.size());
-      with_reactor(weak_gate, [&parsed](DocumentStreamReactor& reactor) {
+      with_reactor(weak_gate, [&parsed, &route, forced](DocumentStreamReactor& reactor) {
+        if (parsed.outcome.success) reactor.note_cv_route(parsed, route, forced);
         reactor.release_inspector_hold(parsed.outcome);
       });
       return;
     }
-    const PdfRouteDecision route = route_pdf_by_classification(parsed.classification);
     const bool streamed = parsed.streamed_pages > 0;
     if (parsed.outcome.success && route.fast_path) {
       if (streamed) {
@@ -1004,9 +1011,10 @@ class DocumentStreamReactor final
         pdf_elapsed_ns, parsed.outcome.warnings.size());
     if (parsed.outcome.success) {
       leg.tuning.ocr_pages.insert(route.ocr_pages.begin(), route.ocr_pages.end());
-      if (route.force_ocr && leg.tuning.mode == PageScheduler::OcrTuning::Mode::kSelective) {
-        leg.tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
-      }
+      if (forced) leg.tuning.mode = PageScheduler::OcrTuning::Mode::kForce;
+      with_reactor(weak_gate, [&parsed, &route, forced](DocumentStreamReactor& reactor) {
+        reactor.note_cv_route(parsed, route, forced);
+      });
     } else {
       // The degradation stays visible: the pdf collector's failure rides
       // the complete event as a failure entry while the in-process CV path
@@ -1030,6 +1038,26 @@ class DocumentStreamReactor final
         "pages 1-" + std::to_string(first_left - 1) +
         " streamed from the pdf inspector's text layer as they were read; pages " +
         std::to_string(first_left) + " onward went through the CV path");
+  }
+
+  // The inspector read the document and the CV path produces its pages. No
+  // collector Document stands for those pages, so what the unary leg puts on
+  // the CV Document from the inspector's read (route_pdf_leg: the source
+  // metadata the CV path cannot read itself, and the route's typed warning)
+  // is kept here for the complete event. The inspector's own extraction
+  // warnings describe the extraction that was not taken, and stay behind on
+  // both surfaces.
+  void note_cv_route(const PdfParseResult& parsed, const PdfRouteDecision& route, bool forced) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    if (parsed.outcome.document.has_source_meta()) {
+      inspector_source_meta_ = parsed.outcome.document.source_meta();
+      // Each field names the collector that answered it, the record the
+      // merge leaves on the unary Document's source metadata.
+      pipestream::document::v1::CollectorSource claimant;
+      claimant.set_collector(collector_name(pipestream::parse::v1::COLLECTOR_PDF));
+      claim_fields(&*inspector_source_meta_, claimant);
+    }
+    route_warnings_.push_back(cv_route_warning(parsed.classification, route, forced));
   }
 
   // The CV run started on the info event while the inspector still
@@ -1393,11 +1421,40 @@ class DocumentStreamReactor final
       stamp_warning(warning, collector_name(pipestream::parse::v1::COLLECTOR_GRPARSE_CV),
                     complete->add_typed_warnings());
     }
+    // The route's statement follows the CV path's warnings, the order it
+    // has on the unary Document, and like every warning on this event it
+    // names the CV collector, whose pages it is about.
+    for (const Warning& warning : route_warnings_) {
+      complete->add_warnings(warning.message);
+      stamp_warning(warning, collector_name(pipestream::parse::v1::COLLECTOR_GRPARSE_CV),
+                    complete->add_typed_warnings());
+    }
+    if (inspector_source_meta_.has_value()) {
+      *complete->mutable_source_meta() = std::move(*inspector_source_meta_);
+    }
+    name_omitted_steps_locked(complete);
     if (const auto confidence = document_confidence(page_scores_)) {
       *complete->mutable_confidence() = *confidence;
     }
     events_.push_back(std::move(event));
     request_finish_locked(grpc::Status::OK);
+  }
+
+  // The unary path ends with two steps this stream has no way to deliver:
+  // the AcroForm widgets of a PDF (field items, which no stream event
+  // carries) and the enrichment leg (a call to another service over the
+  // whole document, made after the pages are already on the wire). Each is
+  // named exactly when ConvertSource with default options would have run it
+  // for this document on this deployment, so the complete event never lets
+  // a stream pass for the unary result where it is not.
+  void name_omitted_steps_locked(pipestream::parse::v1::DocumentComplete* complete) const {
+    if (pdf_ && pdf_form_widget_backend_configured()) {
+      complete->add_omitted_steps(pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS);
+    }
+    if (endpoints_ != nullptr && endpoints_->has_derender() &&
+        endpoints_->derender().any_job()) {
+      complete->add_omitted_steps(pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT);
+    }
   }
 
   // The CV pipeline's pages (and an inspector-streamed prefix ahead of
@@ -1652,6 +1709,10 @@ class DocumentStreamReactor final
   // What the page assembly had to approximate rather than map, shipped with
   // the terminal event.
   std::vector<Warning> assembly_warnings_;
+  // What the routed CV pages take from the inspector's read (see
+  // note_cv_route), held for the complete event.
+  std::vector<Warning> route_warnings_;
+  std::optional<pipestream::document::v1::DocumentMeta> inspector_source_meta_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
   // Recognition fields resolved from the first chunk that set each one;
@@ -1876,7 +1937,8 @@ class SourceStreamReactor final
       if (status.ok()) {
         status = refuse_oversized_envelope(
             *final_document, "Document", index,
-            "StreamProcessDocument delivers the same conversion page by page");
+            "StreamProcessDocument delivers the document page by page, and names on its "
+            "complete event the steps it does not run (DocumentComplete.omitted_steps)");
       }
       if (status.ok()) {
         status = refuse_oversized_envelope(*source_outputs, "source_outputs", index,
