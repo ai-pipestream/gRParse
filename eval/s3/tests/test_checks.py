@@ -68,13 +68,19 @@ def test_integrity_and_placement_failures() -> None:
 
 def test_custom_field_keys_and_warnings() -> None:
     doc = word_document()
-    doc["body"]["meta"] = {"custom_fields": {"cell:?": "x", "collector_warnings:pdf": ["w"], "poi:title": "t"}}
+    doc["body"]["meta"] = {"custom_fields": {"collector_warnings:pdf": ["w"], "poi:title": "t"}}
     found, _ = failing(doc, "a.docx")
     assert "poi:title" in found["custom_field_keys"].cause
     assert found["warnings_typed"].evidence["keys"] == ["collector_warnings:pdf"]
-    doc["body"]["meta"] = {"custom_fields": {"cell:?": "x", "markdown.title": "t"}}
+    doc["body"]["meta"] = {"custom_fields": {"markdown.title": "t"}}
     found, _ = failing(doc, "a.docx")
     assert "custom_field_keys" not in found and "warnings_typed" not in found
+    # "cell:?" was the one colon key the office fold minted. An unplaceable
+    # cell is typed now (TableData.unplaced_cells), so the key is an offender
+    # like any other.
+    doc["body"]["meta"] = {"custom_fields": {"cell:?": "x"}}
+    found, _ = failing(doc, "a.docx")
+    assert "cell:?" in found["custom_field_keys"].cause
 
 
 def test_claims_and_sources() -> None:
