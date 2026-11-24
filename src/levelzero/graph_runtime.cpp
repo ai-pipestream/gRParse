@@ -84,6 +84,8 @@ struct GraphModel::Kernels {
       pack_patches, pack_tokens;
   // kernels_detector.cl
   ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1;
+  // kernels_mobile.cl
+  ze_kernel_handle_t channel_scale, binary_same;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -116,7 +118,8 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       k("resize_nearest", 16, 4), k("global_average_pool", 256, 1), k("to_real", 256, 1), k("from_real", 256, 1),
       fp16_ ? k("gemm_xmx", 64, 1) : nullptr, fp16_ ? k("pack_patches", 16, 16) : nullptr,
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
-      k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4)});
+      k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
+      k("channel_scale", 16, 16), k("binary_same", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   if (fp16_) build_fp16_weights();
@@ -541,7 +544,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
                 launch(kernels_->gemm, {groups_for(size_t(hw), 64), groups_for(size_t(c.co), 64), uint32_t(c.n)});
               } else if (depthwise) {
                 args(kernels_->conv_depthwise, {P(src), P(dst), P(wp), P(bp), P(c)});
-                launch(kernels_->conv_depthwise, spatial);
+                // Eight outputs of a row per work item (DW_R in kernels_mobile.cl).
+                const size_t items = size_t(c.oh) * size_t((c.ow + 7) / 8);
+                launch(kernels_->conv_depthwise, {groups_for(items, 16), groups_for(size_t(c.n * c.co), 4), 1});
               } else if (node.op == IrOp::kConvTranspose && c.kh == 2 && c.kw == 2 && c.sh == 2 && c.sw == 2) {
                 const int tile = c.co >= 8 ? 8 : 1;
                 ze_kernel_handle_t kernel = tile == 8 ? kernels_->conv_transpose2_8 : kernels_->conv_transpose2_1;
@@ -683,10 +688,28 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = shape;
             place(out);
             const int count = int(numel(shape)), op = int(node.binary);
+            // The two shapes the mobile blocks are made of get their own
+            // kernels: a residual add, and a per-channel gate on a feature map.
+            const bool add_or_mul = node.binary == BinaryOp::kAdd || node.binary == BinaryOp::kMul;
+            const bool same = add_or_mul && a.shape == bv.shape;
+            const bool gate = node.binary == BinaryOp::kMul && a.shape.size() == 4 && bv.shape.size() == 4 &&
+                              bv.shape[0] == a.shape[0] && bv.shape[1] == a.shape[1] && bv.shape[2] == 1 &&
+                              bv.shape[3] == 1;
+            const int planes = gate ? int(a.shape[0] * a.shape[1]) : 0, hw = gate ? int(a.shape[2] * a.shape[3]) : 0;
             body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](char* arena) {
               const char* x = ptr(a_ref, arena);
               const char* y = ptr(b_ref, arena);
               char* dst = ptr(o_ref, arena);
+              if (same) {
+                args(kernels_->binary_same, {P(x), P(y), P(dst), P(count), P(op)});
+                launch(kernels_->binary_same, {groups_for(size_t(count), 256), 1, 1});
+                return;
+              }
+              if (gate) {
+                args(kernels_->channel_scale, {P(x), P(y), P(dst), P(planes), P(hw)});
+                launch(kernels_->channel_scale, {groups_for(size_t(hw), 16), groups_for(size_t(planes), 16), 1});
+                return;
+              }
               args(kernels_->binary, {P(x), P(y), P(dst), P(nd), P(count), P(op)});
               launch(kernels_->binary, {groups_for(size_t(count), 256), 1, 1});
             };

@@ -169,26 +169,6 @@ void conv_gemm(__global const real* in, __global real* out, __global const float
   }
 }
 
-// Depthwise: one output of one channel per work item.
-__kernel void conv_depthwise(__global const real* in, __global real* out, __global const float* w,
-                             __global const float* b, conv_t p) {
-  const int x = get_global_id(0), y = get_global_id(1), nc = get_global_id(2);
-  if (x >= p.ow || y >= p.oh) return;
-  const int c = nc % p.co;
-  __global const real* plane = in + (size_t)nc * p.ih * p.iw;
-  __global const float* kw = w + (size_t)c * p.kh * p.kw;
-  float acc = 0.0f;
-  for (int ky = 0; ky < p.kh; ++ky) {
-    const int sy = y * p.sh - p.ph + ky;
-    if (sy < 0 || sy >= p.ih) continue;
-    for (int kx = 0; kx < p.kw; ++kx) {
-      const int sx = x * p.sw - p.pw + kx;
-      if (sx >= 0 && sx < p.iw) acc = fma(kw[ky * p.kw + kx], RLOAD(plane, sy * p.iw + sx), acc);
-    }
-  }
-  RSTORE(out, ((size_t)nc * p.oh + y) * p.ow + x, activate(acc + b[c], p.act, p.alpha, p.beta));
-}
-
 // Dense or grouped: one output pixel per work item, 8 output channels of
 // one group at once.
 #define CONV_CO 8
