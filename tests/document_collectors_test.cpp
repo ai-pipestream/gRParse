@@ -1941,10 +1941,14 @@ void verify_lol_html_folds_full_api_surface() {
       server.channel(), lol_html_options(), "<!DOCTYPE html>");
   require(outcome.success, "full lol-html API collection succeeds: " + outcome.error);
 
-  const auto& custom = outcome.document.body().meta().custom_fields();
-  const auto enc = custom.find("lol_html.encoding");
-  require(enc != custom.end() && enc->second.string_value() == "UTF-8",
-          "ExtractStarted.encoding lands in body.meta.custom_fields");
+  // The encoding the peer decoded the page with is a fact about the source:
+  // it has a typed home on the origin and rides no value map.
+  require(outcome.document.origin().has_source_encoding() &&
+              outcome.document.origin().source_encoding() == "UTF-8",
+          "ExtractStarted.encoding lands in origin.source_encoding: " +
+              outcome.document.origin().ShortDebugString());
+  require(!outcome.document.body().meta().custom_fields().contains("lol_html.encoding"),
+          "the encoding rides no custom field");
 
   // Doctype with public_id, system_id, and byte span.
   const auto& dt = outcome.document.texts(0).text().base();
