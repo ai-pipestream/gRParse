@@ -18,7 +18,7 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
   # for whichever Intel GPU the process opens (-device only selects ocloc's
   # front end), embedded as a byte array.
   set(embedded_kernels)
-  foreach(pair IN ITEMS "slanet_decoder:kSlanetDecoderSpirv" "table_encoder:kTableEncoderSpirv")
+  foreach(pair IN ITEMS "slanet_decoder:kSlanetDecoderSpirv")
     string(REPLACE ":" ";" pair "${pair}")
     list(GET pair 0 name)
     list(GET pair 1 symbol)
@@ -78,8 +78,7 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
   target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
-  target_sources(grparse_core PRIVATE src/levelzero/encoder_plan.cpp src/levelzero/table_encoder.cpp
-    src/levelzero/table_gpu.cpp ${embedded_kernels})
+  target_sources(grparse_core PRIVATE src/levelzero/table_gpu.cpp ${embedded_kernels})
   target_compile_definitions(grparse_core PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")

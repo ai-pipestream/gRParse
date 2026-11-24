@@ -17,7 +17,7 @@
 #include "grparse_inference_model.h"
 #include "levelzero/device.h"
 #include "levelzero/onnx_initializers.h"
-#include "levelzero/table_encoder.h"
+#include "levelzero/graph_runtime.h"
 
 namespace grparse::levelzero {
 
@@ -105,7 +105,9 @@ class TableStructureGpu::Impl {
     ze_check(zeKernelSuggestMaxCooperativeGroupCount(decoder_, &max_groups_), "cooperative group count");
     if (max_groups_ == 0) throw std::runtime_error("the device runs no cooperative group of the decoder");
     max_batch_ = std::min<uint32_t>(max_groups_, 16);
-    encoder_ = std::make_unique<TableEncoder>(device_, models_dir / "slanet_plus_encoder.onnx", int(max_batch_));
+    // The encoder is an ordinary vision graph: it runs on the graph runtime,
+    // in float (its features steer the decoder's tokens).
+    encoder_ = std::make_unique<graph::GraphModel>(device_, models_dir / "slanet_plus_encoder.onnx");
 
     std::vector<size_t> offsets;
     const std::vector<float> weights = pack_decoder_weights(models_dir / "slanet_plus_step.onnx", &offsets);
@@ -118,7 +120,8 @@ class TableStructureGpu::Impl {
     logits_ = device_.allocate(max_batch_ * kMaxSteps * kVocab * sizeof(float));
     location_ = device_.allocate(max_batch_ * kMaxSteps * 8 * sizeof(float));
     steps_ = device_.allocate(max_batch_ * sizeof(int32_t));
-    images_ = static_cast<float*>(device_.allocate_host(max_batch_ * kImageFloats * sizeof(float)));
+    images_.resize(max_batch_ * kImageFloats);
+    features_host_ = static_cast<float*>(device_.allocate_host(max_batch_ * kFeatureFloats * sizeof(float)));
     out_logits_ = static_cast<float*>(device_.allocate_host(max_batch_ * kMaxSteps * kVocab * sizeof(float)));
     out_location_ = static_cast<float*>(device_.allocate_host(max_batch_ * kMaxSteps * 8 * sizeof(float)));
     out_steps_ = static_cast<int32_t*>(device_.allocate_host(max_batch_ * sizeof(int32_t)));
@@ -213,24 +216,21 @@ class TableStructureGpu::Impl {
     bool done = false;
   };
 
-  // Upload, encoder, decoder and readback for `tables` tables, in order.
+  // The decoder's half of a batch: the encoder's features up, the
+  // cooperative launch, the readback, in order.
   ze_command_list_handle_t record(uint32_t tables) {
     auto desc = ze_desc<ze_command_list_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC);
     desc.commandQueueGroupOrdinal = ordinal_;
     ze_command_list_handle_t list = nullptr;
     ze_check(zeCommandListCreate(device_.context(), device_.device(), &desc, &list), "command list");
-    for (uint32_t index = 0; index < tables; ++index) {
-      ze_check(zeCommandListAppendMemoryCopy(list, encoder_->input() + index * encoder_->image_stride(),
-                                             images_ + index * kImageFloats, kImageFloats * sizeof(float), nullptr,
-                                             0, nullptr),
-               "image upload");
-    }
+    ze_check(zeCommandListAppendMemoryCopy(list, features_, features_host_, tables * kFeatureFloats * sizeof(float),
+                                           nullptr, 0, nullptr),
+             "feature upload");
     const uint32_t zero = 0;
     ze_check(zeCommandListAppendMemoryFill(list, counters_, &zero, sizeof(zero),
                                            size_t(tables) * kCounterStride * sizeof(uint32_t), nullptr, 0, nullptr),
              "barrier reset");
     ze_check(zeCommandListAppendBarrier(list, nullptr, 0, nullptr), "barrier");
-    encoder_->append(list, int(tables), features_);
     const uint32_t groups = std::clamp<uint32_t>(max_groups_ / tables, 1, kGroupsPerTable);
     ze_check(zeKernelSetArgumentValue(decoder_, 23, sizeof(groups), &groups), "decoder argument");
     const ze_group_count_t count{tables * groups, 1, 1};
@@ -256,8 +256,14 @@ class TableStructureGpu::Impl {
   void run(const std::vector<Pending*>& batch) {
     const auto tables = static_cast<uint32_t>(batch.size());
     for (uint32_t index = 0; index < tables; ++index) {
-      std::memcpy(images_ + index * kImageFloats, batch[index]->image, kImageFloats * sizeof(float));
+      std::memcpy(images_.data() + index * kImageFloats, batch[index]->image, kImageFloats * sizeof(float));
     }
+    const std::vector<graph::HostTensor> encoded =
+        encoder_->run(images_.data(), {int64_t(tables), 3, kImageSide, kImageSide});
+    if (encoded.size() != 1 || encoded[0].count() != tables * kFeatureFloats) {
+      throw std::runtime_error("table structure: the encoder's output is not [tables][256][96]");
+    }
+    std::memcpy(features_host_, encoded[0].floats(), encoded[0].count() * sizeof(float));
     device_step(zeCommandQueueExecuteCommandLists(queue_, 1, &lists_[tables], fence_), "submission");
     device_step(zeFenceHostSynchronize(fence_, UINT64_MAX), "run");
     device_step(zeFenceReset(fence_), "fence reset");
@@ -279,7 +285,7 @@ class TableStructureGpu::Impl {
   uint32_t max_groups_ = 0;
   uint32_t max_batch_ = 1;
   uint32_t ordinal_ = 0;
-  std::unique_ptr<TableEncoder> encoder_;
+  std::unique_ptr<graph::GraphModel> encoder_;
   ze_command_queue_handle_t queue_ = nullptr;
   ze_fence_handle_t fence_ = nullptr;
   std::vector<ze_command_list_handle_t> lists_;
@@ -288,7 +294,8 @@ class TableStructureGpu::Impl {
   void* logits_ = nullptr;
   void* location_ = nullptr;
   void* steps_ = nullptr;
-  float* images_ = nullptr;        // host memory the upload reads
+  std::vector<float> images_;       // a batch's images, back to back
+  float* features_host_ = nullptr;  // host memory the feature upload reads
   float* out_logits_ = nullptr;    // host memory the readback writes
   float* out_location_ = nullptr;
   int32_t* out_steps_ = nullptr;

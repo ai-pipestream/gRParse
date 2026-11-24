@@ -1,12 +1,11 @@
 #pragma once
 
 // SLANet+ table structure on an Intel GPU through Level Zero, with no
-// OpenVINO and no ONNX Runtime: the encoder (table_encoder.h, lowered from
-// slanet_plus_encoder.onnx) and the decoder (slanet_decoder.cl, weights from
-// slanet_plus_step.onnx), both compiled to SPIR-V at build time (ocloc).  One
-// recorded command list per batch size runs the image upload, every encoder
-// layer, the decoder's cooperative launch (every decode step of every table
-// in it) and the readback; the features never leave the GPU.
+// OpenVINO and no ONNX Runtime: the encoder (slanet_plus_encoder.onnx) on the
+// graph runtime (graph_runtime.h), the decoder as its own kernel
+// (slanet_decoder.cl, weights from slanet_plus_step.onnx) compiled to SPIR-V
+// at build time (ocloc) and run as one cooperative launch per batch: every
+// decode step of every table in it.
 //
 // One instance per process and device: tables that callers hand it while a
 // batch is running go out together in the next one.
