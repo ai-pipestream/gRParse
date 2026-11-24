@@ -1,13 +1,21 @@
+#include <unistd.h>
+
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
+#include <cstdio>
 #include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
+#include "../src/embeddings/failure.h"
 #include "grparse/chunk_embeddings.h"
+#include "grparse/prometheus_metrics.h"
 #include "support/check.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
@@ -15,6 +23,7 @@ namespace parsev1 = ai::pipestream::parse::v1;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 constexpr char kModelId[] = "sentence-transformers/all-MiniLM-L6-v2";
 
@@ -36,9 +45,43 @@ std::vector<float> unit_vector(std::size_t dimensions = 384) {
   return values;
 }
 
+// What a vendor runtime says when it fails: a status, and text that names a
+// path on the server and quotes what it was given. None of it may reach the
+// caller; all of it belongs in the server's log.
+constexpr char kVendorError[] =
+    "OpenVINO embedding operation failed: status -17 (GENERAL_ERROR): device lost\n"
+    "while reading /models/embeddings/model.onnx for input \"quarterly figures\"";
+
+// Runs `body` with stderr redirected into a pipe and returns what it wrote.
+// A failure report is one line, well under a pipe's buffer.
+template <typename Body>
+std::string captured_stderr(Body body) {
+  int ends[2];
+  require(::pipe(ends) == 0, "a pipe for the capture");
+  std::fflush(stderr);
+  const int saved = ::dup(STDERR_FILENO);
+  ::dup2(ends[1], STDERR_FILENO);
+  ::close(ends[1]);
+  body();
+  std::fflush(stderr);
+  ::dup2(saved, STDERR_FILENO);
+  ::close(saved);
+  std::string out;
+  char buffer[4096];
+  for (ssize_t got; (got = ::read(ends[0], buffer, sizeof buffer)) > 0;) {
+    out.append(buffer, static_cast<size_t>(got));
+  }
+  ::close(ends[0]);
+  return out;
+}
+
+uint64_t failures(std::string_view backend, grparse::EmbeddingFailureStage stage) {
+  return grparse::pipeline_telemetry().embedding(backend).failed(stage);
+}
+
 class FakeEngine final : public grparse::EmbeddingEngine {
  public:
-  enum class Reply { kNormal, kWrongCount, kWrongDimensions, kNonFinite, kFailure };
+  enum class Reply { kNormal, kWrongCount, kWrongDimensions, kNonFinite, kFailure, kThrows };
 
   explicit FakeEngine(Reply reply = Reply::kNormal,
                       grparse::EmbeddingModelIdentity identity = supported_identity(),
@@ -55,6 +98,7 @@ class FakeEngine final : public grparse::EmbeddingEngine {
     batches.push_back(texts);
     saw_cancellation_callback = static_cast<bool>(cancelled);
     if (reply_ == Reply::kFailure) return {grpc::StatusCode::INTERNAL, "engine failed"};
+    if (reply_ == Reply::kThrows) throw std::runtime_error(kVendorError);
     result->model = identity_;
     for (std::size_t index = 0; index < texts.size(); ++index) {
       result->vectors.push_back(unit_vector());
@@ -255,6 +299,90 @@ void verify_cancellation_and_bad_engine_replies_are_atomic() {
   }
 }
 
+// An engine that throws fails the RPC with words that say nothing of why,
+// which is right for the caller and useless for the operator unless the
+// reason goes somewhere: one stderr line with the vendor's own text, and a
+// count under the backend and the stage that failed.
+void verify_a_throwing_engine_is_logged_and_counted_and_stays_generic() {
+  grparse::reset_pipeline_telemetry();
+  auto engine = std::make_shared<FakeEngine>(FakeEngine::Reply::kThrows);
+  auto subject = embedder(engine);
+  auto value = chunks({"one"});
+  const std::string before = bytes(value);
+  grpc::Status status;
+  const std::string log =
+      captured_stderr([&] { status = subject.embed(enabled_options(), {}, &value); });
+
+  require(status.error_code() == grpc::StatusCode::INTERNAL,
+          "a throwing engine is an internal embedding failure");
+  require_equal(status.error_message(), "chunk embedding inference failed",
+                "the caller is told only that the embedding failed");
+  require_unchanged(value, before, "a throwing engine cannot expose a partial response");
+  require(log.contains("backend=cpu") && log.contains("stage=inference"),
+          "the log line names the backend and the stage: " + log);
+  require(log.contains("status -17 (GENERAL_ERROR): device lost") &&
+              log.contains("/models/embeddings/model.onnx"),
+          "the log line carries the vendor's status and text: " + log);
+  require(std::ranges::count(log, '\n') == 1 && log.ends_with('\n'),
+          "one failure is one log line, whatever the vendor wrote: " + log);
+  require_equal(failures("cpu", grparse::EmbeddingFailureStage::kInference), uint64_t{1},
+                "the failure is counted under its backend and stage");
+}
+
+// A reply the embedder refuses (a NaN here) is a failure of the backend's
+// output: it is counted as one and the log says what was wrong with it.
+void verify_a_refused_engine_reply_is_logged_and_counted() {
+  grparse::reset_pipeline_telemetry();
+  auto engine = std::make_shared<FakeEngine>(FakeEngine::Reply::kNonFinite);
+  auto subject = embedder(engine);
+  auto value = chunks({"one"});
+  grpc::Status status;
+  const std::string log =
+      captured_stderr([&] { status = subject.embed(enabled_options(), {}, &value); });
+
+  require(status.error_code() == grpc::StatusCode::INTERNAL, "a NaN vector fails the embedding");
+  require(log.contains("backend=cpu") && log.contains("stage=output") &&
+              log.contains("non-finite"),
+          "the log line says the backend returned non-finite values: " + log);
+  require_equal(failures("cpu", grparse::EmbeddingFailureStage::kOutput), uint64_t{1},
+                "the refused reply is counted as an output failure");
+  require_equal(failures("cpu", grparse::EmbeddingFailureStage::kInference), uint64_t{0},
+                "and as nothing else");
+}
+
+// The report the local engine answers a vendor exception with: the status
+// holds the caller's words alone, the log line holds the vendor's, and the
+// count lands on the engine's own backend.
+void verify_a_failure_report_keeps_the_vendor_text_on_the_server() {
+  grparse::reset_pipeline_telemetry();
+  grpc::Status status;
+  const std::string log = captured_stderr([&] {
+    status = grparse::embedding::detail::report_failure(
+        "openvino", grparse::EmbeddingFailureStage::kInference, kVendorError,
+        "local embedding inference failed");
+  });
+  require(status.error_code() == grpc::StatusCode::INTERNAL, "the report is an INTERNAL status");
+  require_equal(status.error_message(), "local embedding inference failed",
+                "the status carries the caller's words and none of the vendor's");
+  require(status.error_details().empty(), "and no detail payload either");
+  require_equal(log,
+                "gRParse embedding failure: backend=openvino stage=inference: OpenVINO "
+                "embedding operation failed: status -17 (GENERAL_ERROR): device lost while "
+                "reading /models/embeddings/model.onnx for input \"quarterly figures\"\n",
+                "the log line");
+  require_equal(failures("openvino", grparse::EmbeddingFailureStage::kInference), uint64_t{1},
+                "the failure is counted under the engine's backend");
+
+  // A runtime that echoes a whole batch cannot flood the log.
+  const std::string flood(100'000, 'x');
+  const std::string cut = captured_stderr([&] {
+    grparse::embedding::detail::report_failure(
+        "cpu", grparse::EmbeddingFailureStage::kTokenize, flood, "local embedding inference failed");
+  });
+  require(cut.size() < 4096 && cut.contains("stage=tokenize") && cut.ends_with(" [cut]\n"),
+          "a long vendor message is cut: " + std::to_string(cut.size()) + " bytes");
+}
+
 }  // namespace
 
 int main() {
@@ -264,5 +392,8 @@ int main() {
       verify_invalid_options_and_disabled_engine,
       verify_disabled_is_identical_and_never_calls_engine,
       verify_cancellation_and_bad_engine_replies_are_atomic,
+      verify_a_throwing_engine_is_logged_and_counted_and_stays_generic,
+      verify_a_refused_engine_reply_is_logged_and_counted,
+      verify_a_failure_report_keeps_the_vendor_text_on_the_server,
   });
 }

@@ -76,7 +76,7 @@ CollectorOutcome collect_office_document(
     outcome.code = grpc::StatusCode::UNAVAILABLE;
     return outcome;
   }
-  outcome.warnings = mapper.warnings();
+  outcome.warnings = mapper.typed_warnings();
   outcome.document = mapper.take();
   // The worker echoes the request's document_id on document_info, and the
   // fold names the document after it. That id is a per-call correlation
@@ -92,7 +92,12 @@ CollectorOutcome collect_office_document(
   // The hybrid leg: native office text and tables are exact, so the CV
   // engines add only what the office core cannot see on its own renders —
   // figure regions, their classes, and barcode payloads.
-  enrich_office_document(enrichment, &outcome.document);
+  // A render that leg could not read is the collector's own warning: the
+  // page's figures are absent from this collector's document.
+  OfficeCvReport enriched = enrich_office_document(enrichment, &outcome.document);
+  for (Warning& unreadable : enriched.warnings) {
+    outcome.warnings.push_back(std::move(unreadable));
+  }
   outcome.success = true;
   return outcome;
 }

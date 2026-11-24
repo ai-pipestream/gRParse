@@ -5,6 +5,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <memory>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -29,6 +30,10 @@ using grparse_test::require;
 // typed document back.
 class FakeOfficeService final : public officev1::OfficeRenderService::Service {
  public:
+  // cut_paragraph marks the paragraph the way the worker marks an item the
+  // office core failed part way through reading.
+  explicit FakeOfficeService(bool cut_paragraph = false) : cut_paragraph_(cut_paragraph) {}
+
   grpc::Status StreamPages(
       grpc::ServerContext*,
       grpc::ServerReaderWriter<officev1::StreamPagesResponse,
@@ -74,6 +79,9 @@ class FakeOfficeService final : public officev1::OfficeRenderService::Service {
     run->set_char_offset(0);
     run->set_char_length(12);
     run->set_hyperlink_url("https://example.test/office");
+    if (cut_paragraph_) {
+      paragraph->mutable_gap()->add_problems("paragraph 0 portion 1 extraction failed");
+    }
     stream->Write(event);
 
     event.Clear();
@@ -102,9 +110,13 @@ class FakeOfficeService final : public officev1::OfficeRenderService::Service {
     event.Clear();
     event.mutable_status()->set_state(officev1::RenderStatus::STATE_OK);
     event.mutable_status()->add_warnings("one office warning");
+    if (cut_paragraph_) event.mutable_status()->set_incomplete_items(1);
     stream->Write(event);
     return grpc::Status::OK;
   }
+
+ private:
+  bool cut_paragraph_ = false;
 };
 
 // Rejects the upload with a load-failure status, like the real worker does
@@ -177,6 +189,47 @@ class TruncatingOfficeService final : public officev1::OfficeRenderService::Serv
     stream->Write(event);
     return grpc::Status::OK;
   }
+};
+
+// A one-page document whose page render is bytes no decoder reads.
+class UnreadableRenderOfficeService final : public officev1::OfficeRenderService::Service {
+ public:
+  grpc::Status StreamPages(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<officev1::StreamPagesResponse,
+                               officev1::StreamPagesRequest>* stream) override {
+    officev1::StreamPagesRequest request;
+    while (stream->Read(&request)) {
+    }
+    officev1::StreamPagesResponse event;
+    officev1::DocumentInfo* info = event.mutable_document_info();
+    info->set_document_type("presentation");
+    info->set_page_count(1);
+    officev1::PageRect* page = info->add_page_rects();
+    page->set_width_twips(12240);
+    page->set_height_twips(15840);
+    stream->Write(event);
+
+    event.Clear();
+    officev1::PageImage* image = event.mutable_page_image();
+    image->set_index(0);
+    image->set_width_px(816);
+    image->set_height_px(1056);
+    image->set_dpi(96);
+    image->set_png("these bytes are not a PNG");
+    stream->Write(event);
+
+    event.Clear();
+    event.mutable_status()->set_state(officev1::RenderStatus::STATE_OK);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// Reports no region: the leg under test never gets as far as detection.
+class NoFigureDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override { return {}; }
 };
 
 class ServerFixture {
@@ -263,6 +316,30 @@ void verify_collects_and_folds_typed_stream() {
   require(document.pages_size() == 1, "page rects become page items");
   require(document.origin().filename() == "letter.odt" && document.name() == "letter.odt",
           "the origin names the uploaded file, not the per-call document_id");
+}
+
+// An item the worker could not finish reading reaches the collector's caller
+// as a typed warning, not as words alone: the code, the page and the item
+// are what the coordinator stamps on Document.warnings.
+void verify_an_extraction_gap_is_a_typed_collector_warning() {
+  FakeOfficeService service(/*cut_paragraph=*/true);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-1", "letter.odt", "", std::string(64, 'x'));
+  require(outcome.success, "collection succeeds: " + outcome.error);
+  const grparse::Warning* gap = nullptr;
+  for (const grparse::Warning& warning : outcome.warnings) {
+    if (warning.code == ai::pipestream::document::v1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED) {
+      gap = &warning;
+    }
+  }
+  require(gap != nullptr, "the cut paragraph is a typed warning on the outcome");
+  require(gap->page_no == 1, "the warning names the paragraph's page");
+  require(gap->item_ref == outcome.document.texts(0).text().base().self_ref(),
+          "the warning names the item the paragraph became, got '" + gap->item_ref + "'");
+  require(gap->message.contains("paragraph 0 portion 1 extraction failed"),
+          "the worker's own finding stays in the words: " + gap->message);
+  require(outcome.warnings.size() == 2, "the gap and the worker's free-text note, nothing else");
 }
 
 void verify_load_failure_degrades_to_outcome() {
@@ -386,6 +463,34 @@ void verify_reading_passwords_from_metadata() {
   }
 }
 
+// The CV leg over the page renders is part of the collector's answer: a
+// render it could not read reaches the caller as the collector's own typed
+// warning, not only as figures that are quietly missing.
+void verify_unreadable_page_render_is_a_typed_warning() {
+  UnreadableRenderOfficeService service;
+  ServerFixture server(&service);
+  NoFigureDetector detector;
+  grparse::OfficeCvEnrichment enrichment;
+  enrichment.detector = &detector;
+  const auto outcome = grparse::collect_office_document(
+      server.channel(), "doc-5", "deck.odp", "", "bytes", enrichment);
+  require(outcome.success, "an unreadable render does not fail the collection: " + outcome.error);
+  require(outcome.document.pages().contains(1), "the page itself is in the document");
+  int typed = 0;
+  for (const grparse::Warning& warning : outcome.warnings) {
+    if (warning.code !=
+        ai::pipestream::document::v1::WARNING_CODE_PAGE_RENDER_UNREADABLE) {
+      continue;
+    }
+    ++typed;
+    require(warning.page_no == std::optional<int32_t>(1),
+            "the warning names the page whose render was unreadable: " + warning.message);
+  }
+  require(typed == 1, "one unreadable render is one PAGE_RENDER_UNREADABLE warning, got " +
+                          std::to_string(typed) + " among " +
+                          std::to_string(outcome.warnings.size()) + " warning(s)");
+}
+
 void verify_truncated_stream_is_a_failure() {
   TruncatingOfficeService service;
   ServerFixture server(&service);
@@ -409,11 +514,13 @@ void verify_unreachable_endpoint_is_a_failure() {
 int main() {
   return grparse_test::run_test_main("office-collector-test", {
       verify_collects_and_folds_typed_stream,
+      verify_an_extraction_gap_is_a_typed_collector_warning,
       verify_load_failure_degrades_to_outcome,
       verify_passwords_ride_metadata_in_order,
       verify_encrypted_refusal_without_passwords,
       verify_plain_load_failure_keeps_its_message,
       verify_reading_passwords_from_metadata,
+      verify_unreadable_page_render_is_a_typed_warning,
       verify_truncated_stream_is_a_failure,
       verify_unreachable_endpoint_is_a_failure,
   });

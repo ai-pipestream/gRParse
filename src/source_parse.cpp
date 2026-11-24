@@ -50,6 +50,7 @@
 #include "grparse/schema_version.h"
 #include "grparse/service_version.h"
 #include "grparse/vlm_convert.h"
+#include "model_pass_report.h"
 #include "parse_support.h"
 #include "structure_validation.h"
 #include "vlm_custom_options.h"
@@ -73,16 +74,6 @@ void stamp_origin_mimetype(const std::string& declared_content_type,
     data_counters().mimetypes_sniffed.fetch_add(1, std::memory_order_relaxed);
     data_log("origin " + filename.string() + " mimetype " + resolved.mimetype +
              " from the bytes");
-  }
-}
-
-const char* pdf_class_name(PdfClass pdf_class) {
-  switch (pdf_class) {
-    case PdfClass::kTextBased: return "text-based";
-    case PdfClass::kScanned: return "scanned";
-    case PdfClass::kImageBased: return "image-based";
-    case PdfClass::kMixed: return "mixed";
-    default: return "unknown";
   }
 }
 
@@ -278,7 +269,8 @@ grpc::Status validate_ocr_engine(const pipestream::parse::v1::ConvertDocumentOpt
 
 // One RapidTable model is installed; FAST and ACCURATE both use it. The
 // field is accepted so Docling clients that always set table_mode are not
-// turned away for a distinction this binary does not host.
+// turned away for a distinction this binary does not host, and the response
+// says the value selected nothing (option_notices).
 grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                  const std::string& surface) {
   if (!options.has_table_mode()) return grpc::Status::OK;
@@ -292,7 +284,8 @@ grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOpt
 // PDFs are read here by the PdfBackendService GRPARSE_PDF_BACKEND names, not
 // by Docling's Python backends. Named PdfBackend values are accepted so
 // clients that always set the field are not turned away; the deployment's
-// configured backend reads the document either way.
+// configured backend reads the document either way, and the response says
+// so (option_notices).
 grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                   const std::string& surface) {
   if (!options.has_pdf_backend()) return grpc::Status::OK;
@@ -455,7 +448,8 @@ std::expected<std::vector<ai::pipestream::enrich::v1::VlmHeader>, grpc::Status> 
 // api's prompt, params and headers in the enrich service's typed form).
 // Local and API are mutually exclusive. The local engine's prompt and
 // generation_config are accepted for Docling clients (ScalarValue maps) even
-// though the enrich dial does not forward them.
+// though the enrich dial does not forward them; the response names both as
+// not forwarded (option_notices).
 grpc::Status validate_picture_description_engines(
     const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
   if (options.has_picture_description_local() && options.has_picture_description_api()) {
@@ -1179,6 +1173,60 @@ uint64_t decoded_source_bytes(
 
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
+google::protobuf::RepeatedPtrField<pipestream::parse::v1::OptionNotice> option_notices(
+    const pipestream::parse::v1::ConvertDocumentOptions& options, const OcrPreset& ocr_preset) {
+  namespace parsev1 = pipestream::parse::v1;
+  google::protobuf::RepeatedPtrField<parsev1::OptionNotice> notices;
+  const auto notice = [&notices](std::string path, parsev1::OptionNoticeReason reason,
+                                 std::string message) {
+    parsev1::OptionNotice* one = notices.Add();
+    one->set_option_path(std::move(path));
+    one->set_reason(reason);
+    one->set_message(std::move(message));
+  };
+  // In the order of the fields in ConvertDocumentOptions, which is the order
+  // the response promises.
+  if (options.has_pdf_backend() && options.pdf_backend() != parsev1::PDF_BACKEND_UNSPECIFIED) {
+    notice("pdf_backend", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "pdf_backend selects nothing: the PDF backend this deployment configures "
+           "(GRPARSE_PDF_BACKEND) reads every PDF");
+  }
+  if (options.has_table_mode() &&
+      options.table_mode() != parsev1::TABLE_FORMER_MODE_UNSPECIFIED) {
+    notice("table_mode", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "table_mode selects nothing: one table-structure model serves ACCURATE and FAST");
+  }
+  if (options.has_picture_description_local()) {
+    const auto& local = options.picture_description_local();
+    if (local.has_prompt() && !local.prompt().empty()) {
+      notice("picture_description_local.prompt",
+             parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED,
+             "picture_description_local.prompt is accepted and not forwarded: the enrich "
+             "service that describes pictures is not sent it");
+    }
+    if (!local.generation_config().empty()) {
+      notice("picture_description_local.generation_config",
+             parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED,
+             "picture_description_local.generation_config is accepted and not forwarded: the "
+             "enrich service that describes pictures is not sent it");
+    }
+  }
+  if (options.has_ocr_preset() && !options.ocr_preset().empty() && !ocr_preset.lang.empty()) {
+    notice("ocr_preset", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "ocr_preset '" + ocr_preset.id +
+               "' names languages, which select nothing: the installed OCR models read "
+               "Chinese and English whatever a preset lists");
+  }
+  if (options.picture_classification_custom_config().contains("threshold")) {
+    notice("picture_classification_custom_config.threshold",
+           parsev1::OPTION_NOTICE_REASON_READ_BY_ANOTHER_STAGE,
+           "picture_classification_custom_config.threshold does not reach the figure "
+           "classifier: it is read only as the picture-description confidence gate, and only "
+           "when no picture_description option sets one");
+  }
+  return notices;
+}
+
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface) {
   const grpc::Status retired_status = retired_option_status(options, surface);
@@ -1570,7 +1618,7 @@ class CvCollector {
       if (std::optional<CollectorOutcome> failure = collect_pages(hashed, &pages)) {
         return std::move(*failure);
       }
-      return assemble(pages);
+      return assemble(pages, hashed);
     } catch (...) {
       return outcome_from_exception(std::current_exception());
     }
@@ -1669,19 +1717,30 @@ class CvCollector {
   }
 
   // Folds the collected pages into one document fragment and keeps the
-  // offset rows its text stream produced.
-  CollectorOutcome assemble(const PageSet& collected) const {
+  // offset rows its text stream produced. `tuning` is the one the pages ran
+  // under: its request switches decide which missing pass the document is
+  // told about.
+  CollectorOutcome assemble(const PageSet& collected,
+                            const PageScheduler::OcrTuning& tuning) const {
     CollectorOutcome outcome;
     std::string plain_text;
     AssemblyCursor assembly_cursor;
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset> offsets;
     std::vector<const OcrPage*> assembled_pages;
     assembled_pages.reserve(collected.pages.size());
+    PassDemand pass_demand;
     for (const auto& [page_number, page] : collected.pages) {
       append_page_to_document(*page, page_number, &assembly_cursor,
                               &outcome.document, &plain_text, &offsets,
                               &outcome.warnings);
       assembled_pages.push_back(page.get());
+      pass_demand.note(*page);
+    }
+    // A pass this deployment runs without is said once for the document,
+    // after every page is in, never page by page.
+    for (Warning& warning :
+         disabled_pass_warnings(scheduler_.model_passes(), tuning, pass_demand)) {
+      outcome.warnings.push_back(std::move(warning));
     }
     // A PDF read through several backends claims its vote: one aggregate
     // "protomolt" claim for the document, no-op when nothing voted.
@@ -2054,30 +2113,6 @@ void lend_source_meta(const CollectorOutcome& inspector, CollectorOutcome* cv) {
   }
 }
 
-// Why the routed PDF went to the CV path instead of the inspector's
-// extraction, and how recognition was scoped there.
-std::string cv_route_warning(const PdfClassification& classification,
-                             const PdfRouteDecision& route, bool forced) {
-  return "pdf inspector classified the document as " +
-         std::string(pdf_class_name(classification.pdf_class)) +
-         (classification.encoding_issues
-              ? " with encoding issues in the text layer, so its extraction was not taken"
-              : "") +
-         (classification.empty_body
-              ? "; its extraction carried no body text, so it was not taken"
-              : "") +
-         (!classification.ocr_recommended ? ""
-          : route.force_ocr
-              ? "; it recommended OCR over the text layer, so its extraction was not taken"
-              : "; it recommended OCR for the scanned pages it named, and the other pages "
-                "keep their text layers") +
-         (forced ? "; recognition was forced on every page in place of the embedded layer"
-          : route.ocr_pages.empty()
-              ? "; the CV path's own per-page heuristic decided recognition"
-              : "; recognition restricted to the " + std::to_string(route.ocr_pages.size()) +
-                    " page(s) needing OCR");
-}
-
 // The inspector's own extraction as the leg's result: the fast path, or
 // pipeline NATIVE taking it whatever the classification said.
 CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
@@ -2085,18 +2120,24 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
                                            const PdfRouteDecision& route) {
   PdfParseResult fast = parsed;
   if (inputs.previews) {
-    attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
-                         [&inputs] {
-                           return inputs.call.cancelled() ||
-                                  std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                         },
-                         inputs.inbound_deadline);
+    // The request asked for page images: the ones that could not be rendered
+    // ride the leg's warnings, so their absence is not the only sign.
+    for (Warning& missing : attach_page_previews(
+             inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+             [&inputs] {
+               return inputs.call.cancelled() ||
+                      std::chrono::system_clock::now() >= inputs.inbound_deadline;
+             },
+             inputs.inbound_deadline, inputs.tuning.passwords)) {
+      fast.outcome.warnings.push_back(std::move(missing));
+    }
   }
   if (!route.fast_path) {
     // NATIVE asked for the text layer as it is; say what the models would
     // have been run for, so a caller can tell a thin result from a thin
     // document.
-    fast.outcome.warnings.push_back(
+    fast.outcome.warnings.push_back(Warning(
+        pipestream::document::v1::WARNING_CODE_TEXT_LAYER_TAKEN_AS_IS,
         "pipeline NATIVE took the pdf collector's extraction although the inspector "
         "classified the document as " +
         std::string(pdf_class_name(parsed.classification.pdf_class)) +
@@ -2104,7 +2145,7 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
                                                : "") +
         (parsed.classification.empty_body ? " and its extraction carried no body text" : "") +
         (parsed.classification.ocr_recommended ? " and recommended OCR for it" : "") +
-        "; no layout, OCR, or table-structure model ran");
+        "; no layout, OCR, or table-structure model ran"));
   }
   return fast.outcome;
 }
@@ -2145,8 +2186,10 @@ CollectorOutcome route_pdf_leg(const ParseInputs& inputs, const CvCollector& run
     record_collector_call(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
                           collector_call_status_for(outcome.success, outcome.code),
                           cv_elapsed_ns, 0);
-    outcome.warnings.push_back("pdf collector failed (" + parsed.outcome.error +
-                               "); fell back to the in-process CV path");
+    outcome.warnings.push_back(
+        Warning(pipestream::document::v1::WARNING_CODE_COLLECTOR_FALLBACK,
+                "pdf collector failed (" + parsed.outcome.error +
+                    "); fell back to the in-process CV path"));
     return outcome;
   }
   PageScheduler::OcrTuning routed_tuning = inputs.tuning;
@@ -2305,17 +2348,39 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_deny = inputs.picture_description_deny;
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
-  std::vector<ChartCandidate> item_crops = enrich_item_crops(
+  CodeFormulaCrops item_crops = enrich_item_crops(
       enrich, inputs.bytes, result->document,
       [call, inbound_deadline] {
         return call.cancelled() || std::chrono::system_clock::now() >= inbound_deadline;
       },
       inbound_deadline);
+  // An item that goes to enrichment without its crop is read from its text
+  // alone; the caller is told which, so two runs can be compared.
+  for (Warning& missing : item_crops.warnings) {
+    result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, std::move(missing));
+  }
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
-                      [call] { return call.cancelled(); }, std::move(item_crops));
-  for (const std::string& warning : derendered.warnings) {
+                      [call] { return call.cancelled(); }, std::move(item_crops.crops));
+  for (const Warning& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
+  }
+}
+
+// The AcroForm step's warnings join the parse under the CV collector, the
+// part of gRParse that reads a PDF through its backend. A backend repeats
+// what it has to say about a page on every call that touches the page, so
+// a warning the CV leg already raised in the same words is not said twice.
+void add_form_widget_warnings(std::vector<Warning> warnings, CoordinatorResult* result) {
+  for (Warning& warning : warnings) {
+    const bool already_said = std::ranges::any_of(result->warnings, [&warning](const auto& entry) {
+      return entry.first == pipestream::parse::v1::COLLECTOR_GRPARSE_CV &&
+             entry.second == warning;
+    });
+    if (already_said) continue;
+    result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                  std::move(warning));
+    record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
   }
 }
 
@@ -2323,10 +2388,8 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
 // under the collector that raised it, so nothing the collectors reported is
 // dropped.
 void stamp_collector_warnings(CoordinatorResult* result) {
-  for (const auto& [collector, text] : result->warnings) {
-    auto* warning = result->document.add_warnings();
-    warning->mutable_source()->set_collector(collector_name(collector));
-    warning->set_message(text);
+  for (const auto& [collector, warning] : result->warnings) {
+    stamp_warning(warning, collector_name(collector), result->document.add_warnings());
   }
 }
 
@@ -2377,10 +2440,11 @@ grpc::Status parse_source(const ParseCall& call,
     // A name and policy gate only: every kind this server runs is the one
     // RapidOCR set, which reads Chinese and English whatever the preset's
     // lang says, so the resolved preset selects nothing further
-    // (ocr_preset_policy.h).
-    if (auto ocr = ocr_policy.resolve(request.options(), surface); !ocr.has_value()) {
-      return ocr.error();
-    }
+    // (ocr_preset_policy.h); a preset that names languages is one of the
+    // options the response reports as not applied.
+    auto ocr = ocr_policy.resolve(request.options(), surface);
+    if (!ocr.has_value()) return ocr.error();
+    parsed->option_notices = option_notices(request.options(), *ocr);
   }
   auto picture_description =
       request_picture_description_call(request.options(), *chart_extraction, surface);
@@ -2557,13 +2621,11 @@ grpc::Status parse_source(const ParseCall& call,
       // grpc-lighton-ocr has no Collector value of its own: its warnings
       // name it directly, the way its items' CollectorSource does.
       if (report.engine == VlmBodyEngine::kLightonOcr) {
-        for (const std::string& warning : report.warnings) {
-          auto* stamped = result.document.add_warnings();
-          stamped->mutable_source()->set_collector(kLightonCollectorName);
-          stamped->set_message(warning);
+        for (const Warning& warning : report.warnings) {
+          stamp_warning(warning, kLightonCollectorName, result.document.add_warnings());
         }
       } else {
-        for (const std::string& warning : report.warnings) {
+        for (const Warning& warning : report.warnings) {
           result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_VLM, warning);
         }
       }
@@ -2576,31 +2638,32 @@ grpc::Status parse_source(const ParseCall& call,
       if (call.cancelled()) {
         return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
       }
-      const bool repaired_text =
-          repair.has_value() &&
-          run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-      (void)repaired_text;
+      if (repair.has_value()) run_repair_pass(&result.document, *repair);
       derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs,
                                     &result);
       // The VLM body gets AcroForm widgets only when the request asks:
       // unset keeps this path's output as it was.
       if (pdf && form_fields_requested && !call.cancelled()) {
-        if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                              &result.document)) {
-          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                       std::move(*warning));
-          record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
-        }
+        add_form_widget_warnings(
+            fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline, &result.document),
+            &result);
       }
       if (!pdf && form_fields_requested) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                     "extract_form_fields: the input is not a PDF, so it has "
-                                     "no AcroForm widgets to read");
+        result.warnings.emplace_back(
+            pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+            Warning(pipestream::document::v1::WARNING_CODE_OPTION_NOT_APPLICABLE,
+                    "extract_form_fields: the input is not a PDF, so it has no AcroForm "
+                    "widgets to read"));
         record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
       }
       const grpc::Status structure_status = check_structure(
           result.document, structure, surface, &parsed->structure_findings);
       if (!structure_status.ok()) return structure_status;
+      // The offset table, as on the collector path below: derived from the
+      // final document, so the response's rows and the chunker's spans name
+      // the items this document carries. The CV collector did not run, so
+      // there are no per-item read sources to lay over it.
+      parsed->offsets = chunking::derive_offsets(result.document);
       stamp_collector_warnings(&result);
       parsed->filename = requested_name;
       parsed->result = std::move(result);
@@ -2621,6 +2684,24 @@ grpc::Status parse_source(const ParseCall& call,
                           surface + ": pipeline NATIVE needs the pdf collector "
                                     "(GRPARSE_PDF_TARGET) for PDF input and does not "
                                     "apply to raster input");
+    }
+    // do_table_structure and do_picture_classification name passes of the
+    // CV path. Set to true on a document that path may read (planned
+    // outright, or behind the pdf routing leg), they are a request this
+    // deployment cannot honour when the pass is off, and the caller hears
+    // that instead of an OK document without it. NATIVE never reaches the
+    // models, so there is nothing to refuse there.
+    const bool cv_may_read =
+        !inputs.native_pipeline &&
+        (routed.pdf_routing ||
+         std::ranges::find(routed.ids, pipestream::parse::v1::COLLECTOR_GRPARSE_CV) !=
+             routed.ids.end());
+    if (cv_may_read) {
+      if (grpc::Status refused =
+              refuse_disabled_passes(request.options(), scheduler.model_passes(), surface);
+          !refused.ok()) {
+        return refused;
+      }
     }
     parsed->collectors_ran = true;
     CoordinatorResult result = run_collectors(
@@ -2644,19 +2725,18 @@ grpc::Status parse_source(const ParseCall& call,
     // (pdf_form_widgets.h). Appending to the arenas leaves the offset table
     // below describing the same items.
     if (!pdf && form_fields_requested) {
-      result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                   "extract_form_fields: the input is not a PDF, so it has no "
-                                   "AcroForm widgets to read");
+      result.warnings.emplace_back(
+          pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+          Warning(pipestream::document::v1::WARNING_CODE_OPTION_NOT_APPLICABLE,
+                  "extract_form_fields: the input is not a PDF, so it has no AcroForm "
+                  "widgets to read"));
       record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
     }
     if (pdf && !form_fields_off && !call.cancelled()) {
-      if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                            &result.document,
-                                                            run_cv.computed_sha256())) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                     std::move(*warning));
-        record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
-      }
+      add_form_widget_warnings(
+          fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline, &result.document,
+                                             run_cv.computed_sha256()),
+          &result);
     }
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.

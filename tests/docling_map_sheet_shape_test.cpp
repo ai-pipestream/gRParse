@@ -3,6 +3,12 @@
 // is empty or holds A1 alone), and a label row over formula cells that
 // display numbers ("=ROW()-1" showing "1") was not marked as the header row
 // because a formula never counted as a quantity. Both are the fold's calls.
+//
+// Code review finding (#400): the fold took the legacy formula arm for every
+// formula cell, so the cached result the worker had sent (the number, the
+// flag, the date) never reached the Document. A formula cell whose result
+// the wire states keeps both: the source in formula_source, the result in
+// the typed arm.
 
 #include <cstdio>
 #include <print>
@@ -20,6 +26,7 @@ namespace officev1 = ai::pipestream::office::v1;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 officev1::StreamPagesResponse info_event(int sheets) {
   officev1::StreamPagesResponse event;
@@ -80,6 +87,18 @@ void formula_cell(officev1::SheetRow* row, int column, const std::string& formul
   cell->set_display(display);
   cell->set_merged_columns(1);
   cell->set_merged_rows(1);
+}
+
+// A formula cell from a worker that states what the formula evaluated to.
+officev1::SheetCell* evaluated_formula_cell(officev1::SheetRow* row, int column,
+                                            const std::string& formula,
+                                            const std::string& display,
+                                            officev1::SheetCellType result, double number = 0) {
+  formula_cell(row, column, formula, display);
+  officev1::SheetCell* cell = row->mutable_cells(row->cells_size() - 1);
+  cell->set_formula_result(result);
+  cell->set_number(number);
+  return cell;
 }
 
 docv1::Document fold(const std::vector<officev1::StreamPagesResponse>& events) {
@@ -162,6 +181,132 @@ void verify_text_formulas_do_not_make_a_header() {
   const docv1::Document document = fold(events);
   const docv1::TableData& data = document.tables(0).data();
   require(!cell_at(data, 0, 0)->column_header(), "text formulas below do not make a header row");
+}
+
+// A formula whose result the wire states keeps its source and its cached
+// result side by side, typed exactly as a value cell's would be.
+void verify_formula_cell_keeps_its_cached_typed_result() {
+  std::vector<officev1::StreamPagesResponse> events{info_event(1)};
+  events.push_back(sheet_event(0, "Sheet1", true, 0, 4));
+  events.push_back(row_event(0, 0));
+  officev1::SheetRow* row = events.back().mutable_sheet_row();
+  evaluated_formula_cell(row, 0, "=SUM(A2:A9)", "$1,234.50", officev1::SHEET_CELL_TYPE_VALUE,
+                         1234.5)
+      ->set_number_format_string("$#,##0.00");
+  // A result of zero is a number like any other: the stated result type is
+  // what tells it from a formula that yields text.
+  evaluated_formula_cell(row, 1, "=A2-A2", "0", officev1::SHEET_CELL_TYPE_VALUE, 0);
+  evaluated_formula_cell(row, 2, "=A2>A3", "TRUE", officev1::SHEET_CELL_TYPE_VALUE, 1)
+      ->set_is_boolean(true);
+  officev1::SheetCell* due = evaluated_formula_cell(row, 3, "=B2+30", "2023-04-15",
+                                                    officev1::SHEET_CELL_TYPE_VALUE, 45031);
+  due->set_is_datetime(true);
+  due->mutable_datetime()->set_year(2023);
+  due->mutable_datetime()->set_month(4);
+  due->mutable_datetime()->set_day(15);
+  evaluated_formula_cell(row, 4, "=A2&\" units\"", "7 units", officev1::SHEET_CELL_TYPE_TEXT);
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  const docv1::TableData& data = document.tables(0).data();
+
+  const docv1::CellValue& total = cell_at(data, 0, 0)->value();
+  require_equal(static_cast<int>(total.kind_case()), static_cast<int>(docv1::CellValue::kNumber),
+                "a numeric formula's cached result is the cell's typed value");
+  require_equal(total.number(), 1234.5, "the cached number is exact, not the display string");
+  require_equal(total.formula_source(), std::string("=SUM(A2:A9)"),
+                "the formula's source rides beside its result");
+  require_equal(total.number_format(), std::string("$#,##0.00"), "the number format is kept");
+  require_equal(cell_at(data, 0, 0)->text(), std::string("$1,234.50"),
+                "the cell text stays the display string");
+
+  const docv1::CellValue& zero = cell_at(data, 0, 1)->value();
+  require(zero.kind_case() == docv1::CellValue::kNumber && zero.number() == 0
+              && zero.formula_source() == "=A2-A2",
+          "a formula that yields 0 is the number 0");
+
+  const docv1::CellValue& flag = cell_at(data, 0, 2)->value();
+  require(flag.kind_case() == docv1::CellValue::kBoolean && flag.boolean()
+              && flag.formula_source() == "=A2>A3",
+          "a logical result is a boolean");
+
+  const docv1::CellValue& when = cell_at(data, 0, 3)->value();
+  require(when.kind_case() == docv1::CellValue::kDatetime && when.datetime().year() == 2023
+              && when.datetime().month() == 4 && when.datetime().day() == 15
+              && when.formula_source() == "=B2+30",
+          "a date result is a civil date");
+
+  const docv1::TableCell* label = cell_at(data, 0, 4);
+  require(label->has_value() && label->value().kind_case() == docv1::CellValue::KIND_NOT_SET
+              && label->value().formula_source() == "=A2&\" units\"",
+          "a text result claims no typed kind and keeps the formula's source");
+  require_equal(label->text(), std::string("7 units"), "the text result is the cell text");
+  require(grparse::docling_integrity_errors(document).empty(), "the fold stays well formed");
+}
+
+// A formula that failed still has a source: the error literal is its
+// result, and the formula that produced it stays beside it.
+void verify_failed_formula_keeps_its_source() {
+  std::vector<officev1::StreamPagesResponse> events{info_event(1)};
+  events.push_back(sheet_event(0, "Sheet1", true, 0, 0));
+  events.push_back(row_event(0, 0));
+  formula_cell(events.back().mutable_sheet_row(), 0, "=1/0", "#DIV/0!");
+  events.back().mutable_sheet_row()->mutable_cells(0)->set_error_code(532);
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  const docv1::CellValue& value = cell_at(document.tables(0).data(), 0, 0)->value();
+  require_equal(value.error(), std::string("#DIV/0!"), "the error literal is the result");
+  require_equal(value.formula_source(), std::string("=1/0"),
+                "the failed formula's source is kept");
+}
+
+// A worker that predates SheetCell.formula_result does not say what a
+// formula evaluated to: number reads 0 for a text result as for a zero, and
+// its date and flag marks followed the column's format, not the result. Such
+// a cell stays on the legacy formula arm rather than claim a guessed value.
+void verify_formula_without_a_stated_result_stays_legacy() {
+  std::vector<officev1::StreamPagesResponse> events{info_event(1)};
+  events.push_back(sheet_event(0, "Sheet1", true, 0, 1));
+  events.push_back(row_event(0, 0));
+  officev1::SheetRow* row = events.back().mutable_sheet_row();
+  formula_cell(row, 0, "=A9", "Ada");
+  formula_cell(row, 1, "=B9", "pending");
+  row->mutable_cells(1)->set_is_datetime(true);
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  const docv1::TableData& data = document.tables(0).data();
+  for (int column : {0, 1}) {
+    const docv1::CellValue& value = cell_at(data, 0, column)->value();
+    require(value.kind_case() == docv1::CellValue::kFormula && !value.has_formula_source(),
+            "a formula with no stated result keeps the legacy formula arm");
+  }
+  require_equal(cell_at(data, 0, 0)->value().formula(), std::string("=A9"),
+                "the legacy arm carries the formula");
+}
+
+// A formula's typed result decides what the header band rule sees: a
+// numeric result is a quantity whatever its display looks like, and a text
+// result is a label.
+void verify_typed_formula_results_shape_the_header_band() {
+  std::vector<officev1::StreamPagesResponse> events{info_event(1)};
+  events.push_back(sheet_event(0, "Sheet1", true, 2, 1));
+  events.push_back(row_event(0, 0));
+  evaluated_formula_cell(events.back().mutable_sheet_row(), 0, "=Setup!A1", "Region",
+                         officev1::SHEET_CELL_TYPE_TEXT);
+  evaluated_formula_cell(events.back().mutable_sheet_row(), 1, "=Setup!B1", "Revenue",
+                         officev1::SHEET_CELL_TYPE_TEXT);
+  for (int data_row : {1, 2}) {
+    events.push_back(row_event(0, data_row));
+    text_cell(events.back().mutable_sheet_row(), 0, data_row == 1 ? "North" : "South");
+    evaluated_formula_cell(events.back().mutable_sheet_row(), 1, "=SUM(C2:F2)", "$1,234.50",
+                           officev1::SHEET_CELL_TYPE_VALUE, 1234.5);
+  }
+  events.push_back(status_event());
+  const docv1::Document document = fold(events);
+  const docv1::TableData& data = document.tables(0).data();
+  require(cell_at(data, 0, 0)->column_header() && cell_at(data, 0, 1)->column_header(),
+          "text formulas over numeric formulas are the header row");
+  require(!cell_at(data, 1, 1)->column_header() && !cell_at(data, 2, 1)->column_header(),
+          "the numeric formula rows are data");
 }
 
 // Sheets and pivots own no rectangle: their provenance names the sheet grid
@@ -261,6 +406,10 @@ int main() {
       verify_empty_sheets_fold_to_empty_tables,
       verify_formula_display_counts_as_a_quantity,
       verify_text_formulas_do_not_make_a_header,
+      verify_formula_cell_keeps_its_cached_typed_result,
+      verify_failed_formula_keeps_its_source,
+      verify_formula_without_a_stated_result_stays_legacy,
+      verify_typed_formula_results_shape_the_header_band,
       verify_sheet_provenance_and_pivot_span,
       verify_sheet_picture_sits_under_its_sheet,
       verify_merge_past_used_range_grows_the_table,

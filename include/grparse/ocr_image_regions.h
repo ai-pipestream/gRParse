@@ -13,6 +13,13 @@ namespace grparse {
 // split into icons, or missed).
 inline constexpr double kImageReadMinPageShare = 0.01;
 
+// Whether ocr_image_rects reads `region` on its own: a picture region at
+// least `min_side` pixels on each side once clipped to the raster. The
+// caller that has to say something about those reads (which pictures were
+// read from a weaker raster) asks the same question the reads were chosen
+// by. Pure.
+bool read_as_picture(const LayoutRegion& region, int raster_width, int raster_height, int min_side);
+
 // The rectangles a page settled by its text layer is OCRed in, in raster
 // pixels, clipped to the raster.
 //

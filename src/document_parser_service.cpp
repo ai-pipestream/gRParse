@@ -146,7 +146,9 @@ uint64_t chunk_charge(
 }
 
 // Everything a chunk response carries beside the chunks: the converted
-// document or the collector failures, the chunker's options, and the time.
+// document or the collector failures, the notices for convert options that
+// were not applied (taken out of `parsed`), the chunker's options, and the
+// time.
 template <typename ChunkRequest>
 void describe_chunks(const ChunkRequest& chunk_request,
                      std::chrono::steady_clock::time_point started, SourceParse* parsed,
@@ -157,6 +159,7 @@ void describe_chunks(const ChunkRequest& chunk_request,
   } else if (!parsed->result.failures.empty()) {
     attach_failures(parsed->result.failures, response);
   }
+  response->mutable_option_notices()->Swap(&parsed->option_notices);
   chunking::fill_chunking_info(chunk_request.chunking_options(),
                                response->mutable_chunking_info());
   response->set_processing_time(
@@ -357,6 +360,12 @@ int task_rank(pipestream::parse::v1::TaskStatus status) {
 // its own lock, so unwatch in OnDone returning means no listener is
 // running into this reactor or ever will again. Finish runs from the
 // constructor or a reaction only, never from the listener.
+//
+// The watcher's place under GRPARSE_MAX_WATCHERS is returned before Finish
+// on every path, so a client that has seen its watch end can open the next:
+// the registry drops it with the terminal status, and a watch that ends
+// early leaves the registry first. Only a cancel the client itself made is
+// known to the client before the server, and so before the place is back.
 template <typename Response>
 class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
  public:
@@ -378,6 +387,7 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
   }
 
   void OnWriteDone(bool ok) override {
+    if (!ok) leave();
     std::lock_guard<std::mutex> lock(mutex_);
     write_in_flight_ = false;
     if (!pending_.empty()) pending_.pop_front();
@@ -389,16 +399,25 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
   }
 
   void OnCancel() override {
+    leave();
     std::lock_guard<std::mutex> lock(mutex_);
     finish_locked(grpc::Status(grpc::StatusCode::CANCELLED, "watch cancelled"));
   }
 
   void OnDone() override {
-    if (tasks_ != nullptr) tasks_->unwatch(token_);
+    // Nearly always a no-op by now. What it still buys is the wait: once it
+    // returns no listener is running into the reactor being deleted.
+    leave();
     delete this;
   }
 
  private:
+  // Ends the subscription, if the task's end has not already. Never called
+  // under mutex_: the listener takes that under the registry's lock.
+  void leave() {
+    if (tasks_ != nullptr) tasks_->unwatch(token_);
+  }
+
   void queue_locked(const TaskRegistry::Status& status) {
     const int rank = task_rank(status.task_status());
     if (rank <= last_rank_ || finished_) return;
@@ -446,6 +465,12 @@ class TaskWatchReactor final : public grpc::ServerWriteReactor<Response> {
 // (a registry listener and a callback alarm). Finish runs once, under the
 // reactor's lock; OnDone first detaches the alarm and unwatches, which
 // waits out a listener or an alarm callback already running.
+//
+// The poll's place under GRPARSE_MAX_WATCHERS is returned before Finish on
+// every path, so a client that has its answer can poll again at once: the
+// registry drops the subscription with the terminal status, a task that had
+// already finished never took one, and a wait that ran out or was cancelled
+// unwatches before it answers.
 class TaskPollReactor final : public grpc::ServerUnaryReactor {
  public:
   TaskPollReactor(TaskRegistry& tasks, const std::string& task_id,
@@ -468,10 +493,13 @@ class TaskPollReactor final : public grpc::ServerUnaryReactor {
     timer_->reactor = this;
     timer_->fallback = subscribed->current;
     alarm_.Set(std::chrono::system_clock::now() + wait,
-               [timer = timer_, tasks = tasks_, task_id](bool fired) {
+               [timer = timer_, tasks = tasks_, token = token_, task_id](bool fired) {
                  if (!fired) return;
-                 // Read before the timer's lock: the registry's lock is
-                 // never taken under it.
+                 // Unwatched and read before the timer's lock: the
+                 // registry's lock is never taken under it. From here the
+                 // listener cannot answer, so the status read next is the
+                 // one this poll answers with unless it already did.
+                 tasks->unwatch(token);
                  const auto status = tasks->status(task_id);
                  std::lock_guard<std::mutex> lock(timer->mutex);
                  if (timer->reactor == nullptr) return;
@@ -480,6 +508,8 @@ class TaskPollReactor final : public grpc::ServerUnaryReactor {
   }
 
   void OnCancel() override {
+    // Before mutex_, which the listener takes under the registry's lock.
+    if (tasks_ != nullptr) tasks_->unwatch(token_);
     std::lock_guard<std::mutex> lock(mutex_);
     if (answered_) return;
     answered_ = true;
@@ -916,8 +946,9 @@ grpc::Status refuse_oversized_response(const google::protobuf::MessageLite& resp
       surface + ": the response is " + std::to_string(bytes) + " bytes, over the " +
           std::to_string(cap) +
           " byte unary response limit (GRPARSE_MAX_RESPONSE_BYTES); convert this document "
-          "over StreamProcessDocument, which delivers the same conversion as a sequence of "
-          "messages, or request fewer to_formats");
+          "over StreamProcessDocument, which delivers the document page by page and names "
+          "on its complete event the steps it does not run (DocumentComplete.omitted_steps), "
+          "or request fewer to_formats");
 }
 
 grpc::Status DocumentParserService::convert_source(
@@ -944,16 +975,21 @@ grpc::Status DocumentParserService::convert_source(
       !outputs.ok()) {
     return outputs;
   }
+  // The conversion's own status is settled before the target runs: the
+  // bundle a target delivers carries the response's status and errors as
+  // they stand here, so whoever reads the bucket sees a partial conversion
+  // as one.
+  converted->set_status(result.failures.empty()
+                            ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                            : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
   // The target delivers the same conversion somewhere else; the response
   // body above keeps everything it already carries either way. It runs
   // here on the conversion's own worker because it compresses and uploads,
   // which is not work a gRPC event thread may be handed.
   const auto& target = request.target();
-  bool delivery_failed = false;
   if (targets::needs_delivery(target)) {
     const grpc::Status delivered =
-        targets::deliver(target, *document, document_response->exports(),
-                         converted->mutable_target_result());
+        targets::deliver(target, *converted, converted->mutable_target_result());
     if (!delivered.ok()) {
       // Delivery is additive, never a replacement: the conversion the
       // response already carries survives a store that would not take it.
@@ -964,7 +1000,7 @@ grpc::Status DocumentParserService::convert_source(
           delivered.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
         return delivered;
       }
-      delivery_failed = true;
+      converted->set_status(pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
       *partial_success = true;
       auto* error = converted->add_errors();
       error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
@@ -973,9 +1009,6 @@ grpc::Status DocumentParserService::convert_source(
       error->set_category(pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
     }
   }
-  converted->set_status(result.failures.empty() && !delivery_failed
-                            ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
-                            : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
   converted->set_processing_time(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
   (*converted->mutable_timings())["total"] = converted->processing_time();
@@ -1120,6 +1153,10 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         summary->mutable_documents()->Swap(rest.mutable_documents());
         summary->set_processing_time(rest.processing_time());
         summary->mutable_chunking_info()->swap(*rest.mutable_chunking_info());
+        if (rest.has_chunk_omissions()) {
+          summary->mutable_chunk_omissions()->Swap(rest.mutable_chunk_omissions());
+        }
+        summary->mutable_option_notices()->Swap(rest.mutable_option_notices());
         return grpc::Status::OK;
       });
 }
@@ -1141,12 +1178,14 @@ grpc::Status DocumentParserService::chunk_hierarchical_source(
   if (!parse_status.ok()) return parse_status;
   const chunking::ChunkOptions options =
       chunking::chunk_options_from(chunk_request.chunking_options());
+  pipestream::parse::v1::RenderOmissions omissions;
   *chunks = chunking::chunk_hierarchical(parsed->result.document, parsed->offsets, options,
-                                         parsed->filename.string());
+                                         parsed->filename.string(), &omissions);
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 
@@ -1169,14 +1208,16 @@ grpc::Status DocumentParserService::chunk_hybrid_source(
       parse_chunk_source(call, chunk_request.sources(), chunk_request.convert_options(),
                          surface, parsed);
   if (!parse_status.ok()) return parse_status;
-  const grpc::Status chunk_status =
-      chunking::chunk_hybrid(parsed->result.document, parsed->offsets,
-                             chunk_request.chunking_options(), parsed->filename.string(), chunks);
+  pipestream::parse::v1::RenderOmissions omissions;
+  const grpc::Status chunk_status = chunking::chunk_hybrid(
+      parsed->result.document, parsed->offsets, chunk_request.chunking_options(),
+      parsed->filename.string(), chunks, &omissions);
   if (!chunk_status.ok()) return chunk_status;
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 

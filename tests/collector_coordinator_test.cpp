@@ -280,8 +280,31 @@ void verify_scatter_gather_merges_additively() {
           "second collector's items renumber past the first");
   require(result.warnings.size() == 1 &&
               result.warnings[0].first == parsev1::COLLECTOR_LIBREOFFICE &&
-              result.warnings[0].second == "office warning",
+              result.warnings[0].second.message == "office warning",
           "warnings stay attributed to their collector");
+}
+
+// A warning that states what it is about keeps all of it through the
+// scatter-gather: the code, the page and the item ride with the words.
+void verify_a_typed_warning_survives_the_scatter_gather() {
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE, [] {
+                    auto outcome = text_outcome("from libreoffice");
+                    outcome.warnings.push_back(
+                        grparse::Warning(docv1::WARNING_CODE_COLLECTOR_FALLBACK, "typed warning")
+                            .on_page(4)
+                            .on_item("#/tables/2"));
+                    return outcome;
+                  }});
+  auto result = grparse::run_collectors(std::move(plan), base_document());
+  require(result.warnings.size() == 1, "the warning reaches the coordinator result");
+  const grparse::Warning& warning = result.warnings[0].second;
+  require(result.warnings[0].first == parsev1::COLLECTOR_LIBREOFFICE,
+          "it stays attributed to its collector");
+  require(warning.code == docv1::WARNING_CODE_COLLECTOR_FALLBACK, "its code survives");
+  require(warning.page_no == 4, "its page survives");
+  require(warning.item_ref == "#/tables/2", "its item survives");
+  require(warning.message == "typed warning", "its words survive");
 }
 
 void verify_failure_isolation() {
@@ -369,6 +392,7 @@ int main() {
       verify_routing,
       verify_office_fanout,
       verify_scatter_gather_merges_additively,
+      verify_a_typed_warning_survives_the_scatter_gather,
       verify_failure_isolation,
       verify_collector_deadline_caps_at_the_sooner_instant,
       verify_document_timeout_caps_inbound_deadline,

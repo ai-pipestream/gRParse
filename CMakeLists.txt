@@ -809,6 +809,7 @@ add_library(grparse_core STATIC
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/workbook_cells.cpp
+  src/warning.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
   src/epub_book.cpp
@@ -857,6 +858,7 @@ add_library(grparse_core STATIC
   src/task_registry.cpp
   src/vlm_custom_options.cpp
   src/option_rejection.cpp
+  src/model_pass_report.cpp
   src/service_health.cpp
   src/service_identity.cpp
   src/structure_validation.cpp
@@ -879,6 +881,7 @@ add_library(grparse_core STATIC
   src/remote_page_source.cpp
   src/pdf_page_frame.cpp
   src/pdf_form_widgets.cpp
+  src/pdf_backend_trailer.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp
@@ -893,6 +896,7 @@ add_library(grparse_core STATIC
   src/prometheus_metrics.cpp
   src/reading_order.cpp
   src/region_geometry.cpp
+  src/table_column_anchor.cpp
   src/table_structure.cpp
   src/table_structure_engine.cpp
   src/targets/bundle.cpp
@@ -998,6 +1002,7 @@ if(BUILD_TESTING)
     streaming-service-test
     table-structure-engine-test
     table-structure-test
+    table-column-anchor-test
     targets-test
     text-geometry-test
     warc-stub-wire-test
@@ -1476,7 +1481,8 @@ if(BUILD_TESTING)
     renderer-base-test
     server-config-test
     target-step-test
-    vtt-renderer-test)
+    vtt-renderer-test
+    warning-test)
   foreach(test_name IN LISTS GRPARSE_UNIT_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")
     add_executable(${test_name} "tests/${test_source}.cpp")
@@ -1547,6 +1553,7 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+include(cmake/LevelZero.cmake)
 include(cmake/TensorRt.cmake)
 # ---- golden corpus: every InputFormat has a fixture, read directly --------
 # Appended as one block. The corpus manifest (tests/golden/

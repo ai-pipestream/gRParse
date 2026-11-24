@@ -184,6 +184,16 @@ std::vector<std::string> deviating_legs(const OcrPage& page,
   return names;
 }
 
+// What a failed sharper render (OcrPage::sharper_render_failure) is called
+// in every warning about it, with the cause when the page kept one.
+std::string sharper_render_failed(const OcrPage& page) {
+  std::string text = "the sharper render for picture OCR failed";
+  if (page.sharper_render_failure.has_value() && !page.sharper_render_failure->cause.empty()) {
+    text += " (" + page.sharper_render_failure->cause + ")";
+  }
+  return text;
+}
+
 }  // namespace
 
 // Embed a captured crop as a data URI.  The pixel size comes from the PNG
@@ -210,8 +220,17 @@ uint64_t utf8_codepoint_count(const std::string& text) {
 
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
                       pipestream::parse::v1::PageData* output,
-                      std::vector<std::string>* warnings) {
+                      std::vector<Warning>* warnings) {
   if (cursor == nullptr || output == nullptr) throw std::invalid_argument("Page assembly output is required");
+  // What the page's source said about its read of the page goes to the
+  // caller as it came, typed. A PDF backend repeats what it has to say
+  // about the document on every page call, so a warning an earlier page
+  // already brought is not said again.
+  if (warnings != nullptr) {
+    for (const Warning& warning : source.source_warnings) {
+      if (std::ranges::find(*warnings, warning) == warnings->end()) warnings->push_back(warning);
+    }
+  }
   output->set_page_number(page_number);
   output->mutable_page_meta()->set_page_no(page_number);
   output->mutable_page_meta()->mutable_size()->set_width(source.width);
@@ -231,6 +250,29 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   }
   if (source.text_layer_replaced) {
     output->mutable_page_meta()->mutable_quality()->set_text_layer_replaced(true);
+  }
+  // The sharper render this page's image areas were to be read from failed,
+  // and they were read from the page raster. Each picture item read that way
+  // says so for itself where it is emitted below. The other reads are the
+  // PDF's own image placements: their lines join the page as ordinary text
+  // and no item stands for them, so the page says it for those.
+  if (source.sharper_render_failure.has_value() && warnings != nullptr) {
+    const size_t reads = source.sharper_render_failure->reads;
+    const auto pictures = static_cast<size_t>(
+        std::ranges::count_if(source.regions, [](const LayoutRegion& region) {
+          return region.label == "picture" && region.read_at_page_resolution;
+        }));
+    if (reads > pictures) {
+      const size_t others = reads - pictures;
+      warnings->push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+                  "page " + std::to_string(page_number) + ": " + sharper_render_failed(source) +
+                      "; " + std::to_string(others) +
+                      (others == 1 ? " image area that is no picture item was"
+                                   : " image areas that are no picture item were") +
+                      " read from the page raster at page resolution")
+              .on_page(page_number));
+    }
   }
   // Multi-backend reconciliation (consensus mode only): the page's word
   // links to the other backends' streams ride onto the wire as transport
@@ -305,8 +347,34 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
       provenance->set_page_no(page_number);
       set_region_bounding_box(region, provenance->mutable_bbox());
       fill_table_data(source, region, table->mutable_data());
-      add_collector_source(assign_table_lines(source, region).structured ? "slanet-plus" : "geometry",
-                           region.confidence, table->mutable_source());
+      const bool structured = assign_table_lines(source, region).structured;
+      add_collector_source(structured ? "slanet-plus" : "geometry", region.confidence,
+                           table->mutable_source());
+      // The structure model's decode stopped before the end of this table.
+      // Its cells alone read like a complete decode, so the cut is said
+      // here, typed, on the page and on the item; and a table whose rows
+      // past the cut were built from line geometry names that producer
+      // beside the model.
+      if (region.structure_cut.has_value()) {
+        const bool extended = region.structured_cells.size() > *region.structure_cut;
+        if (structured && extended) {
+          add_collector_source("geometry", region.confidence, table->mutable_source());
+        }
+        if (warnings != nullptr) {
+          const char* outcome =
+              !structured ? "it placed no cell, so the table is read from line geometry alone"
+              : extended  ? "the rows past its last cell were placed by line geometry, not by "
+                            "the model"
+                          : "no row was added past its last cell";
+          warnings->push_back(
+              Warning(pipestream::document::v1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED,
+                      "page " + std::to_string(page_number) + ": table " + self_ref +
+                          ": the structure model's decode was cut off before the end of the "
+                          "table; " + outcome)
+                  .on_page(page_number)
+                  .on_item(self_ref));
+        }
+      }
       floats.push_back({&region, self_ref, table->mutable_captions(), table->mutable_children(),
                         table->mutable_parent()});
       body_order.push_back(self_ref);
@@ -322,6 +390,19 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     provenance->set_page_no(page_number);
     set_region_bounding_box(region, provenance->mutable_bbox());
     add_collector_source(layout_model, region.confidence, picture->mutable_source());
+    // This picture's text was to be read from a sharper render of the page;
+    // that render failed and the text came from the page raster. The item
+    // reads like any other picture, so the weaker read is said here, typed,
+    // on the page and on the item.
+    if (region.read_at_page_resolution && warnings != nullptr) {
+      warnings->push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+                  "page " + std::to_string(page_number) + ": picture " + self_ref + ": " +
+                      sharper_render_failed(source) +
+                      "; its text was read from the page raster at page resolution")
+              .on_page(page_number)
+              .on_item(self_ref));
+    }
     if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
     if (!region.figure_classes.empty()) {
       // Meta is the export contract: the canonical dialect reads item meta
@@ -657,7 +738,7 @@ void append_page_to_document(
     const OcrPage& source, int page_number, AssemblyCursor* cursor,
     pipestream::document::v1::Document* document, std::string* plain_text,
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset>* text_offsets,
-    std::vector<std::string>* warnings) {
+    std::vector<Warning>* warnings) {
   if (document == nullptr || plain_text == nullptr) {
     throw std::invalid_argument("Document assembly output is required");
   }

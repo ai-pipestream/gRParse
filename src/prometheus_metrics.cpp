@@ -115,8 +115,29 @@ struct AtomicCollectorMetrics {
   }
 };
 
+struct AtomicEmbeddingMetrics {
+  std::array<std::atomic<uint64_t>, kEmbeddingFailureStages.size()> failures{};
+
+  EmbeddingMetrics snapshot() const {
+    EmbeddingMetrics out;
+    for (size_t i = 0; i < failures.size(); ++i) {
+      out.failures[i] = failures[i].load(std::memory_order_relaxed);
+    }
+    return out;
+  }
+
+  void reset() {
+    for (auto& count : failures) {
+      count.store(0, std::memory_order_relaxed);
+    }
+  }
+};
+
 std::array<AtomicDoctypeMetrics, kMetricDoctypes.size()> g_doctypes{};
 std::array<AtomicCollectorMetrics, kMetricCollectors.size()> g_collectors{};
+std::array<std::atomic<uint64_t>, kConsensusEvents.size()> g_consensus{};
+std::array<AtomicEmbeddingMetrics, kMetricEmbeddingBackends.size()> g_embeddings{};
+std::atomic<uint64_t> g_executor_task_exceptions{0};
 
 size_t doctype_index(std::string_view name) {
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -130,6 +151,13 @@ std::optional<size_t> collector_index(std::string_view name) {
   if (name == "confluence-storage") name = "confluence";
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     if (kMetricCollectors[i] == name) return i;
+  }
+  return std::nullopt;
+}
+
+std::optional<size_t> embedding_backend_index(std::string_view name) {
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    if (kMetricEmbeddingBackends[i] == name) return i;
   }
   return std::nullopt;
 }
@@ -300,6 +328,22 @@ const CollectorMetrics& PipelineTelemetry::collector(std::string_view name) cons
   return collectors[*index];
 }
 
+EmbeddingMetrics& PipelineTelemetry::embedding(std::string_view backend) {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown embedding backend metric label");
+  }
+  return embeddings[*index];
+}
+
+const EmbeddingMetrics& PipelineTelemetry::embedding(std::string_view backend) const {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown embedding backend metric label");
+  }
+  return embeddings[*index];
+}
+
 PipelineTelemetry pipeline_telemetry() {
   PipelineTelemetry out;
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -308,6 +352,13 @@ PipelineTelemetry pipeline_telemetry() {
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out.collectors[i] = g_collectors[i].snapshot();
   }
+  for (size_t i = 0; i < kConsensusEvents.size(); ++i) {
+    out.consensus[i] = g_consensus[i].load(std::memory_order_relaxed);
+  }
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    out.embeddings[i] = g_embeddings[i].snapshot();
+  }
+  out.executor_task_exceptions = g_executor_task_exceptions.load(std::memory_order_relaxed);
   return out;
 }
 
@@ -318,6 +369,17 @@ void reset_pipeline_telemetry() {
   for (auto& collector : g_collectors) {
     collector.reset();
   }
+  for (auto& count : g_consensus) {
+    count.store(0, std::memory_order_relaxed);
+  }
+  for (auto& embedding : g_embeddings) {
+    embedding.reset();
+  }
+  g_executor_task_exceptions.store(0, std::memory_order_relaxed);
+}
+
+void record_executor_task_exception() {
+  g_executor_task_exceptions.fetch_add(1, std::memory_order_relaxed);
 }
 
 void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
@@ -353,6 +415,17 @@ void record_collector_warnings(std::string_view collector, uint64_t count) {
 
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector, uint64_t count) {
   record_collector_warnings(metric_collector_name(collector), count);
+}
+
+void record_consensus_event(ConsensusEvent event, uint64_t count) {
+  g_consensus[static_cast<size_t>(event)].fetch_add(count, std::memory_order_relaxed);
+}
+
+void record_embedding_failure(std::string_view backend, EmbeddingFailureStage stage) {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) return;
+  g_embeddings[*index].failures[static_cast<size_t>(stage)].fetch_add(
+      1, std::memory_order_relaxed);
 }
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code) {
@@ -552,6 +625,10 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   counter(out, "grparse_pages_ocr_total", "Pages that went through OCR.", metrics.pages_recognized);
   counter(out, "grparse_pages_layout_total", "Pages that went through layout region detection.",
           metrics.pages_layout_labelled);
+  counter(out, "grparse_pages_picture_ocr_at_page_resolution_total",
+          "Pages whose image areas were read from the page raster because the sharper render "
+          "at the OCR image DPI failed.",
+          metrics.pages_picture_ocr_at_page_resolution);
   counter(out, "grparse_tables_structured_total",
           "Table regions that went through structure recognition.", metrics.tables_structured);
   counter(out, "grparse_figures_classified_total",
@@ -695,6 +772,11 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   out << "grparse_page_latency_seconds_sum " << seconds(metrics.page_latency_ns) << '\n'
       << "grparse_page_latency_seconds_count " << cumulative << '\n';
 
+  counter(out, "grparse_executor_task_exceptions_total",
+          "Exceptions a call executor task let escape to its worker; each is a task that "
+          "failed outside its own error handling.",
+          telemetry.executor_task_exceptions);
+
   out << "# HELP grparse_documents_completed_total Completed document conversions by doctype "
          "and status.\n"
          "# TYPE grparse_documents_completed_total counter\n";
@@ -770,6 +852,27 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out << "grparse_collector_warnings_total{collector=\"" << kMetricCollectors[i] << "\"} "
         << telemetry.collectors[i].warnings << '\n';
+  }
+
+  out << "# HELP grparse_pdf_consensus_events_total What consensus reads of PDFs went "
+         "without, by kind: backends that could not open a document, failed a page or were "
+         "taken out of a vote, page-count disagreements, and pages decided by fewer backends "
+         "than configured.\n"
+         "# TYPE grparse_pdf_consensus_events_total counter\n";
+  for (size_t i = 0; i < kConsensusEvents.size(); ++i) {
+    out << "grparse_pdf_consensus_events_total{kind=\"" << kConsensusEvents[i] << "\"} "
+        << telemetry.consensus[i] << '\n';
+  }
+
+  out << "# HELP grparse_embedding_failures_total Embedding batches that failed, by backend "
+         "and the stage that failed.\n"
+         "# TYPE grparse_embedding_failures_total counter\n";
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    for (size_t s = 0; s < kEmbeddingFailureStages.size(); ++s) {
+      out << "grparse_embedding_failures_total{backend=\"" << kMetricEmbeddingBackends[i]
+          << "\",stage=\"" << kEmbeddingFailureStages[s] << "\"} "
+          << telemetry.embeddings[i].failures[s] << '\n';
+    }
   }
 
   return out.str();

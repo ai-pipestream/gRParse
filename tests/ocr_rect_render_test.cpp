@@ -1,11 +1,13 @@
 // Proves the second, sharper view of a document used to OCR image
 // rectangles: the source opens once, on first use, and never after a cancel;
 // a failed open or render gives an empty raster (the caller then reads the
-// page raster); cancel reaches an open source; rectangles and OCR polygons
-// map between the base raster and the sharper one.
+// page raster) and says why, so that weaker read can be reported, while a
+// cancel says nothing; cancel reaches an open source; rectangles and OCR
+// polygons map between the base raster and the sharper one.
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -60,6 +62,71 @@ void verify_open_failures_and_early_cancel() {
   require(early.render(1).empty() && opens == 0, "a cancel before first use never opens the source");
 }
 
+// A source that runs a hook inside its render and then fails, the way a
+// backend call aborted by the request's cancel does.
+class AbortedSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int) const override {
+    if (on_render) on_render();
+    throw std::runtime_error("PDF backend call cancelled");
+  }
+  std::function<void()> on_render;
+};
+
+// The caller reads the page raster when a render comes back empty. It can
+// only say so if the renderer tells a failure (the source did not open, the
+// render threw or was empty) from a cancel, and hands the reason on. An open
+// that failed is failed for every later page, so each of them says so too.
+void verify_a_failed_render_says_why_and_a_cancel_does_not() {
+  auto fake = std::make_shared<FakeSource>();
+  grparse::OcrRectRenderer renderer([&] { return fake; }, 200.0, 300.0);
+  std::string failure;
+  require(!renderer.render(1, &failure).empty() && failure.empty(),
+          "a render that succeeds reports no failure: " + failure);
+  require(renderer.render(3, &failure).empty() && failure.contains("render failed"),
+          "a render that throws reports the source's own words: '" + failure + "'");
+
+  grparse::OcrRectRenderer none([] { return std::shared_ptr<grparse::PageSource>(); }, 200.0, 300.0);
+  std::string unopened;
+  require(none.render(1, &unopened).empty() && !unopened.empty(),
+          "a source that does not open is a failure, not a silence");
+
+  grparse::OcrRectRenderer throwing(
+      []() -> std::shared_ptr<grparse::PageSource> { throw std::runtime_error("backend down"); }, 200.0, 300.0);
+  std::string first_page;
+  std::string later_page;
+  require(throwing.render(1, &first_page).empty() && first_page.contains("backend down"),
+          "an open that throws reports why: '" + first_page + "'");
+  require(throwing.render(2, &later_page).empty() && later_page.contains("backend down"),
+          "and every later page of the document reports it again: '" + later_page + "'");
+
+  class BlankSource final : public grparse::PageSource {
+   public:
+    int page_count() const override { return 1; }
+    cv::Mat render_page(int) const override { return {}; }
+  };
+  grparse::OcrRectRenderer blank([] { return std::make_shared<BlankSource>(); }, 200.0, 300.0);
+  std::string empty_render;
+  require(blank.render(1, &empty_render).empty() && !empty_render.empty(),
+          "a render that comes back empty is a failure too");
+
+  grparse::OcrRectRenderer early([] { return std::make_shared<FakeSource>(); }, 200.0, 300.0);
+  early.cancel();
+  std::string after_cancel;
+  require(early.render(1, &after_cancel).empty() && after_cancel.empty(),
+          "a cancelled renderer reports no failure: '" + after_cancel + "'");
+
+  // The cancel lands while the render is in flight: the backend call it
+  // aborted throws, and that is still the request ending, not a failure.
+  auto aborted = std::make_shared<AbortedSource>();
+  grparse::OcrRectRenderer in_flight([&] { return aborted; }, 200.0, 300.0);
+  aborted->on_render = [&] { in_flight.cancel(); };
+  std::string mid_cancel;
+  require(in_flight.render(1, &mid_cancel).empty() && mid_cancel.empty(),
+          "a render aborted by the cancel reports no failure: '" + mid_cancel + "'");
+}
+
 void verify_rectangles_scale_and_clamp() {
   require(grparse::scaled_rect(cv::Rect(100, 200, 40, 20), 1.5, cv::Size(2550, 3300)) ==
               cv::Rect(150, 300, 60, 30),
@@ -105,6 +172,7 @@ int main() {
   return grparse_test::run_test_main("ocr-rect-render-test", "all checks passed", {
       verify_the_source_opens_once_and_renders_pages,
       verify_open_failures_and_early_cancel,
+      verify_a_failed_render_says_why_and_a_cancel_does_not,
       verify_rectangles_scale_and_clamp,
       verify_reads_come_back_to_the_base_raster,
       verify_the_factory_only_builds_for_a_sharper_pdf_view,

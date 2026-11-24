@@ -1,11 +1,13 @@
 #pragma once
 
 #include <cstdint>
+#include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/figure_classifier.h"
 #include "grparse/layout_engine.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -29,6 +31,14 @@ struct OfficeCvReport {
   // Of those, the ones placed in the body at their provenance position
   // (the rest sit at the end of the body in a stable order).
   int pictures_anchored = 0;
+  // Pages that carry a render the engines could not read (not an inline
+  // PNG, not base64, over the pixel cap, or not decodable): no figure was
+  // looked for on them. A page with no render at all is not counted; there
+  // was nothing to read.
+  int pages_unreadable = 0;
+  // One WARNING_CODE_PAGE_RENDER_UNREADABLE per such page, naming it, in
+  // page order.
+  std::vector<Warning> warnings;
 };
 
 // Runs layout detection, figure classification, and barcode decoding over a
@@ -43,8 +53,10 @@ struct OfficeCvReport {
 // the document already has a picture (the office core's own drawing, or an
 // earlier detection) is dropped rather than doubled; every figure kept is
 // then placed in the body at its provenance position
-// (document_reading_order.h) rather than appended. Pages without an image,
-// or whose image cannot be decoded, are skipped.
+// (document_reading_order.h) rather than appended. A page without a render
+// is skipped; so is a page whose render cannot be read, and that one is
+// reported (OfficeCvReport::warnings), because its figures are missing from
+// the document for a reason the caller cannot see otherwise.
 OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
                                       ai::pipestream::document::v1::Document* document);
 

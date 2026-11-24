@@ -5,7 +5,10 @@
 #include <exception>
 #include <limits>
 #include <map>
+#include <memory>
+#include <string>
 #include <utility>
+#include <vector>
 
 #include <opencv2/imgcodecs.hpp>
 
@@ -29,6 +32,9 @@ struct PendingCrop {
   std::string self_ref;
   CodeFormulaBox box;
 };
+
+// The items to crop, by the page each sits on.
+using PendingCrops = std::map<int, std::vector<PendingCrop>>;
 
 }  // namespace
 
@@ -77,12 +83,14 @@ cv::Rect code_formula_pixels(const CodeFormulaBox& box, double page_width, doubl
   return {left, top, right - left, bottom - top};
 }
 
-std::vector<ChartCandidate> code_formula_crops(const docv1::Document& document, bool code,
-                                               bool formula, double expansion,
-                                               const CodeFormulaPageRenderer& render) {
-  std::vector<ChartCandidate> crops;
-  if ((!code && !formula) || !render) return crops;
-  std::map<int, std::vector<PendingCrop>> by_page;
+namespace {
+
+// Every code item without its own image (when `code`) and every formula item
+// (when `formula`) that has a box on a sized page.
+PendingCrops pending_crops(const docv1::Document& document, bool code, bool formula,
+                           double expansion) {
+  PendingCrops by_page;
+  if (!code && !formula) return by_page;
   for (int index = 0; index < document.texts_size(); ++index) {
     const docv1::BaseTextItem& item = document.texts(index);
     std::optional<CodeFormulaBox> box;
@@ -96,55 +104,112 @@ std::vector<ChartCandidate> code_formula_crops(const docv1::Document& document, 
     }
     if (box.has_value()) by_page[box->page_no].push_back({std::move(self_ref), *box});
   }
+  return by_page;
+}
+
+// Renders each page once and cuts its items out of it. An item that ends up
+// without a crop is named in the warnings with its page and the reason.
+CodeFormulaCrops crop_pending(const docv1::Document& document, const PendingCrops& by_page,
+                              const CodeFormulaPageRenderer& render,
+                              const std::function<bool()>& stop) {
+  CodeFormulaCrops result;
+  const auto missing = [&result](int page_no, const PendingCrop& one, const std::string& why) {
+    result.warnings.push_back(Warning(docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING,
+                                      "no crop of " + one.self_ref + " on page " +
+                                          std::to_string(page_no) + " for enrichment: " + why)
+                                  .on_page(page_no)
+                                  .on_item(one.self_ref));
+  };
   for (const auto& [page_no, pending] : by_page) {
-    const cv::Mat raster = render(page_no);
-    if (raster.empty()) continue;
+    // A request that is over leaves its remaining items unwarned: its
+    // status says what happened to it.
+    if (stop && stop()) return result;
+    cv::Mat raster;
+    std::string failure = "the page render came back empty";
+    try {
+      raster = render(page_no);
+    } catch (const std::exception& error) {
+      if (stop && stop()) return result;
+      failure = std::string("the page did not render: ") + error.what();
+    }
+    if (raster.empty()) {
+      for (const PendingCrop& one : pending) missing(page_no, one, failure);
+      continue;
+    }
     const docv1::Size& size = document.pages().at(page_no).size();
     for (const PendingCrop& one : pending) {
       const cv::Rect pixels = code_formula_pixels(one.box, size.width(), size.height(), raster.size());
-      if (pixels.empty()) continue;
+      if (pixels.empty()) {
+        missing(page_no, one, "its box lies outside the page render");
+        continue;
+      }
       std::vector<unsigned char> png;
-      if (!cv::imencode(".png", raster(pixels), png, kPngEncodeParams)) continue;
+      if (!cv::imencode(".png", raster(pixels), png, kPngEncodeParams)) {
+        missing(page_no, one, "the crop could not be encoded as PNG");
+        continue;
+      }
       ChartCandidate crop;
       crop.picture_index = -1;
       crop.self_ref = one.self_ref;
       crop.mimetype = "image/png";
       crop.bytes.assign(png.begin(), png.end());
-      crops.push_back(std::move(crop));
+      result.crops.push_back(std::move(crop));
     }
   }
-  return crops;
+  return result;
 }
 
-std::vector<ChartCandidate> render_code_formula_crops(
+}  // namespace
+
+CodeFormulaCrops code_formula_crops(const docv1::Document& document, bool code, bool formula,
+                                    double expansion, const CodeFormulaPageRenderer& render,
+                                    const std::function<bool()>& stop) {
+  if (!render) return {};
+  return crop_pending(document, pending_crops(document, code, formula, expansion), render, stop);
+}
+
+CodeFormulaCrops render_code_formula_crops(
     const std::shared_ptr<const std::string>& bytes, const docv1::Document& document, bool code,
     bool formula, double expansion, const std::function<bool()>& stop,
     std::chrono::system_clock::time_point deadline) {
   if ((!code && !formula) || bytes == nullptr || !bytes->starts_with("%PDF-")) return {};
+  const PendingCrops pending = pending_crops(document, code, formula, expansion);
+  if (pending.empty()) return {};
   std::shared_ptr<PageSource> source;
+  std::unique_ptr<PageSourceWatch> watch;
   try {
     source = open_in_memory_document(bytes, /*pdf=*/true, kCodeFormulaRenderDpi,
                                      SourceOpening::kOnFirstUse);
-  } catch (const std::exception&) {
-    return {};
+    watch = std::make_unique<PageSourceWatch>(source, deadline, stop);
+    // The opening Probe, made here under the watch so a document that does
+    // not open is told apart from a page of it that does not render.
+    static_cast<void>(source->page_count());
+  } catch (const std::exception& error) {
+    // An open the request's own end cut short is not a missing crop: the
+    // request's status says what happened to it.
+    if (stop && stop()) return {};
+    size_t items = 0;
+    for (const auto& [page_no, on_page] : pending) items += on_page.size();
+    // Said once with the number of items it costs, not once per item: the
+    // failure is the document's, and no item of it is any different.
+    CodeFormulaCrops none;
+    none.warnings.push_back(
+        Warning(docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING,
+                "no code or formula crop could be rendered, the document did not open for "
+                "rendering: " + std::string(error.what()) + "; " + std::to_string(items) +
+                    " item(s) go to enrichment with their text alone")
+            .times(items));
+    return none;
   }
-  if (source == nullptr) return {};
-  const PageSourceWatch watch(source, deadline, stop);
-  return code_formula_crops(document, code, formula, expansion, [&](int page_no) {
-    if (stop && stop()) return cv::Mat();
-    try {
-      return source->render_page(page_no);
-    } catch (const std::exception&) {
-      return cv::Mat();
-    }
-  });
+  return crop_pending(
+      document, pending, [&source](int page_no) { return source->render_page(page_no); }, stop);
 }
 
-std::vector<ChartCandidate> enrich_item_crops(const ChartDerenderOptions& options,
-                                              const std::shared_ptr<const std::string>& bytes,
-                                              const docv1::Document& document,
-                                              const std::function<bool()>& stop,
-                                              std::chrono::system_clock::time_point deadline) {
+CodeFormulaCrops enrich_item_crops(const ChartDerenderOptions& options,
+                                   const std::shared_ptr<const std::string>& bytes,
+                                   const docv1::Document& document,
+                                   const std::function<bool()>& stop,
+                                   std::chrono::system_clock::time_point deadline) {
   // Code and formula items go to the VLM as crops of the rendered page, the
   // way Docling hands them to its code/formula model; without one the enrich
   // service only has the item's text layer to transcribe.

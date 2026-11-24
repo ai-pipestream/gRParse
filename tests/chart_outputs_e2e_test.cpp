@@ -101,7 +101,9 @@ int main() {
     docv1::Document document = chart_document(png);
     const grparse::ChartDerenderReport report =
         grparse::derender_charts(channel, derender, &document);
-    for (const std::string& warning : report.warnings) std::println("warning: {}", warning);
+    for (const grparse::Warning& warning : report.warnings) {
+      std::println("warning: {}", warning.message);
+    }
     std::println("report: candidates={} derendered={} tables={} summaries={} codes={} skipped={}",
                  report.candidates, report.derendered, report.chart_tables,
                  report.chart_summaries, report.chart_codes, report.skipped);

@@ -1,6 +1,8 @@
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -21,6 +23,7 @@ namespace {
 constexpr const char* kQrPayload = "https://github.com/krickert/gRParse/e3";
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 // A detector that reports two figures per page in a different order on
 // every call, the way a real detector's output order is not stable.
@@ -345,6 +348,25 @@ void verify_detections_dedupe_against_existing_pictures() {
           "only the lower figure was added");
 }
 
+// A PNG whose header states `width` x `height` pixels and nothing after it:
+// enough for the pixel cap to read, not enough to decode.
+std::string png_header_only(uint32_t width, uint32_t height) {
+  std::string png("\x89PNG\r\n\x1a\n", 8);
+  png += std::string("\0\0\0\x0d", 4) + "IHDR";
+  for (const uint32_t value : {width, height}) {
+    for (int shift = 24; shift >= 0; shift -= 8) png.push_back(static_cast<char>(value >> shift));
+  }
+  png += std::string("\x08\x02\0\0\0", 5);
+  return png;
+}
+
+std::string png_data_uri(const std::string& bytes) {
+  return "data:image/png;base64," + grparse::encode_base64(bytes.data(), bytes.size());
+}
+
+// A page with no render is skipped and says nothing: there was nothing to
+// read. A page whose render is there but cannot be read is skipped too,
+// and that is a loss the caller is told about, with the page it is about.
 void verify_pages_without_usable_images_are_skipped() {
   WholePageFigureDetector detector;
   grparse::OfficeCvEnrichment enrichment;
@@ -352,15 +374,52 @@ void verify_pages_without_usable_images_are_skipped() {
 
   docv1::Document no_image;
   (*no_image.mutable_pages())[1].set_page_no(1);
-  grparse::enrich_office_document(enrichment, &no_image);
+  const grparse::OfficeCvReport nothing = grparse::enrich_office_document(enrichment, &no_image);
   require(no_image.pictures_size() == 0 && detector.calls == 0,
           "a page without an image is skipped");
+  require(nothing.warnings.empty() && nothing.pages_unreadable == 0,
+          "a page without a render is not a warning");
 
-  docv1::Document bad_uri = office_document_with_qr_page(222, 2220);
-  (*bad_uri.mutable_pages())[1].mutable_image()->set_uri(
-      "data:image/png;base64,not-base64!");
-  grparse::enrich_office_document(enrichment, &bad_uri);
-  require(bad_uri.pictures_size() == 0, "an undecodable image is skipped, not fatal");
+  struct Unreadable {
+    const char* what;
+    std::string uri;
+  };
+  const Unreadable cases[] = {
+      {"a render that is not base64", "data:image/png;base64,not-base64!"},
+      {"a render over the pixel cap", png_data_uri(png_header_only(100000, 100000))},
+      {"a render that does not decode", png_data_uri(png_header_only(64, 64))},
+      {"a render that is not an inline PNG", "https://example.test/slide-1.png"},
+  };
+  for (const Unreadable& one : cases) {
+    docv1::Document document = office_document_with_qr_page(222, 2220);
+    (*document.mutable_pages())[1].mutable_image()->set_uri(one.uri);
+    const grparse::OfficeCvReport report = grparse::enrich_office_document(enrichment, &document);
+    require(document.pictures_size() == 0,
+            std::string(one.what) + " is skipped, not fatal");
+    require_equal(report.pages_unreadable, 1,
+                  std::string(one.what) + " counts as one unreadable page");
+    require_equal(report.warnings.size(), size_t{1},
+                  std::string(one.what) + " raises one warning");
+    const grparse::Warning& warning = report.warnings[0];
+    require(warning.code == docv1::WARNING_CODE_PAGE_RENDER_UNREADABLE &&
+                warning.page_no == std::optional<int32_t>(1) && !warning.message.empty(),
+            std::string(one.what) + " is typed PAGE_RENDER_UNREADABLE on page 1: " +
+                warning.message);
+  }
+
+  // Beside readable pages, only the unreadable one is named, and the others
+  // are still read.
+  docv1::Document mixed = office_document_with_qr_page(222, 2220);
+  (*mixed.mutable_pages())[2] = mixed.pages().at(1);
+  (*mixed.mutable_pages())[2].set_page_no(2);
+  (*mixed.mutable_pages())[2].mutable_image()->set_uri(png_data_uri(png_header_only(64, 64)));
+  (*mixed.mutable_pages())[3] = mixed.pages().at(1);
+  (*mixed.mutable_pages())[3].set_page_no(3);
+  const grparse::OfficeCvReport report = grparse::enrich_office_document(enrichment, &mixed);
+  require(report.pictures_added == 2 && report.pages_unreadable == 1 &&
+              report.warnings.size() == 1 &&
+              report.warnings[0].page_no == std::optional<int32_t>(2),
+          "the unreadable page among readable ones is the one named");
 }
 
 }  // namespace

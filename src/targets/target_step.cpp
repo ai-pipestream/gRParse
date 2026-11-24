@@ -15,7 +15,6 @@
 #include "../storage/connectors.h"
 
 namespace parsev1 = ai::pipestream::parse::v1;
-namespace docv1 = ai::pipestream::document::v1;
 
 namespace grparse::targets {
 namespace {
@@ -25,10 +24,9 @@ grpc::Status unimplemented(const std::string& name) {
                       "ConvertSource does not implement target '" + name + "'");
 }
 
-grpc::Status deliver_zip(const docv1::Document& document,
-                         const parsev1::DocumentExports& exports,
+grpc::Status deliver_zip(const parsev1::ConvertDocumentResponse& converted,
                          parsev1::TargetResult* result) {
-  result->set_archive(write_zip(build_bundle(document, exports)));
+  result->set_archive(write_zip(build_bundle(converted, result)));
   return grpc::Status::OK;
 }
 
@@ -134,8 +132,8 @@ grpc::Status resolve_s3_credentials(const std::optional<std::string>& access_key
 
 namespace {
 
-grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& document,
-                        const parsev1::DocumentExports& exports,
+grpc::Status deliver_s3(const parsev1::S3Target& target,
+                        const parsev1::ConvertDocumentResponse& converted,
                         parsev1::TargetResult* result) {
   S3Config config;
   config.endpoint = target.endpoint();
@@ -162,7 +160,7 @@ grpc::Status deliver_s3(const parsev1::S3Target& target, const docv1::Document& 
     }
   };
   try {
-    report(upload_bundle(config, build_bundle(document, exports)));
+    report(upload_bundle(config, build_bundle(converted, result)));
   } catch (const std::invalid_argument& incomplete) {
     // The target's own fields, not the store: a caller can fix these.
     return grpc::Status(grpc::StatusCode::INVALID_ARGUMENT, incomplete.what());
@@ -191,13 +189,14 @@ bool needs_delivery(const parsev1::Target& target) {
   }
 }
 
-grpc::Status deliver(const parsev1::Target& target, const docv1::Document& document,
-                     const parsev1::DocumentExports& exports, parsev1::TargetResult* result) {
+grpc::Status deliver(const parsev1::Target& target,
+                     const parsev1::ConvertDocumentResponse& converted,
+                     parsev1::TargetResult* result) {
   switch (target.target_case()) {
     case parsev1::Target::kZip:
-      return deliver_zip(document, exports, result);
+      return deliver_zip(converted, result);
     case parsev1::Target::kS3:
-      return deliver_s3(target.s3(), document, exports, result);
+      return deliver_s3(target.s3(), converted, result);
     case parsev1::Target::kPut:
       return unimplemented("put");
     case parsev1::Target::kPresignedUrl:
@@ -210,7 +209,8 @@ grpc::Status deliver(const parsev1::Target& target, const docv1::Document& docum
         return allowed;
       }
       bool handled = false;
-      return storage::deliver_to_store(target, build_bundle(document, exports), result, &handled);
+      return storage::deliver_to_store(target, build_bundle(converted, result), result,
+                                       &handled);
     }
     case parsev1::Target::kInbody:
     case parsev1::Target::TARGET_NOT_SET:

@@ -107,13 +107,22 @@ class TaskRegistry final {
   // current one, atomically, so no transition falls between them; the
   // token undoes it. NOT_FOUND for an unknown id, RESOURCE_EXHAUSTED naming
   // GRPARSE_MAX_WATCHERS when that many listen already.
+  //
+  // A subscription ends with the task: the registry drops a task's watchers
+  // in the same locked step that tells them its terminal status, so the
+  // place under the cap is free before whoever was told can answer its
+  // client, and a client that has seen its watch end can always start the
+  // next. For the same reason a task that had already finished is answered
+  // with its status and no subscription (token 0), at the cap too: nothing
+  // more will be said about it, so there is nothing to hold a place for.
   struct Subscription {
     Status current;
     uint64_t token = 0;
   };
   std::expected<Subscription, grpc::Status> watch(const std::string& task_id, Listener listener);
   // Removes a subscription; once it returns, its listener is not running
-  // and never runs again. Unknown tokens are ignored.
+  // and never runs again. Unknown tokens, 0 and the token of a subscription
+  // the task's end already dropped among them, are ignored.
   void unwatch(uint64_t token);
 
   // Drops finished tasks that finished at least `older_than` ago and
@@ -156,7 +165,7 @@ class TaskRegistry final {
   // The status as a reader sees it: the queue position filled in while the
   // task waits.
   Status snapshot_locked(const Task& task) const;
-  // Records a terminal transition and tells the watchers.
+  // Records a terminal transition, tells the watchers and drops them.
   void finish_locked(Task& task, const std::string& task_id);
   void notify_locked(const std::string& task_id, const Task& task);
   size_t sweep_locked(Clock::time_point now);

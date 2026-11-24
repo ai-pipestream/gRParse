@@ -25,7 +25,14 @@ std::string fold_word(const std::string& word);
 // production form of the consensus prototype in eval/consensus, which
 // picked the truth-perfect order on every truth document. Targets that
 // cannot load the document drop out; rasters come from the first target
-// that loaded, so target order states raster priority. `opening` says
+// that loaded, so target order states raster priority. A vote that runs
+// short is never silent: page_warnings() carries, typed, each backend that
+// is out of the document (WARNING_CODE_CONSENSUS_BACKEND_FAILED: could not
+// open it, or taken out after repeated page failures), a disagreement on
+// the page count (WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT), and each
+// page decided by fewer backends than were configured
+// (WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED), and every one of them moves
+// grparse_pdf_consensus_events_total (ConsensusEvent). `opening` says
 // whether the legs' Probes run before this returns or on first use. When
 // every leg fails, a cancel fails as cancelled and a backend outage as
 // PdfBackendUnavailable, not as a bad document. `precomputed_sha256`, when

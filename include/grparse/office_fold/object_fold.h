@@ -1,6 +1,8 @@
 // Embedded objects: the OLE payloads a document carries. A formula becomes
-// a formula item, a spreadsheet an inner table, a chart the chart fold's
-// composite, and anything else a picture of its replacement image.
+// a formula item, a spreadsheet an inner table (a workbook with several
+// sheets a group holding one sheet group and table per sheet), a chart the
+// chart fold's composite, and anything else a picture of its replacement
+// image.
 #pragma once
 
 #include <deque>
@@ -43,17 +45,25 @@ class ObjectFold {
     double b = 0;
   };
 
+  // Folds one object that is no chart and reports its gap, if it has one,
+  // against the item it became.
   void emit(const officev1::EmbeddedObject& object, const std::string& parent,
             docv1::ContentLayer layer);
-  void add_formula(const officev1::EmbeddedObject& object,
-                   const ObjectBox& box, const std::string& parent,
-                   docv1::ContentLayer layer);
-  void add_inner_table(const officev1::EmbeddedObject& object,
-                       const ObjectBox& box, const std::string& parent,
-                       docv1::ContentLayer layer);
-  void add_object_picture(const officev1::EmbeddedObject& object,
+  // Each returns the self_ref of the item the object became.
+  std::string add_formula(const officev1::EmbeddedObject& object,
                           const ObjectBox& box, const std::string& parent,
                           docv1::ContentLayer layer);
+  std::string add_inner_table(const officev1::EmbeddedObject& object,
+                              const ObjectBox& box, const std::string& parent,
+                              docv1::ContentLayer layer);
+  std::string add_inner_workbook(const officev1::EmbeddedObject& object,
+                                 const ObjectBox& box,
+                                 const std::string& parent,
+                                 docv1::ContentLayer layer);
+  std::string add_object_picture(const officev1::EmbeddedObject& object,
+                                 const ObjectBox& box,
+                                 const std::string& parent,
+                                 docv1::ContentLayer layer);
 
   DocumentArena& arena_;
   ChartFold& charts_;

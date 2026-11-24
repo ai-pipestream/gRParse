@@ -5,6 +5,7 @@
 #include <chrono>
 #include <cmath>
 #include <functional>
+#include <map>
 #include <memory>
 #include <optional>
 #include <string>
@@ -99,6 +100,26 @@ std::string page_warning_text(uint32_t page_no, const vlmv1::PageWarning& warnin
   if (!warning.message().empty()) text += ": " + warning.message();
   if (!warning.ref().empty()) text += " (" + warning.ref() + ")";
   return text;
+}
+
+// What a consumer can rely on for each of the peer's own page warning codes.
+// A table cut to the peer's row and cell caps keeps its leading rows and
+// nothing after them: that is the collector-limit code, not the
+// table-structure model's cut-off, whose remaining cells come from line
+// geometry. A code this build does not know keeps the peer's words alone.
+docv1::WarningCode warning_code_for(vlmv1::PageWarningCode code) {
+  switch (code) {
+    case vlmv1::PAGE_WARNING_CODE_TABLE_TRUNCATED:
+      return docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+    case vlmv1::PAGE_WARNING_CODE_TABLE_GRID_OMITTED:
+      return docv1::WARNING_CODE_TABLE_GRID_OMITTED;
+    case vlmv1::PAGE_WARNING_CODE_PICTURE_IMAGES_SKIPPED:
+      return docv1::WARNING_CODE_PICTURE_IMAGES_SKIPPED;
+    case vlmv1::PAGE_WARNING_CODE_NEMOTRON_PASS_INCOMPLETE:
+      return docv1::WARNING_CODE_PAGE_PASS_INCOMPLETE;
+    default:
+      return docv1::WARNING_CODE_UNSPECIFIED;
+  }
 }
 
 docv1::CollectorSource vlm_claimant() {
@@ -383,8 +404,14 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   struct Answers {
     int pages_ok = 0;
     int pages_failed = 0;
-    std::vector<std::string> warnings;
+    // The outcome of every page the peer answered, by page number.
+    std::map<int, VlmPageOutcome> outcomes;
+    std::vector<Warning> warnings;
+    // The trailer, once it has arrived.
+    std::optional<vlmv1::ConvertComplete> complete;
     std::optional<std::string> abort_error;
+    // An answer the contract does not allow; it ends the leg.
+    std::optional<std::string> protocol_error;
   } answers;
   std::atomic<bool> reader_aborted{false};
   std::thread reader;
@@ -405,38 +432,95 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   const auto start_reader = [&] {
     reader = std::thread([&] {
       const auto claimant = vlm_claimant();
-      vlmv1::ConvertPagesResponse event;
-      while (stream->Read(&event)) {
+      // Each sent page is answered once. A second answer would merge the
+      // page twice, and an answer for a page outside the span sent belongs
+      // to no page of this document, so either ends the call.
+      const auto claim_page = [&](uint32_t page_no) {
+        std::string why;
+        if (page_no < static_cast<uint32_t>(first) || page_no > static_cast<uint32_t>(last)) {
+          why = " was not sent";
+        } else if (answers.outcomes.contains(static_cast<int>(page_no))) {
+          why = " was answered twice";
+        } else {
+          return true;
+        }
+        answers.protocol_error = "vlm convert: page " + std::to_string(page_no) + why;
+        reader_aborted.store(true);
+        context.TryCancel();
+        return false;
+      };
+      const auto on_event = [&](vlmv1::ConvertPagesResponse& event) {
         if (event.has_page_document()) {
           const vlmv1::PageDocument& page = event.page_document();
+          if (!claim_page(page.page_no())) return;
+          const int page_no = static_cast<int>(page.page_no());
           // A fragment cut to a server cap still merges; the cut is
-          // reported beside it, by code name, with the fragment's own ref.
+          // reported beside it, typed and by page. The fragment's own ref
+          // stays in the words: the merge below renumbers it, so it is not
+          // a self_ref of the merged document.
           for (const vlmv1::PageWarning& warning : page.warnings()) {
-            answers.warnings.push_back(page_warning_text(page.page_no(), warning));
+            answers.warnings.push_back(Warning(warning_code_for(warning.code()),
+                                               page_warning_text(page.page_no(), warning))
+                                           .on_page(page_no));
           }
           docv1::Document fragment = page.document();
           type_generation_stop_reasons(&fragment);
           merge_documents(std::move(fragment), document, claimant);
           ++answers.pages_ok;
+          answers.outcomes[page_no] = {
+              .page_no = page_no, .status = VlmPageStatus::kOk, .error = {}, .raw_text = {}};
         } else if (event.has_page_raw()) {
+          vlmv1::PageRaw* raw = event.mutable_page_raw();
+          if (!claim_page(raw->page_no())) return;
+          const int page_no = static_cast<int>(raw->page_no());
           ++answers.pages_failed;
-          std::string detail = "vlm convert: page " +
-                               std::to_string(event.page_raw().page_no()) + " raw";
-          if (!event.page_raw().error().empty()) detail += ": " + event.page_raw().error();
-          else if (!event.page_raw().text().empty()) detail += " (unmapped text)";
-          answers.warnings.push_back(std::move(detail));
+          std::string detail = "vlm convert: page " + std::to_string(page_no) + " raw";
+          if (!raw->error().empty()) detail += ": " + raw->error();
+          else if (!raw->text().empty()) detail += " (unmapped text)";
+          if (raw->text().empty()) {
+            // A failed model call: there is no model output for the page,
+            // and the peer's own words are all there is to pass on.
+            answers.warnings.push_back(
+                Warning(docv1::WARNING_CODE_PAGE_MODEL_CALL_FAILED, std::move(detail))
+                    .on_page(page_no));
+          } else {
+            // The model answered and the peer could not map it. Its output
+            // is still the model's reading of the page, so it is kept
+            // whole as the page's generation trace instead of dropped.
+            answers.warnings.push_back(
+                Warning(docv1::WARNING_CODE_PAGE_OUTPUT_UNMAPPED, std::move(detail))
+                    .on_page(page_no));
+            docv1::GenerationTrace* trace = document->add_generation_traces();
+            trace->set_page_no(page_no);
+            trace->set_text(raw->text());
+            *trace->mutable_source() = claimant;
+          }
+          answers.outcomes[page_no] = {.page_no = page_no,
+                                       .status = VlmPageStatus::kFailed,
+                                       .error = std::move(*raw->mutable_error()),
+                                       .raw_text = std::move(*raw->mutable_text())};
           if (options.abort_on_error && !answers.abort_error.has_value()) {
-            answers.abort_error = answers.warnings.back();
+            answers.abort_error = answers.warnings.back().message;
             reader_aborted.store(true);
             context.TryCancel();
           }
+        } else if (event.has_complete()) {
+          answers.complete = event.complete();
         }
+      };
+      vlmv1::ConvertPagesResponse event;
+      while (stream->Read(&event)) {
+        // Once an answer has been refused the call is cancelled; events
+        // already in flight are read off and dropped.
+        if (!answers.protocol_error.has_value()) on_event(event);
         event.Clear();
       }
     });
   };
   vlmv1::ConvertPagesRequest frame;
   bool written = true;
+  // The pages the peer was sent, in order: what its answers are held to.
+  std::vector<int> sent_pages;
   // Ends the dial early: the peer is told to stop before Finish, which would
   // otherwise wait for it to finish streaming.
   const auto abandon = [&](grpc::StatusCode code, std::string error) {
@@ -465,7 +549,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " render failed: " + ex.what());
       if (options.abort_on_error) {
-        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back().message);
       }
       continue;
     }
@@ -473,7 +557,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " rendered empty");
       if (options.abort_on_error) {
-        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back().message);
       }
       continue;
     }
@@ -482,7 +566,7 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
       report.warnings.push_back("vlm convert: page " + std::to_string(page_no) +
                                 " PNG encode failed");
       if (options.abort_on_error) {
-        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back());
+        return abandon(grpc::StatusCode::INTERNAL, report.warnings.back().message);
       }
       continue;
     }
@@ -517,7 +601,10 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     image->set_width(static_cast<uint32_t>(raster.cols));
     image->set_height(static_cast<uint32_t>(raster.rows));
     written = stream->Write(frame);
-    if (written) ++report.pages_sent;
+    if (written) {
+      ++report.pages_sent;
+      sent_pages.push_back(page_no);
+    }
   }
   if (!stream) {
     report.error = "vlm convert: no pages could be rasterized";
@@ -529,11 +616,29 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
   const grpc::Status status = stream->Finish();
   report.pages_ok = answers.pages_ok;
   report.pages_failed = answers.pages_failed;
-  for (std::string& warning : answers.warnings) report.warnings.push_back(std::move(warning));
-  if (answers.abort_error.has_value()) {
-    report.error = std::move(*answers.abort_error);
-    report.code = grpc::StatusCode::INTERNAL;
+  for (Warning& warning : answers.warnings) report.warnings.push_back(std::move(warning));
+  // Every sent page gets its outcome. What is left in answers.outcomes
+  // afterwards was answered without having been sent.
+  for (const int page_no : sent_pages) {
+    if (auto answered = answers.outcomes.extract(page_no); !answered.empty()) {
+      report.pages.push_back(std::move(answered.mapped()));
+    } else {
+      report.pages.push_back({.page_no = page_no,
+                              .status = VlmPageStatus::kUnanswered,
+                              .error = {},
+                              .raw_text = {}});
+    }
+  }
+  const auto fail = [&report](grpc::StatusCode code, std::string error) {
+    report.error = std::move(error);
+    report.code = code;
     return report;
+  };
+  if (answers.abort_error.has_value()) {
+    return fail(grpc::StatusCode::INTERNAL, std::move(*answers.abort_error));
+  }
+  if (answers.protocol_error.has_value()) {
+    return fail(grpc::StatusCode::INTERNAL, std::move(*answers.protocol_error));
   }
   if (!written) {
     report.error = "vlm convert: failed to write ConvertPages stream: " + status.error_message();
@@ -546,12 +651,51 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
     report.code = status.error_code();
     return report;
   }
+  // gRPC calls a stream OK when the peer closed it cleanly, whatever it sent
+  // first. Only the trailer says the peer finished what it was sent, so a
+  // stream without one is not a conversion; the lighton leg holds its peer
+  // to the same.
+  if (!answers.complete.has_value()) {
+    return fail(grpc::StatusCode::INTERNAL,
+                "vlm convert: ConvertPages ended without its ConvertComplete trailer");
+  }
+  // A page inside the span whose render failed here never went out.
+  if (!answers.outcomes.empty()) {
+    return fail(grpc::StatusCode::INTERNAL,
+                "vlm convert: page " + std::to_string(answers.outcomes.begin()->first) +
+                    " was not sent");
+  }
+  // A sent page the finished stream never answered is missing from the
+  // document: it is named by page, and under abort_on_error it fails the leg
+  // the way a page the peer reported failed does.
+  for (const VlmPageOutcome& page : report.pages) {
+    if (page.status != VlmPageStatus::kUnanswered) continue;
+    report.warnings.push_back(
+        Warning(docv1::WARNING_CODE_PAGE_UNANSWERED,
+                "vlm convert: page " + std::to_string(page.page_no) + ": not answered")
+            .on_page(page.page_no));
+    if (options.abort_on_error) {
+      return fail(grpc::StatusCode::INTERNAL, report.warnings.back().message);
+    }
+  }
+  // The trailer's own counts are held to the stream they close.
+  const vlmv1::ConvertComplete& complete = *answers.complete;
+  if (complete.pages_started() != static_cast<uint32_t>(report.pages_sent) ||
+      complete.pages_ok() != static_cast<uint32_t>(report.pages_ok) ||
+      complete.pages_failed() != static_cast<uint32_t>(report.pages_failed)) {
+    report.warnings.push_back(Warning(
+        docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH,
+        "vlm convert: ConvertComplete counts " + std::to_string(complete.pages_started()) +
+            " pages started, " + std::to_string(complete.pages_ok()) + " ok and " +
+            std::to_string(complete.pages_failed()) + " failed; " +
+            std::to_string(report.pages_sent) + " were sent, and " +
+            std::to_string(report.pages_ok) + " page documents and " +
+            std::to_string(report.pages_failed) + " page failures arrived"));
+  }
   if (report.pages_ok == 0) {
-    report.error = report.warnings.empty()
-                       ? "vlm convert: peer returned no page documents"
-                       : report.warnings.front();
-    report.code = grpc::StatusCode::INTERNAL;
-    return report;
+    return fail(grpc::StatusCode::INTERNAL,
+                report.warnings.empty() ? "vlm convert: peer returned no page documents"
+                                        : report.warnings.front().message);
   }
   if (raw_heading_depth_format(options.response_format)) {
     normalize_section_header_levels(document);

@@ -230,7 +230,13 @@ std::string join_hyphenated_fragments(std::string_view head, std::string_view ta
 // with a space (or by the hyphen rule, a suspended hyphen keeping its
 // hyphen and the space), provenance, sources, spans and
 // comments carry over, and the sibling is retired from the body and the
-// texts arena with every reference renumbered. Only direct body children
+// texts arena with every reference renumbered. The sibling's typed meta
+// carries over too: entity mentions and ranged alternatives move with the
+// text, keywords and topics join the item's own. A sibling whose meta holds
+// a field that describes that one item's text (a summary, a language label,
+// an alternative reading of the whole item) and that the item before it
+// does not state identically is not merged: the field has no exact place on
+// the joined paragraph, and the pair stays as sent. Only direct body children
 // merge, so a section header, a list, a table or any group between two
 // items keeps them apart. Returns the number of merges, capped by the
 // options.

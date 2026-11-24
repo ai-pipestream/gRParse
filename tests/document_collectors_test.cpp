@@ -1111,7 +1111,7 @@ void verify_epub_book_folds_chapters_and_images() {
   require(book.source_meta().title() == "The Book",
           "a chapter's page title never overrides the book's");
   for (const auto& warning : outcome.warnings) {
-    require(!warning.contains("OPS/plate.svg"), "the image spine item folds cleanly: " + warning);
+    require(!warning.message.contains("OPS/plate.svg"), "the image spine item folds cleanly: " + warning.message);
   }
 }
 
@@ -1319,8 +1319,8 @@ void verify_epub_book_folds_chapters_in_spine_order() {
   }
   int not_xhtml = 0;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("OPS/notes.txt") && warning.contains("is not XHTML")) ++not_xhtml;
-    require(!warning.contains("were not parsed"), "no chapter was cut: " + warning);
+    if (warning.message.contains("OPS/notes.txt") && warning.message.contains("is not XHTML")) ++not_xhtml;
+    require(!warning.message.contains("were not parsed"), "no chapter was cut: " + warning.message);
   }
   require(not_xhtml == 1, "the non-XHTML item is reported once");
 }
@@ -1336,7 +1336,7 @@ void verify_epub_book_without_markup_keeps_the_skeleton() {
           "without the fold the picture keeps its reference");
   bool named = false;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+    if (warning.message.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the degradation names the variable that would fix it");
 }
@@ -1451,7 +1451,7 @@ void verify_email_html_body_without_markup_warns() {
   require(outcome.document.texts_size() == 1, "the fold arrives unchanged");
   bool named = false;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("GRPARSE_MARKUP_TARGET")) named = true;
+    if (warning.message.contains("GRPARSE_MARKUP_TARGET")) named = true;
   }
   require(named, "the missing HTML body names the variable that would fix it");
 }
@@ -1522,7 +1522,7 @@ void verify_epub_book_survives_a_failing_chapter() {
   require(outcome.document.texts_size() == 0, "the rejected chapters contribute nothing");
   int reported = 0;
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains("could not be parsed by the markup collector")) reported++;
+    if (warning.message.contains("could not be parsed by the markup collector")) reported++;
   }
   require(reported == 2, "each rejected chapter is reported");
 }
@@ -2245,9 +2245,14 @@ class FakeWarcService final : public warcv1::WarcService::Service {
   enum class Mode {
     kOk,
     kFramingError,
+    kFramingErrorWithoutPosition,
+    kNotAnArchive,
+    kPayloadReadError,
     kTransportError,
+    kTransportErrorMidStream,
     kTruncated,
     kCharsets,
+    kContentEncoded,
     kRequestBeforeResponse
   };
   explicit FakeWarcService(Mode mode) : mode_(mode) {}
@@ -2275,6 +2280,39 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     }
     std::vector<warcv1::ParseWarcResponse> out;
     warcv1::ParseWarcResponse event;
+    if (mode_ == Mode::kNotAnArchive) {
+      // Bytes with no WARC framing at all, as fastwarc-grpc answers them:
+      // one non-recoverable error with no position, then a clean end.
+      auto* fatal = event.mutable_record_error();
+      fatal->set_stream_pos(0);
+      fatal->set_recoverable(false);
+      fatal->set_message("invalid WARC version line");
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
+    }
+    if (mode_ == Mode::kPayloadReadError) {
+      // The contract's mid-record failure: the error arrives inside the
+      // record's sequence, and the record_end that follows reports the bytes
+      // streamed before it.
+      auto* start = event.mutable_record_start()->mutable_metadata();
+      start->set_record_type(warcv1::WARC_RECORD_TYPE_RESOURCE);
+      start->set_stream_pos(4096);
+      start->set_content_length(23);
+      out.push_back(event);
+      event.Clear();
+      event.mutable_payload_chunk()->set_data("half a pay");
+      out.push_back(event);
+      event.Clear();
+      auto* fatal = event.mutable_record_error();
+      fatal->set_stream_pos(4096);
+      fatal->set_recoverable(false);
+      fatal->set_message("failed to read record payload: unexpected end of file");
+      out.push_back(event);
+      event.Clear();
+      event.mutable_record_end()->set_payload_length(10);
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
+    }
     if (mode_ == Mode::kTruncated) {
       // One textual record past the 64 KiB fold cap, in two chunks.
       auto* start = event.mutable_record_start()->mutable_metadata();
@@ -2323,6 +2361,35 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       record("gbk", "\xC4\xE3\xBA\xC3 ok", 7);
       record("ISO-8859-1", "caf\xE9", 4);
       record("utf-8", std::string(65535, 'a') + "\xC3\xA9", 65537);
+      return send(*stream, out, config.response_batch_size());
+    }
+    if (mode_ == Mode::kContentEncoded) {
+      // Two HTML responses as a crawler stored them: one body still gzip
+      // compressed, as its Content-Encoding says, and one sent as it is.
+      const auto record = [&](uint64_t position, const std::string& encoding,
+                               const std::string& data) {
+        auto* meta = event.mutable_record_start()->mutable_metadata();
+        meta->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
+        meta->set_stream_pos(position);
+        meta->set_is_http(true);
+        meta->set_http_parsed(true);
+        meta->set_http_content_type("text/html");
+        meta->set_content_length(data.size());
+        meta->mutable_http_headers()->set_status_line("HTTP/1.1 200 OK");
+        add_header(meta->mutable_http_headers(), "Content-Type", "text/html");
+        add_header(meta->mutable_http_headers(), "content-encoding", encoding);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_payload_chunk()->set_data(data);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_record_end()->set_payload_length(data.size());
+        out.push_back(event);
+        event.Clear();
+      };
+      // A gzip member's first bytes: magic, deflate, no flags, then data.
+      record(0, "GZIP", std::string("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xcb\x48\xcd\xc9", 14));
+      record(512, "identity", "<p>plain</p>");
       return send(*stream, out, config.response_batch_size());
     }
     if (mode_ == Mode::kRequestBeforeResponse) {
@@ -2378,16 +2445,22 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     out.push_back(event);
     event.Clear();
     if (mode_ == Mode::kRequestBeforeResponse) return send(*stream, out, config.response_batch_size());
+    if (mode_ == Mode::kTransportErrorMidStream) {
+      // The response record arrives whole, then the call dies.
+      send(*stream, out, config.response_batch_size());
+      return grpc::Status(grpc::StatusCode::INTERNAL, "socket went away");
+    }
     auto* skipped = event.mutable_record_error();
     skipped->set_stream_pos(64);
     skipped->set_recoverable(true);
     skipped->set_message("bad http headers");
     out.push_back(event);
     event.Clear();
-    if (mode_ == Mode::kFramingError) {
-      // Terminal by contract: the server sends this last and ends OK.
+    if (mode_ == Mode::kFramingError || mode_ == Mode::kFramingErrorWithoutPosition) {
+      // Terminal by contract: the server sends this last and ends OK. The
+      // contract leaves the position zero when the parser exposes none.
       auto* fatal = event.mutable_record_error();
-      fatal->set_stream_pos(128);
+      fatal->set_stream_pos(mode_ == Mode::kFramingError ? 128 : 0);
       fatal->set_recoverable(false);
       fatal->set_message("warc framing lost");
       out.push_back(event);
@@ -2611,6 +2684,16 @@ void verify_fastwarc_response_supersedes_the_request_record() {
           "the response record supersedes the request record's provenance");
 }
 
+// The last warning of `outcome`, which must carry `code`.
+grparse::Warning require_last_warning(const grparse::CollectorOutcome& outcome,
+                                      docv1::WarningCode code, const std::string& what) {
+  require(!outcome.warnings.empty(), what + ": no warning at all");
+  const grparse::Warning& last = outcome.warnings.back();
+  require(last.code == code,
+          what + ": " + docv1::WarningCode_Name(last.code) + " \"" + last.message + "\"");
+  return last;
+}
+
 void verify_fastwarc_framing_error_keeps_records() {
   FakeWarcService service(FakeWarcService::Mode::kFramingError);
   ServerFixture server(&service);
@@ -2618,9 +2701,66 @@ void verify_fastwarc_framing_error_keeps_records() {
       grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
   require(outcome.success && outcome.document.groups_size() == 1,
           "a non-recoverable framing error keeps the records already folded");
-  require(outcome.warnings.size() == 2 &&
-              outcome.warnings[1].contains("framing error at stream offset 128"),
-          "the framing error surfaces as a warning, not a failure");
+  require(outcome.warnings.size() == 2, "the skipped record and the lost framing both warn");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "lost framing after a folded record is a typed truncation");
+  require(truncated.bytes_kept == uint64_t{128} && !truncated.bytes_total.has_value(),
+          "the offset the framing was lost at is typed, and the archive's size is not known");
+  require(truncated.message.contains("warc framing lost"),
+          "the service's own words stay in the message");
+}
+
+// fastwarc-grpc reports a framing error at position zero: its parser exposes
+// no offset there. A zero after a folded record is "not known", never "kept
+// nothing".
+void verify_fastwarc_framing_error_without_a_position_states_no_offset() {
+  FakeWarcService service(FakeWarcService::Mode::kFramingErrorWithoutPosition);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record before the lost framing is kept");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "lost framing after a folded record is a typed truncation");
+  require(!truncated.bytes_kept.has_value() && !truncated.bytes_total.has_value(),
+          "an offset the service did not report is not stated");
+}
+
+// Bytes that are no archive at all end the stream OK after one framing
+// error. Nothing was read, so there is no document to hand back.
+void verify_fastwarc_lost_framing_without_records_is_a_failure() {
+  FakeWarcService service(FakeWarcService::Mode::kNotAnArchive);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "these bytes are no archive");
+  require(!outcome.success,
+          "an archive that framed no record at all is not an empty success");
+  require(outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "the bytes are what failed, so the leg says INVALID_ARGUMENT");
+  require(outcome.error.contains("invalid WARC version line"),
+          "the service's framing error is the failure's message: " + outcome.error);
+}
+
+// A payload that could not be read to its end closes its record and ends
+// the stream: the record keeps the bytes that arrived and the archive is
+// typed as cut at that record.
+void verify_fastwarc_payload_read_failure_keeps_the_open_record() {
+  FakeWarcService service(FakeWarcService::Mode::kPayloadReadError);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record whose payload failed part way is folded: " + outcome.error);
+  const auto& last_text = outcome.document.texts(outcome.document.texts_size() - 1);
+  require(last_text.text().base().text() == "half a pay",
+          "the payload bytes that arrived before the failure are kept");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "a payload read failure ends the archive there, typed");
+  require(truncated.bytes_kept == uint64_t{4096},
+          "the cut is at the record whose payload failed");
 }
 
 void verify_fastwarc_transport_failure_without_records() {
@@ -2634,6 +2774,25 @@ void verify_fastwarc_transport_failure_without_records() {
           "the transport message survives");
 }
 
+// The records that arrived before the call died are kept, and the caller is
+// told in a typed warning that the stream did not reach its end.
+void verify_fastwarc_transport_failure_after_records_is_typed() {
+  FakeWarcService service(FakeWarcService::Mode::kTransportErrorMidStream);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record that arrived before the failure is kept: " + outcome.error);
+  const grparse::Warning incomplete = require_last_warning(
+      outcome, docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+      "a stream that failed after records is typed as incomplete");
+  require(incomplete.message.contains("socket went away"),
+          "the transport message stays in the warning");
+}
+
+// The cut is a typed warning on the payload's item. The text itself is the
+// kept prefix and nothing else: a sentence about the cut inside it would be
+// chunked and embedded as if the page had said it.
 void verify_fastwarc_truncates_payload_text() {
   FakeWarcService service(FakeWarcService::Mode::kTruncated);
   ServerFixture server(&service);
@@ -2641,13 +2800,21 @@ void verify_fastwarc_truncates_payload_text() {
       grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
   require(outcome.success && outcome.document.groups_size() == 1,
           "the oversized record still folds");
-  const std::string suffix =
-      "\n[fastwarc: payload truncated to the first 65536 of 71680 bytes]";
-  const std::string& payload = outcome.document.texts(5).text().base().text();
-  require(payload.size() == 65536 + suffix.size() &&
-              payload.starts_with(std::string(16, 'a')) &&
-              payload.ends_with(suffix),
-          "the payload folds to the 64 KiB cap with the truncation noted");
+  const auto& payload_item = outcome.document.texts(5).text().base();
+  require(payload_item.text() == std::string(65536, 'a') &&
+              payload_item.orig() == payload_item.text(),
+          "the payload folds to the 64 KiB cap and holds nothing but the payload");
+  for (const auto& text : outcome.document.texts()) {
+    require(!text.text().base().text().contains("truncated"),
+            "no item's text speaks about the truncation");
+  }
+  require(outcome.warnings.size() == 1, "the cut raises one warning");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_TRUNCATED, "a payload cut at the cap is typed");
+  require(truncated.item_ref == payload_item.self_ref(),
+          "the warning names the item that holds the kept prefix: " + truncated.item_ref);
+  require(truncated.bytes_kept == uint64_t{65536} && truncated.bytes_total == uint64_t{71680},
+          "the kept and the full payload sizes are typed");
 }
 
 void verify_fastwarc_payload_text_is_utf8() {
@@ -2667,12 +2834,53 @@ void verify_fastwarc_payload_text_is_utf8() {
   require(payloads[0] == "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD ok",
           "undecoded GBK bytes become U+FFFD, the ASCII around them stays");
   require(payloads[1] == "caf\xC3\xA9", "a declared latin-1 payload is transcoded");
-  require(payloads[2].starts_with(std::string(65535, 'a') + "\n[fastwarc: payload truncated"),
-          "a character split by the cap is dropped, not replaced");
+  require(payloads[2] == std::string(65535, 'a'),
+          "a character split by the cap is dropped, not replaced, and nothing is appended");
   std::string serialized;
   require(outcome.document.SerializeToString(&serialized), "the document serializes");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("charset gbk"),
+  require(outcome.warnings.size() == 2 && outcome.warnings[0].message.contains("charset gbk"),
           "the undecoded charset is named once");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_TRUNCATED, "the record cut at the cap is typed");
+  require(truncated.bytes_kept == uint64_t{65535} && truncated.bytes_total == uint64_t{65537},
+          "bytes_kept counts the bytes the text was made from, without the split character");
+}
+
+// A body stored under a Content-Encoding is compressed bytes, not text.
+// Nothing here decodes it, so it is left out and the record says so, typed;
+// it must not arrive as a run of U+FFFD that reads as the page's text.
+void verify_fastwarc_leaves_an_encoded_payload_out() {
+  FakeWarcService service(FakeWarcService::Mode::kContentEncoded);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 2,
+          "both records fold: " + outcome.error);
+  for (const auto& text : outcome.document.texts()) {
+    require(!text.text().base().text().contains("\xEF\xBF\xBD"),
+            "no compressed byte reaches the document as a replacement character: " +
+                text.text().base().self_ref());
+  }
+  const auto& encoded = outcome.document.groups(0);
+  const std::string& last_ref = encoded.children(encoded.children_size() - 1).ref();
+  const int last = std::stoi(last_ref.substr(last_ref.rfind('/') + 1));
+  require(outcome.document.texts(last).text().base().text() == "payload-length: 14",
+          "the encoded record keeps its metadata items and carries no payload text");
+  require(outcome.warnings.size() == 1, "the one encoded body raises the one warning");
+  const grparse::Warning not_decoded = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_NOT_DECODED,
+      "a body left out for its encoding is typed");
+  require(not_decoded.item_ref == "#/groups/0",
+          "the warning names the record whose payload was left out: " + not_decoded.item_ref);
+  require(not_decoded.message.contains("gzip"),
+          "the encoding is named: " + not_decoded.message);
+  const auto& plain = outcome.document.groups(1);
+  const std::string& plain_ref = plain.children(plain.children_size() - 1).ref();
+  require(outcome.document.texts(std::stoi(plain_ref.substr(plain_ref.rfind('/') + 1)))
+                  .text()
+                  .base()
+                  .text() == "<p>plain</p>",
+          "an identity encoding changes nothing: that body is text");
 }
 
 }  // namespace
@@ -3045,6 +3253,8 @@ void verify_calamine_folds_sheets() {
           "every chunk of the upload reaches the stream");
   require(service.closed() == 0, "the stream leaves no handle to close");
   require(outcome.warnings.empty(), "declared headers produce no inference warning");
+  require(outcome.incomplete_sheets.empty(),
+          "a stream read to its done event leaves no sheet short");
   require_calamine_fold(outcome);
 }
 
@@ -3056,10 +3266,12 @@ void verify_calamine_falls_back_to_handles_on_unimplemented() {
   require(outcome.success, "the handle path succeeds: " + outcome.error);
   require(outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
           "the fallback is recorded in the outcome's protocol");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].contains("ParseWorkbook")
-              && outcome.warnings[0].contains("handle path"),
+  require(outcome.warnings.size() == 1 && outcome.warnings[0].message.contains("ParseWorkbook")
+              && outcome.warnings[0].message.contains("handle path"),
           "the fallback is announced as a warning, never silent");
   require(service.closed() == 1, "the workbook handle is closed on success");
+  require(outcome.incomplete_sheets.empty(),
+          "every sheet's stream ended OK, so none is short");
   require_calamine_fold(outcome);
 }
 
@@ -3070,6 +3282,7 @@ enum class CalamineScript {
   kNoDoneAfterCells,   // one cell, then the stream ends without done
   kNoDoneNoCells,      // metadata, then the stream ends without done
   kExhausted,          // metadata, then RESOURCE_EXHAUSTED
+  kDiesInSecondSheet,  // three sheets: one whole, one cell of the second, UNAVAILABLE
 };
 
 class ScriptedParseWorkbookService final : public calaminev1::CalamineService::Service {
@@ -3083,13 +3296,15 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
     calaminev1::ParseWorkbookRequest frame;
     while (stream->Read(&frame)) {
     }
-    const bool two = script_ == CalamineScript::kFirstSheetFails;
+    const int sheet_count = script_ == CalamineScript::kDiesInSecondSheet ? 3
+                            : script_ == CalamineScript::kFirstSheetFails ? 2
+                            : 1;
     calaminev1::ParseWorkbookResponse event;
-    for (const char* name : {"Alpha", "Beta"}) {
+    for (const char* name : {"Alpha", "Beta", "Gamma"}) {
+      if (event.metadata().metadata().sheets_size() == sheet_count) break;
       calaminev1::Sheet* sheet = event.mutable_metadata()->mutable_metadata()->add_sheets();
       sheet->set_name(name);
       sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
-      if (!two) break;
     }
     stream->Write(event);
     auto range = [&](uint32_t index, auto fill) {
@@ -3122,6 +3337,10 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
         return grpc::Status::OK;
       case CalamineScript::kExhausted:
         return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, "dense-cell budget");
+      case CalamineScript::kDiesInSecondSheet:
+        range(0, one_cell);
+        range(1, one_cell);
+        return grpc::Status(grpc::StatusCode::UNAVAILABLE, "worker died");
     }
     event.Clear();
     event.mutable_done();
@@ -3145,9 +3364,17 @@ class ScriptedParseWorkbookService final : public calaminev1::CalamineService::S
 
 bool has_calamine_warning(const grparse::CollectorOutcome& outcome, const std::string& needle) {
   for (const auto& warning : outcome.warnings) {
-    if (warning.contains(needle)) return true;
+    if (warning.message.contains(needle)) return true;
   }
   return false;
+}
+
+// The names of the sheets the leg says it did not read to the end, in the
+// order it lists them.
+std::vector<std::string> incomplete_sheet_names(const grparse::CollectorOutcome& outcome) {
+  std::vector<std::string> names;
+  for (const auto& sheet : outcome.incomplete_sheets) names.push_back(sheet.name);
+  return names;
 }
 
 grparse::CollectorOutcome run_calamine_script(CalamineScript script, int* handle_calls) {
@@ -3166,6 +3393,9 @@ void verify_calamine_stream_failures() {
           "a sheet after a failed one still folds: " + outcome.error);
   require(has_calamine_warning(outcome, "Alpha failed: cell table corrupt"),
           "the failed sheet is a warning naming it");
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Alpha"} &&
+              outcome.incomplete_sheets[0].reason == "cell table corrupt",
+          "the failed sheet, and only it, is named as not read to the end");
 
   outcome = run_calamine_script(CalamineScript::kOnlySheetFails, &handle_calls);
   require(!outcome.success && outcome.code == grpc::StatusCode::INVALID_ARGUMENT
@@ -3175,6 +3405,13 @@ void verify_calamine_stream_failures() {
   outcome = run_calamine_script(CalamineScript::kNoDoneAfterCells, &handle_calls);
   require(outcome.success && has_calamine_warning(outcome, "without its done event"),
           "a stream cut short after cells is a partial success with a warning");
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Alpha"},
+          "the sheet the stream stopped in is named as not read to the end");
+  for (const auto& warning : outcome.warnings) {
+    require(!warning.message.contains("without its done event") ||
+                warning.code == docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+            "the cut-short stream states its code");
+  }
 
   outcome = run_calamine_script(CalamineScript::kNoDoneNoCells, &handle_calls);
   require(!outcome.success && outcome.code == grpc::StatusCode::UNAVAILABLE,
@@ -3381,6 +3618,190 @@ void verify_calamine_fanout_keeps_its_body_when_the_primary_failed() {
   require(result.document.groups_size() == 2 && result.document.tables_size() == 2 &&
               result.document.named_ranges_size() == 1,
           "with no primary body, the calamine reading is the document");
+}
+
+// The routed libreoffice primary's reading of a workbook: one sheet group
+// per name, each holding a table of two rows it read in full.
+grparse::CollectorOutcome office_workbook_outcome(const std::vector<std::string>& sheets) {
+  grparse::CollectorOutcome outcome;
+  outcome.success = true;
+  docv1::Document& document = outcome.document;
+  document.mutable_body()->set_self_ref("#/body");
+  document.mutable_furniture()->set_self_ref("#/furniture");
+  for (const std::string& name : sheets) {
+    docv1::GroupItem* group = document.add_groups();
+    group->set_self_ref("#/groups/" + std::to_string(document.groups_size() - 1));
+    group->mutable_parent()->set_ref("#/body");
+    group->set_name(name);
+    group->set_label(docv1::GROUP_LABEL_SHEET);
+    document.mutable_body()->add_children()->set_ref(group->self_ref());
+    docv1::TableItem* table = document.add_tables();
+    table->set_self_ref("#/tables/" + std::to_string(document.tables_size() - 1));
+    table->mutable_parent()->set_ref(group->self_ref());
+    table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+    table->add_source()->mutable_collector()->set_collector("libreoffice");
+    group->add_children()->set_ref(table->self_ref());
+    for (int row = 0; row < 2; ++row) {
+      docv1::TableCell* cell = table->mutable_data()->add_table_cells();
+      cell->set_start_row_offset_idx(row);
+      cell->set_end_row_offset_idx(row + 1);
+      cell->set_start_col_offset_idx(0);
+      cell->set_end_col_offset_idx(1);
+      cell->set_row_span(1);
+      cell->set_col_span(1);
+      cell->set_text("libreoffice " + name + " row " + std::to_string(row));
+    }
+    table->mutable_data()->set_num_rows(2);
+    table->mutable_data()->set_num_cols(1);
+  }
+  return outcome;
+}
+
+// Runs the routed workbook plan: the libreoffice reading of `sheets`, then
+// `calamine` as the fan-out leg beside it.
+grparse::CoordinatorResult run_workbook_plan(const std::vector<std::string>& sheets,
+                                             grparse::CollectorOutcome calamine) {
+  std::vector<grparse::PlannedCollector> plan;
+  plan.push_back({parsev1::COLLECTOR_LIBREOFFICE,
+                  [sheets] { return office_workbook_outcome(sheets); }});
+  grparse::PlannedCollector leg;
+  leg.id = parsev1::COLLECTOR_CALAMINE;
+  leg.office_fanout = true;
+  leg.run = [calamine = std::move(calamine)] { return calamine; };
+  plan.push_back(std::move(leg));
+  return grparse::run_collectors(std::move(plan), stamped_base(kXlsxMimetype));
+}
+
+// The sheet table at `index` still holds the two rows libreoffice read, the
+// table names libreoffice alone as its reader, and the caller is told so by
+// code: a calamine warning that names the table and says its cells were
+// not adopted.
+void require_libreoffice_cells_stand(const grparse::CoordinatorResult& result, int index,
+                                     const std::string& sheet) {
+  const docv1::TableItem& table = result.document.tables(index);
+  require(table.data().table_cells_size() == 2 &&
+              table.data().table_cells(0).text() == "libreoffice " + sheet + " row 0" &&
+              table.data().table_cells(1).text() == "libreoffice " + sheet + " row 1",
+          "sheet " + sheet + " keeps the cells libreoffice read in full, found " +
+              std::to_string(table.data().table_cells_size()) + " cell(s)");
+  require(table.source_size() == 1 && table.source(0).collector().collector() == "libreoffice",
+          "sheet " + sheet + " names libreoffice alone as the reader of its cells");
+  bool told = false;
+  for (const auto& [collector, warning] : result.warnings) {
+    if (collector == parsev1::COLLECTOR_CALAMINE &&
+        warning.code == docv1::WARNING_CODE_SHEET_CELLS_NOT_ADOPTED &&
+        warning.item_ref == table.self_ref()) {
+      require(warning.message.contains("'" + sheet + "'"), "the words name the sheet too");
+      told = true;
+    }
+  }
+  require(told, "sheet " + sheet + " has a SHEET_CELLS_NOT_ADOPTED warning on " +
+                    table.self_ref());
+}
+
+// The sheet table at `index` took calamine's one cell, and nothing says its
+// cells were held back.
+void require_calamine_cells_adopted(const grparse::CoordinatorResult& result, int index,
+                                    const std::string& sheet) {
+  const docv1::TableItem& table = result.document.tables(index);
+  require(table.data().table_cells_size() == 1 && table.data().table_cells(0).text() == "42" &&
+              table.source(0).collector().collector() == "calamine",
+          "sheet " + sheet + ", read to its end, takes calamine's cells");
+  for (const auto& [collector, warning] : result.warnings) {
+    require(warning.item_ref != table.self_ref(),
+            "no warning is about sheet " + sheet + ": " + warning.message);
+  }
+}
+
+// A calamine leg that reads a workbook only in part is still a successful
+// leg, but a sheet it did not read to the end is not the sheet: libreoffice
+// read every cell of it, and those cells must stand. Swapping them for the
+// part calamine got through loses cells behind an OK status.
+void verify_calamine_partial_read_keeps_libreoffice_cells() {
+  int handle_calls = 0;
+  // The stream dies inside the second of three sheets. Nothing marks the
+  // end of a sheet's part but the next sheet's first event or the done
+  // event, so the second sheet cannot be told from a complete one by its
+  // cells; the third never started.
+  auto outcome = run_calamine_script(CalamineScript::kDiesInSecondSheet, &handle_calls);
+  require(outcome.success, "a stream cut short after cells is a partial success: " +
+                               outcome.error);
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Beta", "Gamma"},
+          "the sheet the stream stopped in and the one never begun are named");
+  auto result = run_workbook_plan({"Alpha", "Beta", "Gamma"}, std::move(outcome));
+  require(result.succeeded == 2 && result.document.tables_size() == 3,
+          "both legs contribute and the workbook keeps its three sheet tables");
+  require_calamine_cells_adopted(result, 0, "Alpha");
+  require_libreoffice_cells_stand(result, 1, "Beta");
+  require_libreoffice_cells_stand(result, 2, "Gamma");
+
+  // A terminal in-band error ends one sheet's part and the stream goes on:
+  // the failed sheet keeps libreoffice's cells, the one after it is adopted.
+  outcome = run_calamine_script(CalamineScript::kFirstSheetFails, &handle_calls);
+  require(outcome.success, "a sheet after a failed one still folds: " + outcome.error);
+  result = run_workbook_plan({"Alpha", "Beta"}, std::move(outcome));
+  require_libreoffice_cells_stand(result, 0, "Alpha");
+  require_calamine_cells_adopted(result, 1, "Beta");
+}
+
+// The handle path of a server that predates ParseWorkbook: three sheets, of
+// which the first reads whole and the second fails after one cell.
+class DiesInSecondSheetHandleService final : public calaminev1::CalamineService::Service {
+ public:
+  grpc::Status OpenWorkbook(
+      grpc::ServerContext*,
+      grpc::ServerReader<calaminev1::OpenWorkbookRequest>* reader,
+      calaminev1::OpenWorkbookResponse* response) override {
+    calaminev1::OpenWorkbookRequest frame;
+    while (reader->Read(&frame)) {
+    }
+    response->set_workbook_id("wb-3");
+    for (const char* name : {"Alpha", "Beta", "Gamma"}) {
+      calaminev1::Sheet* sheet = response->mutable_metadata()->add_sheets();
+      sheet->set_name(name);
+      sheet->set_visible(calaminev1::SHEET_VISIBLE_VISIBLE);
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status StreamWorksheetRange(
+      grpc::ServerContext*, const calaminev1::StreamWorksheetRangeRequest* request,
+      grpc::ServerWriter<calaminev1::StreamWorksheetRangeResponse>* writer) override {
+    calaminev1::StreamWorksheetRangeResponse event;
+    calaminev1::WorksheetRow* row = event.mutable_rows()->add_rows();
+    row->set_row_index(0);
+    row->add_values()->set_int_value(42);
+    writer->Write(event);
+    if (request->sheet().sheet_index() == 1) {
+      return grpc::Status(grpc::StatusCode::INTERNAL, "sheet read blew up");
+    }
+    return grpc::Status::OK;
+  }
+
+  grpc::Status CloseWorkbook(grpc::ServerContext*,
+                             const calaminev1::CloseWorkbookRequest*,
+                             calaminev1::CloseWorkbookResponse* response) override {
+    response->set_closed(true);
+    return grpc::Status::OK;
+  }
+};
+
+// The handle path stops at the first sheet that fails, so the failed sheet
+// and every sheet after it keep libreoffice's cells.
+void verify_calamine_handle_partial_read_keeps_libreoffice_cells() {
+  DiesInSecondSheetHandleService service;
+  ServerFixture server(&service);
+  auto outcome = grparse::collect_calamine_document(server.channel(), "bytes");
+  require(outcome.success && outcome.protocol == grparse::CollectorProtocol::kLegacyFallback,
+          "a later sheet's failure on the handle path is a partial success: " + outcome.error);
+  require(incomplete_sheet_names(outcome) == std::vector<std::string>{"Beta", "Gamma"},
+          "the failed sheet and the one never asked for are named");
+  const auto result = run_workbook_plan({"Alpha", "Beta", "Gamma"}, std::move(outcome));
+  require(result.succeeded == 2 && result.document.tables_size() == 3,
+          "both legs contribute and the workbook keeps its three sheet tables");
+  require_calamine_cells_adopted(result, 0, "Alpha");
+  require_libreoffice_cells_stand(result, 1, "Beta");
+  require_libreoffice_cells_stand(result, 2, "Gamma");
 }
 
 }  // namespace
@@ -3721,7 +4142,7 @@ void verify_pdf_encoding_issues_defeat_the_fast_path() {
           "the trailer's has_encoding_issues rides the classification");
   bool warned = false;
   for (const auto& warning : result.outcome.warnings) {
-    if (warning.contains("encoding issues")) warned = true;
+    if (warning.message.contains("encoding issues")) warned = true;
   }
   require(warned, "the untrustworthy text layer is warned about");
   const auto route = grparse::route_pdf_by_classification(result.classification);
@@ -3817,7 +4238,7 @@ void verify_pdf_searchable_scan_refuses_the_fast_path() {
           "every empty page of a document that drew invisible text needs OCR");
   bool warned = false;
   for (const auto& warning : result.outcome.warnings) {
-    if (warning.contains("invisible text")) warned = true;
+    if (warning.message.contains("invisible text")) warned = true;
   }
   require(warned, "the invisible text layer is warned about");
   const auto route = grparse::route_pdf_by_classification(result.classification);
@@ -4053,9 +4474,14 @@ int main() {
       verify_fastwarc_captures_web_provenance,
       verify_fastwarc_response_supersedes_the_request_record,
       verify_fastwarc_framing_error_keeps_records,
+      verify_fastwarc_framing_error_without_a_position_states_no_offset,
+      verify_fastwarc_lost_framing_without_records_is_a_failure,
+      verify_fastwarc_payload_read_failure_keeps_the_open_record,
       verify_fastwarc_transport_failure_without_records,
+      verify_fastwarc_transport_failure_after_records_is_typed,
       verify_fastwarc_truncates_payload_text,
       verify_fastwarc_payload_text_is_utf8,
+      verify_fastwarc_leaves_an_encoded_payload_out,
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
       verify_calamine_folds_sheets,
@@ -4066,6 +4492,8 @@ int main() {
       verify_calamine_unreachable_endpoint_degrades,
       verify_calamine_fanout_merges_without_a_second_body,
       verify_calamine_fanout_keeps_its_body_when_the_primary_failed,
+      verify_calamine_partial_read_keeps_libreoffice_cells,
+      verify_calamine_handle_partial_read_keeps_libreoffice_cells,
       verify_pdf_collects_document_classification_and_warnings,
       verify_pdf_scanned_reports_the_ocr_page_set,
       verify_pdf_routing_decision_logic,

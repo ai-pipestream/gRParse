@@ -1,11 +1,14 @@
 #pragma once
 
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <string>
 #include <vector>
 
 #include <opencv2/core.hpp>
+
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -85,12 +88,29 @@ struct LayoutRegion {
   // filled beside them; absent on geometry fallback. Feeds the document's
   // ConfidenceScores.table_score (confidence.h).
   std::optional<float> structure_score = std::nullopt;
+  // Set when the structure model's decode ran out of steps before the end
+  // of the table (TableStructure::truncated): how many of
+  // `structured_cells`, from the front, the model placed. The cells from
+  // that index on were built from line geometry (extend_truncated_table),
+  // which adds none when no text lies under the model's last cell. Absent
+  // when the decode reached its end or no structure model ran. Assembly
+  // turns it into the table's typed warning, so a cut-off decode never
+  // reads like a complete one.
+  std::optional<size_t> structure_cut = std::nullopt;
   // Classifier output sorted by confidence, filled only for figure regions
   // when the figure classifier is active.
   std::vector<FigureClass> figure_classes = {};
   // Barcode payloads decoded from the region crop, filled only for figure
   // regions when barcode decoding triggers (by class or by flag).
   std::vector<BarcodeResult> barcodes = {};
+  // Set on a picture region whose text was to be read from the sharper
+  // render of its page (ocr_rect_render.h) and, that render having failed,
+  // was read from the page raster at its lower resolution. Assembly turns
+  // it into the picture item's typed warning, so the weaker read never
+  // passes for the configured one. False when no sharper render was
+  // configured for the source, when it succeeded, and on every region the
+  // picture read does not cover.
+  bool read_at_page_resolution = false;
 };
 
 // One consensus word linked to the same word in another backend's stream;
@@ -187,6 +207,29 @@ struct OcrPage {
   // Set when replace_broken_text_layer caused this page's embedded layer to
   // be dropped and replaced by full-page OCR. Wire: PageQuality.text_layer_replaced.
   bool text_layer_replaced = false;
+  // What the page's source said about its own read of the page: a PDF
+  // backend that skipped or repaired content, a backend answer whose
+  // trailer totals do not match what arrived. The scheduler copies them
+  // from PageSource::page_warnings() onto the page it delivers, whichever
+  // way the page was read, and the fold hands them to its caller's warnings.
+  std::vector<Warning> source_warnings = {};
+  // The sharper render this page's image reads were to come from
+  // (ocr_rect_render.h) failed, so every one of them was read from the
+  // page raster at its lower resolution instead.
+  struct SharperRenderFailure {
+    // Why, in the PDF backend's own words where it gave any.
+    std::string cause;
+    // How many image areas were read that way: the picture regions that
+    // carry LayoutRegion::read_at_page_resolution, plus the PDF's own
+    // image placements, which stand for no item.
+    size_t reads = 0;
+  };
+  // Absent when the reads came from the sharper render, when the source
+  // has none (a raster input, or an OCR DPI at or below the render DPI),
+  // and when the page had no image area to read. Assembly turns it into
+  // typed warnings: one for each picture item, and one for the page when
+  // reads were made that no picture item stands for.
+  std::optional<SharperRenderFailure> sharper_render_failure = std::nullopt;
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

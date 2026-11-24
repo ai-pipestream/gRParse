@@ -19,6 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/util/json_util.h>
+#include <google/protobuf/util/message_differencer.h>
+
 #include "../src/targets/bundle.h"
 #include "../src/targets/s3_client.h"
 #include "../src/targets/s3_uploader.h"
@@ -38,6 +41,7 @@ namespace targets = grparse::targets;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 // A one-pixel PNG stands in for a page render: the bundle only ever moves the
 // bytes behind a data URI, so their content is irrelevant and their identity
@@ -99,6 +103,22 @@ parsev1::DocumentExports sample_exports(const docv1::Document& document) {
   return exports;
 }
 
+// The response ConvertSource would hold for `document` when its target runs:
+// a successful conversion carrying the document and its exports.
+parsev1::ConvertDocumentResponse sample_conversion(const docv1::Document& document) {
+  parsev1::ConvertDocumentResponse converted;
+  converted.set_status(parsev1::CONVERSION_STATUS_SUCCESS);
+  converted.mutable_document()->set_filename(document.name());
+  *converted.mutable_document()->mutable_doc() = document;
+  *converted.mutable_document()->mutable_exports() = sample_exports(document);
+  return converted;
+}
+
+std::vector<targets::BundleFile> sample_bundle(const docv1::Document& document) {
+  parsev1::TargetResult result;
+  return targets::build_bundle(sample_conversion(document), &result);
+}
+
 const targets::BundleFile& member(const std::vector<targets::BundleFile>& files,
                                   const std::string& path) {
   const auto found = std::ranges::find(files, path, &targets::BundleFile::path);
@@ -111,9 +131,8 @@ const targets::BundleFile& member(const std::vector<targets::BundleFile>& files,
 // bundle: without it an archive's digest says nothing about its contents.
 void verify_bundles_are_reproducible() {
   const docv1::Document document = sample_document("the same document");
-  const parsev1::DocumentExports exports = sample_exports(document);
-  const std::string first = targets::write_zip(targets::build_bundle(document, exports));
-  const std::string second = targets::write_zip(targets::build_bundle(document, exports));
+  const std::string first = targets::write_zip(sample_bundle(document));
+  const std::string second = targets::write_zip(sample_bundle(document));
   require(first == second, "two bundles of one document must be byte-identical");
   require(targets::sha256_hex(first) == targets::sha256_hex(second),
           "two bundles of one document must hash equal");
@@ -121,8 +140,7 @@ void verify_bundles_are_reproducible() {
           "the archive must start with a ZIP local file header");
 
   const docv1::Document changed = sample_document("a different document");
-  const std::string other =
-      targets::write_zip(targets::build_bundle(changed, sample_exports(changed)));
+  const std::string other = targets::write_zip(sample_bundle(changed));
   require(targets::sha256_hex(other) != targets::sha256_hex(first),
           "a changed document must change the archive");
 }
@@ -131,13 +149,14 @@ void verify_bundles_are_reproducible() {
 // writes them.
 void verify_bundle_carries_the_canonical_file_set() {
   const docv1::Document document = sample_document("members");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
   for (const auto& path : {"document.json", "document.pb", "exports/markdown.md",
-                           "exports/text.txt", "manifest.json", "pages/page_0001.png",
-                           "pages/page_0002.png", "pictures/pic_0001.png"}) {
+                           "exports/text.txt", "manifest.json", "manifest.pb",
+                           "pages/page_0001.png", "pages/page_0002.png",
+                           "pictures/pic_0001.png", "response.pb"}) {
     member(files, path);
   }
-  require(files.size() == 8, "the bundle carries exactly its own members, not more");
+  require(files.size() == 10, "the bundle carries exactly its own members, not more");
   require(std::ranges::is_sorted(files, {}, &targets::BundleFile::path),
           "bundle members must be sorted by path");
   require(member(files, "pages/page_0001.png").bytes == fake_image(1),
@@ -154,8 +173,77 @@ void verify_bundle_carries_the_canonical_file_set() {
           "an export the request never asked for must not appear");
 }
 
-// A very small scanner over the manifest: it is written by hand, in one fixed
-// shape, so reading it back needs no JSON parser.
+// Whether `path` is one of the manifest's own two forms, which no manifest
+// describes.
+bool is_manifest(const std::string& path) {
+  return path == "manifest.json" || path == "manifest.pb";
+}
+
+// The bundle's typed index, read back the way a program reads it.
+parsev1::BundleManifest bundled_manifest(const std::vector<targets::BundleFile>& files) {
+  parsev1::BundleManifest manifest;
+  require(manifest.ParseFromString(member(files, "manifest.pb").bytes),
+          "manifest.pb must parse as a BundleManifest");
+  return manifest;
+}
+
+// The index of a bundle is a typed message, manifest.pb: a reader gets every
+// member's path, digest and size from fields, with no JSON to parse.
+void verify_the_manifest_is_a_typed_message() {
+  const docv1::Document document = sample_document("typed manifest");
+  const auto files = sample_bundle(document);
+  const parsev1::BundleManifest manifest = bundled_manifest(files);
+
+  require(manifest.generator().starts_with("grparse/"),
+          "the manifest names its generator: " + manifest.generator());
+  require_equal(manifest.schema_version(), static_cast<uint32_t>(targets::kManifestSchemaVersion),
+                "the manifest names its schema version");
+  int described = 0;
+  for (const auto& file : files) {
+    if (is_manifest(file.path)) continue;
+    require(described < manifest.files_size(), "the manifest leaves out '" + file.path + "'");
+    const parsev1::BundleMember& listed = manifest.files(described++);
+    require_equal(listed.path(), file.path, "the manifest lists members in bundle order");
+    require_equal(listed.sha256(), targets::sha256_hex(file.bytes),
+                  "the manifest's digest for '" + file.path + "' must be the member's own");
+    require_equal(listed.size_bytes(), uint64_t{file.bytes.size()},
+                  "the manifest's size for '" + file.path + "' must be the member's own");
+  }
+  require_equal(manifest.files_size(), described,
+                "the manifest describes the other members and neither of its own forms");
+  require_equal(static_cast<size_t>(described) + 2, files.size(),
+                "the bundle holds the manifest's two forms beside what it describes");
+}
+
+// manifest.json is for people and is the typed manifest, rendered: read back
+// through protobuf's JSON mapping it is the message manifest.pb holds, so
+// the two can never state different things.  A member of no bytes still
+// states its size, as the JSON manifest always has.
+void verify_the_json_manifest_says_what_the_typed_manifest_says() {
+  const docv1::Document document = sample_document("two forms");
+  parsev1::ConvertDocumentResponse converted = sample_conversion(document);
+  converted.mutable_document()->mutable_exports()->set_html("");
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(converted, &result);
+  require(member(files, "exports/html.html").bytes.empty(),
+          "the requested export that rendered nothing is an empty member");
+
+  const std::string& json = member(files, "manifest.json").bytes;
+  parsev1::BundleManifest from_json;
+  const auto parsed = google::protobuf::util::JsonStringToMessage(json, &from_json);
+  require(parsed.ok(), "manifest.json must be the JSON form of a BundleManifest: " +
+                           std::string(parsed.message()));
+  require(google::protobuf::util::MessageDifferencer::Equals(from_json, bundled_manifest(files)),
+          "manifest.json and manifest.pb must state the same manifest");
+  require(json.contains("{\"path\":\"exports/html.html\",\"sha256\":\"" +
+                        targets::sha256_hex("") + "\",\"size_bytes\":0}"),
+          "an empty member keeps its size in manifest.json: " + json);
+}
+
+// A very small scanner over manifest.json.  It reads the one fixed shape the
+// JSON manifest has had since before it was rendered from a message (keys in
+// this order, no whitespace, sizes as bare numbers), so it also holds that
+// shape still for whoever reads the file without a schema.
 std::string field_after(std::string_view text, size_t* cursor, std::string_view key,
                         bool quoted) {
   const size_t start = text.find(key, *cursor);
@@ -171,18 +259,19 @@ std::string field_after(std::string_view text, size_t* cursor, std::string_view 
 // member's own.
 void verify_manifest_describes_every_member() {
   const docv1::Document document = sample_document("manifest");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
   const std::string manifest = member(files, "manifest.json").bytes;
 
   require(manifest.contains("\"generator\":\"grparse/"),
           "the manifest names its generator: " + manifest);
   require(manifest.contains("\"schema_version\":1"), "the manifest names its schema version");
-  require(!manifest.contains("manifest.json"), "the manifest must not describe itself");
+  require(!manifest.contains("manifest.json") && !manifest.contains("manifest.pb"),
+          "the manifest must not describe either of its own forms");
 
   size_t cursor = 0;
   size_t described = 0;
   for (const auto& file : files) {
-    if (file.path == "manifest.json") continue;
+    if (is_manifest(file.path)) continue;
     const std::string path = field_after(manifest, &cursor, "\"path\":\"", true);
     const std::string digest = field_after(manifest, &cursor, "\"sha256\":\"", true);
     const std::string size = field_after(manifest, &cursor, "\"size_bytes\":", false);
@@ -193,7 +282,249 @@ void verify_manifest_describes_every_member() {
             "the manifest's size for '" + path + "' must be the member's own");
     ++described;
   }
-  require(described + 1 == files.size(), "the manifest describes every other member");
+  require(described + 2 == files.size(), "the manifest describes every other member");
+
+  // The whole text, byte for byte, as the hand-built manifest spelled it:
+  // whoever reads manifest.json without a schema sees no change.
+  std::string expected = "{\"files\":[";
+  for (const auto& file : files) {
+    if (is_manifest(file.path)) continue;
+    if (expected.back() == '}') expected += ',';
+    expected += "{\"path\":\"" + file.path + "\",\"sha256\":\"" +
+                targets::sha256_hex(file.bytes) + "\",\"size_bytes\":" +
+                std::to_string(file.bytes.size()) + "}";
+  }
+  expected += "],\"generator\":\"" + bundled_manifest(files).generator() +
+              "\",\"schema_version\":1}";
+  require_equal(manifest, expected, "manifest.json keeps its exact shape");
+}
+
+// A picture of the document carrying `uri`, with `mimetype` as the ImageRef's
+// own declaration.
+void add_picture(docv1::Document* document, const std::string& mimetype, const std::string& uri) {
+  auto* picture = document->add_pictures();
+  picture->set_self_ref("#/pictures/" + std::to_string(document->pictures_size() - 1));
+  picture->mutable_parent()->set_ref("#/body");
+  picture->set_label(docv1::DOC_ITEM_LABEL_PICTURE);
+  picture->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  picture->mutable_image()->set_mimetype(mimetype);
+  picture->mutable_image()->set_uri(uri);
+}
+
+std::string data_uri(const std::string& mimetype, const std::string& bytes) {
+  return "data:" + mimetype + ";base64," + grparse::encode_base64(bytes.data(), bytes.size());
+}
+
+bool has_member(const std::vector<targets::BundleFile>& files, const std::string& path) {
+  return std::ranges::find(files, path, &targets::BundleFile::path) != files.end();
+}
+
+// The bundle's own account of the conversion, read back the way a reader of
+// the bucket reads it.
+parsev1::ConvertDocumentResponse bundled_response(const std::vector<targets::BundleFile>& files) {
+  parsev1::ConvertDocumentResponse response;
+  require(response.ParseFromString(member(files, "response.pb").bytes),
+          "response.pb must parse as a ConvertDocumentResponse");
+  return response;
+}
+
+// A reader of the bucket has only the bundle. A conversion that lost a leg
+// must look partial there too, and the chunks, findings, read quality and
+// offset table the request paid for must be in it, as typed messages.
+void verify_the_bundle_carries_the_conversions_status_and_outputs() {
+  const docv1::Document document = sample_document("partial");
+  parsev1::ConvertDocumentResponse converted = sample_conversion(document);
+  converted.set_status(parsev1::CONVERSION_STATUS_PARTIAL_SUCCESS);
+  auto* error = converted.add_errors();
+  error->set_component_type(parsev1::COMPONENT_TYPE_PIPELINE);
+  error->set_module_name("enrich");
+  error->set_error_message("the enrich leg was unavailable");
+  error->set_category(parsev1::FAILURE_CATEGORY_TIMEOUT);
+  auto* chunk = converted.add_chunks();
+  chunk->set_filename("sample.pdf");
+  chunk->set_text("partial");
+  chunk->add_doc_items("#/texts/0");
+  auto* finding = converted.add_structure_findings();
+  finding->set_rule(parsev1::STRUCTURE_RULE_DEPRECATED_FURNITURE_TREE);
+  finding->set_self_ref("#/furniture");
+  converted.mutable_confidence()->set_mean_score(0.5);
+  auto* offset = converted.add_text_offsets();
+  offset->set_self_ref("#/texts/0");
+  offset->set_utf_end(7);
+  auto* notice = converted.add_option_notices();
+  notice->set_option_path("table_mode");
+  notice->set_reason(parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION);
+  notice->set_message("one table-structure model serves every table_mode");
+  converted.set_processing_time(1.25);
+  (*converted.mutable_timings())["total"] = 1.25;
+  (*converted.mutable_profiling())["total"].set_count(1);
+
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(converted, &result);
+  const parsev1::ConvertDocumentResponse response = bundled_response(files);
+  require_equal(static_cast<int>(response.status()),
+                static_cast<int>(parsev1::CONVERSION_STATUS_PARTIAL_SUCCESS),
+                "the bundle states the conversion's status");
+  require_equal(response.errors_size(), 1, "the bundle carries the conversion's errors");
+  require_equal(response.errors(0).module_name(), "enrich", "the error names its module");
+  require_equal(static_cast<int>(response.errors(0).category()),
+                static_cast<int>(parsev1::FAILURE_CATEGORY_TIMEOUT),
+                "the error keeps its typed category");
+  require_equal(response.document().filename(), "sample.pdf", "the bundle names its source");
+  require_equal(response.chunks_size(), 1, "the bundle carries the requested chunks");
+  require_equal(response.chunks(0).text(), "partial", "a chunk keeps its text");
+  require_equal(response.structure_findings_size(), 1, "the bundle carries the findings");
+  require_equal(response.structure_findings(0).self_ref(), "#/furniture",
+                "a finding keeps the item it is about");
+  require(response.has_confidence() && response.confidence().mean_score() == 0.5,
+          "the bundle carries the read quality");
+  require_equal(response.text_offsets_size(), 1, "the bundle carries the offset table");
+  require_equal(response.text_offsets(0).utf_end(), uint64_t{7}, "an offset row keeps its span");
+  require_equal(response.option_notices_size(), 1,
+                "the bundle carries the options the conversion did not apply");
+  require(response.option_notices(0).option_path() == "table_mode" &&
+              response.option_notices(0).reason() ==
+                  parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+          "a notice keeps its option and its typed reason");
+
+  // What other members already hold is not repeated, and the clock stays
+  // out: a timing in the bundle would make two runs over one document
+  // disagree byte for byte.
+  require(!response.document().has_doc(), "the document is document.pb, not a second copy");
+  require(!response.document().has_exports(), "the exports are their own members");
+  require(response.processing_time() == 0 && response.timings().empty() &&
+              response.profiling().empty(),
+          "the bundle carries no timing");
+  converted.set_processing_time(7.5);
+  (*converted.mutable_timings())["total"] = 7.5;
+  parsev1::TargetResult again;
+  require(targets::write_zip(targets::build_bundle(converted, &again)) ==
+              targets::write_zip(files),
+          "a slower run of the same conversion must produce the same archive");
+  require(member(files, "manifest.json").bytes.contains("\"path\":\"response.pb\""),
+          "the manifest describes response.pb like every other member");
+}
+
+// An image the document only refers to, or whose payload does not decode,
+// has no bytes to write. The bundle must say which images it left out, in
+// the target result the caller reads and in the bundle itself.
+void verify_an_image_the_bundle_cannot_write_is_reported() {
+  docv1::Document document = sample_document("left out");
+  (*document.mutable_pages())[2].mutable_image()->set_uri("https://example.test/pages/2.png");
+  add_picture(&document, "image/png", "/OEBPS/images/cover.png");
+  add_picture(&document, "image/png", "data:image/png;base64,@@not base64@@");
+
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(sample_conversion(document), &result);
+  require(has_member(files, "pages/page_0001.png") && has_member(files, "pictures/pic_0001.png"),
+          "the images the document embeds are still written");
+  require(std::ranges::none_of(files,
+                               [](const targets::BundleFile& file) {
+                                 return file.path.starts_with("pages/page_0002") ||
+                                        file.path.starts_with("pictures/pic_0002") ||
+                                        file.path.starts_with("pictures/pic_0003");
+                               }),
+          "an image with no bytes contributes no member");
+
+  require_equal(result.image_issues_size(), 3, "every image left out is reported");
+  const auto& page = result.image_issues(0);
+  require(page.has_page_no() && page.page_no() == 2, "pages are reported first, by page number");
+  require_equal(static_cast<int>(page.reason()),
+                static_cast<int>(parsev1::BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED),
+                "a referenced page image is reported as not embedded");
+  const auto& referenced = result.image_issues(1);
+  require(referenced.has_picture_index() && referenced.picture_index() == 1,
+          "a picture is reported by its index in the document");
+  require_equal(static_cast<int>(referenced.reason()),
+                static_cast<int>(parsev1::BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED),
+                "a referenced picture is reported as not embedded");
+  require_equal(referenced.declared_mimetype(), "image/png",
+                "the report keeps the type the document declares");
+  require(!referenced.has_path(), "an image left out names no member");
+  const auto& malformed = result.image_issues(2);
+  require(malformed.has_picture_index() && malformed.picture_index() == 2,
+          "the malformed picture is reported by its index");
+  require_equal(static_cast<int>(malformed.reason()),
+                static_cast<int>(parsev1::BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE),
+                "a payload that is not base64 is reported as undecodable");
+
+  // The bucket's reader gets the same list as the RPC's caller.
+  const parsev1::ConvertDocumentResponse response = bundled_response(files);
+  require_equal(response.target_result().image_issues_size(), 3,
+                "response.pb lists the images the bundle left out");
+  require_equal(response.target_result().SerializeAsString(), result.SerializeAsString(),
+                "response.pb and the target result report the same images");
+
+  // The list is one bundle's: building again into the same result restates
+  // it instead of doubling it.
+  targets::build_bundle(sample_conversion(document), &result);
+  require_equal(result.image_issues_size(), 3, "a second bundle replaces the first one's list");
+
+  // The same report through the step a request actually runs.
+  parsev1::Target target;
+  target.mutable_zip();
+  parsev1::TargetResult delivered;
+  require(targets::deliver(target, sample_conversion(document), &delivered).ok(),
+          "a zip target with an image left out still delivers");
+  require_equal(delivered.image_issues_size(), 3, "the delivery reports the images left out");
+}
+
+// A member's extension is a claim about its bytes. It comes from the bytes'
+// own signature, else from the media type the document declares; when
+// neither names a type the bundle knows, the member says so instead of
+// calling itself a PNG.
+void verify_an_image_member_is_never_named_for_a_type_it_is_not() {
+  docv1::Document document = sample_document("types");
+  document.clear_pictures();
+  const std::string gif = "GIF89a" + std::string(32, '\x01');
+  const std::string svg = "<svg xmlns=\"http://www.w3.org/2000/svg\"/>";
+  const std::string jpeg = "\xFF\xD8\xFF\xE0" + std::string(32, '\x02');
+  const std::string metafile = std::string("\x01\x00\x00\x00", 4) + std::string(32, '\x03');
+  const std::string unknown = std::string("\x00\x07\x00\x07", 4) + std::string(32, '\x04');
+  add_picture(&document, "image/gif", data_uri("image/gif", gif));
+  add_picture(&document, "image/svg+xml", data_uri("image/svg+xml", svg));
+  // The bytes outrank a declaration that contradicts them.
+  add_picture(&document, "image/png", data_uri("image/png", jpeg));
+  // No signature the bundle reads: the data URI's media type decides, with
+  // its case and parameters set aside.
+  add_picture(&document, "", data_uri("Image/EMF;name=a.emf", metafile));
+  // The data URI declares nothing useful: the ImageRef's own type decides.
+  add_picture(&document, "image/x-wmf", data_uri("application/octet-stream", metafile));
+  add_picture(&document, "image/x-made-up", data_uri("image/x-made-up", unknown));
+
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(sample_conversion(document), &result);
+  const struct {
+    std::string path;
+    const std::string* bytes;
+  } expected[] = {
+      {"pictures/pic_0001.gif", &gif},  {"pictures/pic_0002.svg", &svg},
+      {"pictures/pic_0003.jpg", &jpeg}, {"pictures/pic_0004.emf", &metafile},
+      {"pictures/pic_0005.wmf", &metafile}, {"pictures/pic_0006.bin", &unknown},
+  };
+  for (const auto& one : expected) {
+    require(has_member(files, one.path), "the bundle must carry '" + one.path + "'");
+    require(member(files, one.path).bytes == *one.bytes,
+            "'" + one.path + "' must carry its picture's own bytes");
+  }
+  require(std::ranges::none_of(files,
+                               [](const targets::BundleFile& file) {
+                                 return file.path.starts_with("pictures/") &&
+                                        file.path.ends_with(".png");
+                               }),
+          "no picture here is a PNG, so none may be named one");
+
+  require_equal(result.image_issues_size(), 1, "only the image of unknown type is reported");
+  const auto& issue = result.image_issues(0);
+  require_equal(static_cast<int>(issue.reason()),
+                static_cast<int>(parsev1::BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE),
+                "an image neither its bytes nor its declaration can name is reported");
+  require(issue.has_picture_index() && issue.picture_index() == 5,
+          "the report names the picture");
+  require_equal(issue.declared_mimetype(), "image/x-made-up",
+                "the report keeps the type the document declares");
+  require_equal(issue.path(), "pictures/pic_0006.bin",
+                "the report names the member the bytes were written to");
 }
 
 // The digests are the bundle's own identity, so they are held to the
@@ -491,7 +822,7 @@ class FakeStore final {
 // with the ETag the store returned.
 void verify_uploads_land_as_objects() {
   const docv1::Document document = sample_document("uploads");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
 
   FakeStore store;
   targets::S3Config config;
@@ -548,7 +879,7 @@ void verify_uploads_land_as_objects() {
 // key without naming the credentials that signed for it.
 void verify_a_refused_upload_fails_without_leaking() {
   const docv1::Document document = sample_document("refused");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
 
   targets::S3Config config;
   // Port zero never accepts, so every member fails at connect.
@@ -577,7 +908,7 @@ void verify_a_refused_upload_fails_without_leaking() {
 // in the store whatever became of the rest.
 void verify_a_partial_failure_reports_the_written_objects() {
   const docv1::Document document = sample_document("partial");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
 
   FakeStore store("/manifest.json");
   targets::S3Config config;
@@ -616,7 +947,7 @@ void verify_a_partial_failure_reports_the_written_objects() {
 // refused before any request is made.
 void verify_session_token_is_refused_over_http() {
   const docv1::Document document = sample_document("session");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
 
   FakeStore store;
   targets::S3Config config;
@@ -642,7 +973,7 @@ void verify_session_token_is_refused_over_http() {
 // Nor is it sent to a peer whose certificate went unchecked, https or not.
 void verify_session_token_is_refused_without_verification() {
   const docv1::Document document = sample_document("unverified");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
 
   targets::S3Config config;
   // Nothing listens here: the refusal must come before any connection.
@@ -700,8 +1031,8 @@ void verify_ambient_credentials_need_verification() {
   const ScopedEnv secret("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
   const ScopedEnv token("AWS_SESSION_TOKEN", nullptr);
 
-  const docv1::Document document = sample_document("ambient");
-  const parsev1::DocumentExports exports = sample_exports(document);
+  const parsev1::ConvertDocumentResponse converted =
+      sample_conversion(sample_document("ambient"));
   FakeStore store;
   parsev1::Target target;
   target.mutable_s3()->set_endpoint(store.endpoint());
@@ -709,7 +1040,7 @@ void verify_ambient_credentials_need_verification() {
 
   target.mutable_s3()->set_verify_ssl(false);
   parsev1::TargetResult refused_result;
-  const grpc::Status refused = targets::deliver(target, document, exports, &refused_result);
+  const grpc::Status refused = targets::deliver(target, converted, &refused_result);
   require(refused.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
           "ambient credentials with verify_ssl false are refused: " + refused.error_message());
   require(refused.error_message().contains("verify_ssl"),
@@ -721,7 +1052,7 @@ void verify_ambient_credentials_need_verification() {
   const ScopedEnv listed("GRPARSE_S3_AMBIENT_ENDPOINTS", store.endpoint().c_str());
   target.mutable_s3()->clear_verify_ssl();
   parsev1::TargetResult result;
-  const grpc::Status cleartext = targets::deliver(target, document, exports, &result);
+  const grpc::Status cleartext = targets::deliver(target, converted, &result);
   require(cleartext.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
               cleartext.error_message().contains("not https"),
           "ambient credentials over http are refused: " + cleartext.error_message());
@@ -731,7 +1062,7 @@ void verify_ambient_credentials_need_verification() {
   // http store.
   target.mutable_s3()->set_access_key("AKIAIOSFODNN7EXAMPLE");
   target.mutable_s3()->set_secret_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
-  const grpc::Status delivered = targets::deliver(target, document, exports, &result);
+  const grpc::Status delivered = targets::deliver(target, converted, &result);
   require(delivered.ok(), "request credentials still deliver over http: " +
                               delivered.error_message());
   require(!store.received().empty(), "the store saw the upload");
@@ -740,8 +1071,8 @@ void verify_ambient_credentials_need_verification() {
 // The endpoint goes into the URL and the signed Host header: userinfo and
 // control characters are refused before any request.
 void verify_endpoint_hygiene() {
-  const docv1::Document document = sample_document("hygiene");
-  const parsev1::DocumentExports exports = sample_exports(document);
+  const parsev1::ConvertDocumentResponse converted =
+      sample_conversion(sample_document("hygiene"));
   for (const char* endpoint : {"https://user:pw@s3.example.test", "https://s3.example.test\r\nX: y",
                                "https://s3.example .test"}) {
     parsev1::Target target;
@@ -750,7 +1081,7 @@ void verify_endpoint_hygiene() {
     target.mutable_s3()->set_access_key("AKIAIOSFODNN7EXAMPLE");
     target.mutable_s3()->set_secret_key("wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY");
     parsev1::TargetResult result;
-    const grpc::Status refused = targets::deliver(target, document, exports, &result);
+    const grpc::Status refused = targets::deliver(target, converted, &result);
     require(refused.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
             std::string("an endpoint with userinfo or a control character is refused: ") +
                 refused.error_message());
@@ -759,7 +1090,7 @@ void verify_endpoint_hygiene() {
 
 void verify_incomplete_targets_are_rejected() {
   const docv1::Document document = sample_document("incomplete");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
   targets::S3Config config;
   config.endpoint = "http://127.0.0.1:1";
   config.bucket = "conversions";
@@ -782,7 +1113,7 @@ void verify_incomplete_targets_are_rejected() {
 void verify_a_loopback_store_is_refused_by_default() {
   FakeStore store;
   const docv1::Document document = sample_document("guarded");
-  const auto files = targets::build_bundle(document, sample_exports(document));
+  const auto files = sample_bundle(document);
   targets::S3Config config;
   config.endpoint = store.endpoint();
   config.access_key = "AKIAIOSFODNN7EXAMPLE";
@@ -807,6 +1138,11 @@ int main() {
       verify_bundles_are_reproducible,
       verify_bundle_carries_the_canonical_file_set,
       verify_manifest_describes_every_member,
+      verify_the_manifest_is_a_typed_message,
+      verify_the_json_manifest_says_what_the_typed_manifest_says,
+      verify_the_bundle_carries_the_conversions_status_and_outputs,
+      verify_an_image_the_bundle_cannot_write_is_reported,
+      verify_an_image_member_is_never_named_for_a_type_it_is_not,
       verify_sigv4_matches_the_published_vector,
       verify_sigv4_signs_the_session_token,
       verify_region_comes_from_the_endpoint,

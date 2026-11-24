@@ -97,8 +97,11 @@ void fold_html_bodies(const std::shared_ptr<grpc::Channel>& markup,
                                   "passed or the call was cancelled");
       break;
     }
-    for (auto& warning : slot.parsed.warnings) {
-      outcome->warnings.push_back("HTML body part " + body.part_id() + ": " + warning);
+    // The markup leg's warning keeps whatever it typed; only its words gain
+    // the body part they are about.
+    for (Warning& warning : slot.parsed.warnings) {
+      warning.message = "HTML body part " + body.part_id() + ": " + warning.message;
+      outcome->warnings.push_back(std::move(warning));
     }
     if (!slot.parsed.success) {
       outcome->warnings.push_back("HTML body part " + body.part_id() +
@@ -155,7 +158,7 @@ CollectorOutcome collect_email_document(const std::shared_ptr<grpc::Channel>& ch
   CollectorOutcome outcome = drain_stream<emailv1::ParseEmailResponse>(
       "email", *stream, upload,
       [&plain_body, &html_bodies](emailv1::ParseEmailResponse& event,
-                                  std::vector<std::string>& warnings) {
+                                  std::vector<Warning>& warnings) {
         if (event.has_body_part()) {
           if (event.body_part().media_type() == emailv1::BODY_MEDIA_TYPE_PLAIN) {
             plain_body = true;

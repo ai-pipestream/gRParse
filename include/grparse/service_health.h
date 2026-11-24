@@ -22,8 +22,9 @@ namespace grparse {
 
 // How startup left one in-process engine.
 enum class EngineState {
-  // Its setting allowed it and it was not built: under auto its model file,
-  // or the engine it depends on, was absent.
+  // Its setting asked for it and it was not built. Startup stops rather
+  // than leave layout, table structure or the figure classifier so, which
+  // makes this the state of an inventory nobody filled in.
   kNotLoaded,
   // Its setting switched it off.
   kDisabled,

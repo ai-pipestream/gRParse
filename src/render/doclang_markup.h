@@ -10,14 +10,21 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 
+namespace ai::pipestream::parse::v1 {
+class RenderOmissions;
+}
+
 namespace grparse::render {
 
 // The uri a rendered picture element states; empty writes no uri. Called
 // once per picture the walk renders, in body order.
 using PictureUri = std::function<std::string(const ai::pipestream::document::v1::PictureItem&)>;
 
+// `omissions`, when not null, receives what the walk's table grids left out
+// (document_render.h).
 std::string render_doclang_markup(const ai::pipestream::document::v1::Document& document,
-                                  bool include_namespace, const PictureUri& picture_uri);
+                                  bool include_namespace, const PictureUri& picture_uri,
+                                  ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 }  // namespace grparse::render
 

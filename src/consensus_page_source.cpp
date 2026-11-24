@@ -6,6 +6,7 @@
 #include <cstdlib>
 #include <exception>
 #include <iostream>
+#include <map>
 #include <mutex>
 #include <optional>
 #include <sstream>
@@ -15,11 +16,14 @@
 #include <utility>
 
 #include "grparse/document_assembly.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/remote_page_source.h"
 #include "targets/sha256.h"
 
 namespace grparse {
 namespace {
+
+namespace docv1 = ai::pipestream::document::v1;
 
 // Word stream of a page in emission order, folded for voting.
 std::vector<std::string> page_words(const OcrPage& page) {
@@ -283,10 +287,19 @@ class ConsensusPdfPageSource final : public PageSource {
 
   std::optional<OcrPage> extract_digital_page(int page_number) const override {
     open();
+    // Why each configured leg has no say on this page, by leg; empty for a
+    // leg that answers. Filled as the page is read, and what the caller is
+    // told when the page is decided by fewer backends than were configured.
+    std::vector<std::string> absent = open_errors_;
     std::vector<const Entry*> active;
     active.reserve(sources_.size());
     for (const auto& entry : sources_) {
-      if (page_number <= entry.pages && !leg_disabled(entry)) {
+      if (page_number > entry.pages) {
+        absent[entry.leg] = entry.target + " reads only " + std::to_string(entry.pages) +
+                            (entry.pages == 1 ? " page" : " pages");
+      } else if (leg_disabled(entry)) {
+        absent[entry.leg] = entry.target + " was taken out of the vote";
+      } else {
         active.push_back(&entry);
       }
     }
@@ -341,6 +354,7 @@ class ConsensusPdfPageSource final : public PageSource {
         // answer either, and the page must fail as cancelled.
         if (cancelled(error)) throw;
         failures.record(error);
+        absent[entry.leg] = entry.target + " failed: " + error.what();
         // A backend that fails mid-document leaves this page's vote; the
         // healthy backends still read it. Consensus must never be less
         // dependable than the best configured backend. A leg that keeps
@@ -355,6 +369,7 @@ class ConsensusPdfPageSource final : public PageSource {
     // Every leg that was asked failed: the page fails the way one backend
     // would, an outage as an outage rather than a bad document.
     if (!any_answered && failures.any()) failures.raise();
+    note_page_vote(page_number, absent);
     if (candidates.empty()) return std::nullopt;
     if (candidates.size() == 1) return std::move(candidates.front());
 
@@ -407,6 +422,39 @@ class ConsensusPdfPageSource final : public PageSource {
     // geometric re-order. The early returns above never set this.
     page.source_order_trusted = reconciliation_supports_trust(page.reconciliation);
     return page;
+  }
+
+  // What the vote itself went without, then what each leg's backend said
+  // about its own read of the page, in the configured order.
+  //
+  // The vote's own: the backends that are out of the whole document (could
+  // not open it, or were taken out after repeated page failures) and a
+  // disagreement on its page count, which name no page and are repeated for
+  // every page so that whichever page is read first brings them; and this
+  // page's mark when fewer backends decided it than were configured.
+  //
+  // A leg's warning stands whether or not the leg won the vote, and when
+  // the leg had no page to vote with at all: it is that backend's account
+  // of what it left out, and the page was decided with one voter reading
+  // less than the others.
+  std::vector<Warning> page_warnings(int page_number) const override {
+    {
+      const std::lock_guard<std::mutex> lock(open_mutex_);
+      if (!opened_) return {};
+    }
+    std::vector<Warning> warnings;
+    {
+      const std::lock_guard<std::mutex> lock(notes_mutex_);
+      warnings = document_warnings_;
+      const auto undervoted = undervoted_pages_.find(page_number);
+      if (undervoted != undervoted_pages_.end()) warnings.push_back(undervoted->second);
+    }
+    for (const Entry& entry : sources_) {
+      for (Warning& warning : entry.source->page_warnings(page_number)) {
+        warnings.push_back(std::move(warning));
+      }
+    }
+    return warnings;
   }
 
   cv::Mat render_page(int page_number) const override {
@@ -518,17 +566,29 @@ class ConsensusPdfPageSource final : public PageSource {
       }
 
       LegFailures failures;
+      // What the open leaves for the caller; kept only when the open as a
+      // whole succeeds, since a document no leg could open fails instead.
+      std::vector<Warning> warnings;
+      open_errors_.assign(legs_.size(), std::string());
       for (size_t index = 0; index < legs_.size(); ++index) {
         const Leg& leg = legs_[index];
         OpenSlot& slot = slots[index];
         try {
           if (slot.error) std::rethrow_exception(slot.error);
-          sources_.push_back({leg.target, leg.source, slot.pages});
+          sources_.push_back({leg.target, leg.source, slot.pages, index});
         } catch (const InvalidDocument& error) {
           if (cancelled(error)) throw;
           failures.record(error);
           std::cerr << "consensus: dropping backend " << leg.target << ": "
                     << error.what() << std::endl;
+          // The operator's line above is not the caller's: the vote the
+          // caller configured runs without this backend on every page.
+          open_errors_[index] = leg.target + " could not open the document";
+          warnings.emplace_back(
+              docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED,
+              "consensus: backend " + leg.target +
+                  " could not open the document and is out of the vote: " + error.what());
+          record_consensus_event(ConsensusEvent::kLegOpenFailed);
         }
       }
       if (sources_.empty()) {
@@ -538,13 +598,29 @@ class ConsensusPdfPageSource final : public PageSource {
       // Legs can disagree on the count (a repaired xref, an engine that
       // skips broken pages). The document is the longest reading; a page
       // past a leg's own count is simply not that leg's to vote on.
+      bool counts_differ = false;
+      std::string counts;
       for (const Entry& entry : sources_) {
         if (entry.pages != sources_.front().pages) {
+          counts_differ = true;
           std::cerr << "consensus: backend " << entry.target << " reports "
                     << entry.pages << " pages, " << sources_.front().target
                     << " reports " << sources_.front().pages << std::endl;
         }
+        counts += (counts.empty() ? "" : ", ") + entry.target + " reports " +
+                  std::to_string(entry.pages);
         pages_ = std::max(pages_, entry.pages);
+      }
+      if (counts_differ) {
+        warnings.emplace_back(
+            docv1::WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT,
+            "consensus: the backends disagree on the page count: " + counts +
+                "; the document is read as " + std::to_string(pages_) + " pages");
+        record_consensus_event(ConsensusEvent::kPageCountDisagreement);
+      }
+      {
+        const std::lock_guard<std::mutex> notes(notes_mutex_);
+        document_warnings_ = std::move(warnings);
       }
       opened_ = true;
     } catch (...) {
@@ -558,6 +634,8 @@ class ConsensusPdfPageSource final : public PageSource {
     std::string target;
     std::shared_ptr<PageSource> source;
     int pages = 0;
+    // The leg's place in the configured list (legs_).
+    size_t leg = 0;
     // The vote runs through const PageSource handles, so the breaker state
     // is mutable: a consecutive per-page failure count, and the switch that
     // drops the leg for the rest of the document. Any page the leg serves
@@ -578,17 +656,62 @@ class ConsensusPdfPageSource final : public PageSource {
   }
 
   // Counts one page failure; returns true (and logs) when it drops the leg.
+  // Dropping a leg is the caller's business as much as the operator's: from
+  // here on the document is voted on without it.
   bool record_leg_failure(const Entry& entry) const {
-    const std::lock_guard lock(breaker_mutex_);
-    ++entry.consecutive_failures;
-    if (entry.disabled || entry.consecutive_failures < kCircuitBreakerFailures) {
-      return entry.disabled;
+    record_consensus_event(ConsensusEvent::kLegPageFailed);
+    int failures = 0;
+    {
+      const std::lock_guard lock(breaker_mutex_);
+      ++entry.consecutive_failures;
+      if (entry.disabled || entry.consecutive_failures < kCircuitBreakerFailures) {
+        return entry.disabled;
+      }
+      entry.disabled = true;
+      failures = entry.consecutive_failures;
+      std::cerr << "consensus: dropping backend " << entry.target << ": "
+                << entry.consecutive_failures << " consecutive page failures"
+                << std::endl;
     }
-    entry.disabled = true;
-    std::cerr << "consensus: dropping backend " << entry.target << ": "
-              << entry.consecutive_failures << " consecutive page failures"
-              << std::endl;
+    record_consensus_event(ConsensusEvent::kLegDisabled);
+    const std::lock_guard<std::mutex> notes(notes_mutex_);
+    document_warnings_.emplace_back(
+        docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED,
+        "consensus: backend " + entry.target + " was taken out of the vote after " +
+            std::to_string(failures) + " page failures in a row");
     return true;
+  }
+
+  // Marks the page as it was just read: decided by fewer backends than were
+  // configured when any leg has a reason in `absent`, by all of them
+  // otherwise (a second read of a page replaces the first read's mark). The
+  // counter moves once per page, however often the page is read.
+  void note_page_vote(int page_number, const std::vector<std::string>& absent) const {
+    std::string reasons;
+    size_t answered = 0;
+    for (const std::string& reason : absent) {
+      if (reason.empty()) {
+        ++answered;
+      } else {
+        reasons += (reasons.empty() ? "" : "; ") + reason;
+      }
+    }
+    const std::lock_guard<std::mutex> notes(notes_mutex_);
+    if (answered == absent.size()) {
+      undervoted_pages_.erase(page_number);
+      return;
+    }
+    Warning warning =
+        Warning(docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED,
+                "consensus: page " + std::to_string(page_number) + " was read by " +
+                    std::to_string(answered) + " of " + std::to_string(absent.size()) +
+                    " configured backends" +
+                    (answered == 1 ? ", so its text is one backend's reading, unvoted" : "") +
+                    " (" + reasons + ")")
+            .on_page(page_number);
+    if (undervoted_pages_.insert_or_assign(page_number, std::move(warning)).second) {
+      record_consensus_event(ConsensusEvent::kPageUndervoted);
+    }
   }
 
   // Every configured leg, for set_deadline() and cancel(); fixed at
@@ -600,7 +723,20 @@ class ConsensusPdfPageSource final : public PageSource {
   mutable bool opened_ = false;
   mutable std::exception_ptr open_failure_;
   mutable std::vector<Entry> sources_;
+  // By configured leg, why the leg could not open the document; empty for a
+  // leg that did. Filled with sources_ and read-only after.
+  mutable std::vector<std::string> open_errors_;
   mutable std::mutex breaker_mutex_;
+  // What the vote went without, for page_warnings(). Pages are voted on
+  // from several threads at once, so both are guarded by notes_mutex_,
+  // which is only ever taken last.
+  mutable std::mutex notes_mutex_;
+  // About the whole document, in the order it happened: a backend that
+  // could not open it, the backends disagreeing on its page count, a
+  // backend taken out of the vote after repeated page failures.
+  mutable std::vector<Warning> document_warnings_;
+  // The pages decided by fewer backends than were configured.
+  mutable std::map<int, Warning> undervoted_pages_;
   const double render_dpi_;
   mutable int pages_ = 0;
 };

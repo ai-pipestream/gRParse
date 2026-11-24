@@ -332,9 +332,79 @@ typed fields out. Boxes land in the page's space (raster pixels top-left
 on the CV path, points bottom-left on the inspector path). In consensus
 mode the first target that answers wins; there is nothing to vote on. A
 backend that marks the family absent (grpc-pdfium does for a document
-without a form) ends the call at the header. The streaming page events
-(`StreamProcessDocument`) do not include field items yet; `PageData` has
-no slot for them.
+without a form) ends the call at the header, and nothing is reported: the
+PDF has no form. When every configured backend answers and none reads the
+family (`FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND`, or no verdict from a
+backend that predates it), the parse carries one
+`WARNING_CODE_FORM_FIELDS_UNSUPPORTED` naming them; when no backend
+answers for the family and one of them failed, one
+`WARNING_CODE_FORM_FIELDS_UNREADABLE` naming the failure (gRParse#403).
+Either way the caller can tell "no form" from "nobody looked". The
+streaming page events (`StreamProcessDocument`) do not include field items
+yet; `PageData` has no slot for them.
+
+## The trailer (read since 2026-11-24, gRParse#401)
+
+Every Parse answer ends with a `ParseTrailer`: per-family totals and a
+`ParseWarning` for each thing the engine skipped or repaired without
+failing the stream. Both clients read it (`src/pdf_backend_trailer.cpp`,
+`PdfParseTally`), the page source for each page's answer and the AcroForm
+step for its one call:
+
+- Each `ParseWarning` becomes a `CollectorWarning` with
+  `WARNING_CODE_BACKEND_CONTENT_SKIPPED`, on the page the engine named
+  (`page_no`, one-based) when it named one. The engine's message and the
+  family it named stay in the warning's words.
+- A total that differs from the number of items that arrived becomes a
+  `WARNING_CODE_BACKEND_COUNT_MISMATCH`, on the page whose answer it was
+  (the AcroForm call covers every page and names none). Only families a
+  client can count on the wire are compared: the repeated fields of a
+  `PageChunk` and the font table. The parse stands with what arrived; a
+  mismatch is not a failed page.
+- A page whose text the backend cut short (a warning naming the page and
+  the text family or no family, or fewer cells than the trailer counts)
+  does not skip recognition on the strength of its text layer.
+
+The warnings ride on the page (`OcrPage::source_warnings`, from
+`PageSource::page_warnings`) into `Document.warnings` and, on the
+streaming surface, `DocumentComplete.typed_warnings`. In consensus mode
+every leg's warnings are kept, whichever leg won the page. An answer with
+no trailer is not flagged: the call's status is then the only word on it.
+
+## A vote that ran short (said since 2026-11-24, gRParse#402)
+
+Consensus keeps a document readable when a backend fails, and until this
+change it did so without a word to the caller: three backends configured,
+two down, and every page came back as one backend's reading with nothing in
+the response or the metrics to say the vote had not happened. The stderr
+lines for the operator are still there; the caller now gets the same facts
+typed, through the path the trailer warnings take
+(`PageSource::page_warnings` into `Document.warnings` and
+`DocumentComplete.typed_warnings`):
+
+- `WARNING_CODE_CONSENSUS_BACKEND_FAILED`, naming the target, for a backend
+  that could not open the document, and for one taken out of the document
+  after three page failures in a row. About the document: no `page_no`.
+- `WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT`, with each backend's
+  count, when the backends that opened the document disagree on its length.
+- `WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED` on each page (`page_no`) whose
+  text was decided by fewer backends than were configured, naming each
+  missing backend and why: it could not open the document, was taken out of
+  the vote, failed on this page (with its error), or reads fewer pages. A
+  backend that answered "no text on this page" did answer; that page is not
+  undervoted.
+
+`grparse_pdf_consensus_events_total{kind=...}` counts the same events
+process-wide: `leg_open_failed`, `leg_page_failed` (text or raster),
+`leg_disabled`, `page_count_disagreement`, `page_undervoted`. It has no
+backend label, since no gRParse metric is keyed by a configured target; the
+warning names the backend. A document no backend could open still fails as
+before, and a failed leg still counts in the metric then. The page
+scheduler asks a source for its warnings after its last read of the page
+(raster included) and under forced recognition too, so a document that is
+only rendered hears which backends are out. The VLM pipeline and the page
+previews render through the same source without asking, so there a dropped
+backend shows in the metric and on stderr only.
 
 ## Open items (from the 2026-09-04 review)
 

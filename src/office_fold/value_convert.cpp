@@ -1,7 +1,9 @@
 #include "grparse/office_fold/value_convert.h"
 
+#include <charconv>
 #include <cstdio>
 #include <map>
+#include <system_error>
 
 namespace grparse::office_fold {
 
@@ -119,22 +121,15 @@ std::string mime_for_extension(const std::string& extension) {
   return found != kMimes.end() ? found->second : "application/octet-stream";
 }
 
-google::protobuf::Value str_value(const std::string& text) {
-  google::protobuf::Value value;
-  value.set_string_value(text);
-  return value;
-}
-
-google::protobuf::Value num_value(double number) {
-  google::protobuf::Value value;
-  value.set_number_value(number);
-  return value;
-}
-
 std::string double_text(double value) {
+  // The plain form of to_chars is the shortest spelling that reads back as
+  // the same double, in fixed notation unless the exponent form is shorter.
+  // "%g" kept six significant digits, so 1234567.89 was spelled
+  // "1.23457e+06" in the text every export and chunk reads.
   char buffer[32];
-  std::snprintf(buffer, sizeof buffer, "%g", value);
-  return buffer;
+  const auto [end, error] = std::to_chars(buffer, buffer + sizeof(buffer), value);
+  if (error != std::errc()) return std::to_string(value);
+  return std::string(buffer, end);
 }
 
 }  // namespace grparse::office_fold

@@ -164,10 +164,17 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // event: it reports WARC records as they parse, so this client folds the
 // record stream into a Document here — one group per record in stream
 // order, the record's metadata and (when it reads as text) its payload as
-// source-tagged text items. A non-recoverable framing error ends the fold
+// source-tagged text items. Payload text is the payload and nothing else: a
+// payload cut at the fold's cap raises WARNING_CODE_PAYLOAD_TRUNCATED on its
+// item, and a body still stored under a Content-Encoding is left out under
+// WARNING_CODE_PAYLOAD_NOT_DECODED on its record's group. A non-recoverable framing error ends the fold
 // but keeps the records already collected: a clipped archive is a partial
-// success, not a failure. A leg cut off by its deadline or cancelled is a
-// failure: nothing says where its archive really ended.
+// success under a WARNING_CODE_ARCHIVE_TRUNCATED warning, not a failure.
+// When no record was read before it there is nothing to keep, and the leg
+// fails INVALID_ARGUMENT instead of handing back an empty document. A call
+// that fails after records arrived keeps them under
+// WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE; a leg cut off by its deadline or
+// cancelled is a failure: nothing says where its archive really ended.
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =
@@ -284,6 +291,18 @@ PdfRouteDecision route_pdf_by_classification(const PdfClassification& classifica
 // finished classification forces OCR too and never takes the fast path.
 // False leaves the routing to the trailer.
 bool pdf_info_forces_ocr(const PdfClassification& info);
+
+// The class as the route's warnings spell it.
+const char* pdf_class_name(PdfClass pdf_class);
+
+// What a routed PDF's result says once the CV path read it in place of the
+// inspector's extraction: why the extraction was not taken and how
+// recognition was scoped. `forced` is true when the route turned selective
+// recognition into recognition of every page. One function for the unary
+// leg and the streaming leg, so both surfaces state the decision in the
+// same words under the same code.
+Warning cv_route_warning(const PdfClassification& classification,
+                         const PdfRouteDecision& route, bool forced);
 
 // One page's share of the inspector's fold (its page_document event): the
 // items folding that page made, under the refs they carry in the whole

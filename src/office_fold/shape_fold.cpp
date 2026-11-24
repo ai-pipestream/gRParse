@@ -54,10 +54,13 @@ void ShapeFold::on_slide(const officev1::Slide& slide) {
   docv1::GroupItem* group =
       arena_.add_group("#/body", docv1::GROUP_LABEL_SLIDE, slide.name(),
                        docv1::CONTENT_LAYER_BODY);
-  auto* fields = group->mutable_meta()->mutable_custom_fields();
-  (*fields)["layout"] = num_value(slide.layout());
+  // The layout is the office core's autolayout number. Zero is a real
+  // layout, so the number is always stated rather than left to read as
+  // absent.
+  docv1::SlideMeta* meta = group->mutable_slide();
+  meta->set_layout_id(slide.layout());
   if (!slide.master_page_name().empty()) {
-    (*fields)["master_page_name"] = str_value(slide.master_page_name());
+    meta->set_master_page_name(slide.master_page_name());
   }
   slide_group_[slide.index()] = group->self_ref();
   if (first_slide_ < 0 || slide.index() < first_slide_) {
@@ -178,8 +181,10 @@ void ShapeFold::on_slide_shape(const officev1::SlideShape& shape,
   // A table shape carries its content in a cell grid, not in shape text, so
   // it folds into a real table under the slide rather than a placeholder.
   if (shape.has_table()) {
-    docv1::TableItem* item = arena_.add_table(layer, parent, nullptr);
+    std::string table_ref;
+    docv1::TableItem* item = arena_.add_table(layer, parent, &table_ref);
     arena_.fold_table(shape.table(), item);
+    arena_.report_gap_of(shape.table(), "slide table", prov_page, table_ref);
     arena_.add_prov(item->mutable_prov(), prov_page, true, box.l, box.t, box.r,
                     box.b, 0, 0);
     return;

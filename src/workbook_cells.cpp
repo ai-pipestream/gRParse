@@ -28,9 +28,11 @@ void set_spans(docv1::TableCell* cell, int rows, int columns) {
   cell->set_end_col_offset_idx(cell->start_col_offset_idx() + columns);
 }
 
-// The direct table of every SHEET group, by sheet name. A sheet group holds
-// exactly one table; a second one (never produced by either fold) is left
-// alone rather than guessed at.
+// The direct table of every SHEET group under the body, by sheet name. A
+// sheet group holds exactly one table; a second one (never produced by
+// either fold) is left alone rather than guessed at. A sheet group deeper
+// down is a sheet of a workbook embedded in the document, which can share a
+// name with a sheet of the document and is none of them.
 std::map<std::string, int> sheet_tables(const docv1::Document& document) {
   std::map<std::string, int> tables;
   std::map<std::string_view, int> by_ref;
@@ -39,6 +41,7 @@ std::map<std::string, int> sheet_tables(const docv1::Document& document) {
   }
   for (const docv1::GroupItem& group : document.groups()) {
     if (group.label() != docv1::GROUP_LABEL_SHEET) continue;
+    if (group.parent().ref() != "#/body") continue;
     for (const docv1::RefItem& child : group.children()) {
       const auto found = by_ref.find(child.ref());
       if (found == by_ref.end()) continue;
@@ -53,7 +56,8 @@ std::map<std::string, int> sheet_tables(const docv1::Document& document) {
 // libreoffice cell at the same place when there is one, which keeps that
 // cell's presentation (alignment, a cell's anchored ref, a number format,
 // a formula's source). Inline runs index into libreoffice's text, so they
-// survive only when the two texts agree.
+// survive only when the two texts agree. The one cell calamine does not
+// override is a formula it read no result for.
 docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
                               const docv1::TableCell* libre) {
   if (libre == nullptr) return calamine;
@@ -75,7 +79,14 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
       && libre->value().kind_case() == docv1::CellValue::kNumber
       && calamine.value().kind_case() == docv1::CellValue::kNumber
       && libre->value().number() == calamine.value().number();
-  if (!same_formatted_number) {
+  // A formula calamine has no result for is one the file stores with no
+  // cached value. That is not a stored value to prefer over libreoffice's:
+  // libreoffice computed the result when it loaded the file, and an empty
+  // text here would erase it.
+  const bool uncached_formula = calamine.text().empty() && calamine.has_value()
+      && calamine.value().kind_case() == docv1::CellValue::KIND_NOT_SET
+      && calamine.value().has_formula_source();
+  if (!same_formatted_number && !uncached_formula) {
     if (cell.text() != calamine.text()) cell.clear_spans();
     cell.set_text(calamine.text());
   }
@@ -88,7 +99,10 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
       formula = libre->value().formula();
     }
   }
-  if (calamine.has_value()) *cell.mutable_value() = calamine.value();
+  // The computed result stays in `kind`; calamine's account of the cell (its
+  // source, its style) joins it.
+  if (uncached_formula) cell.mutable_value()->MergeFrom(calamine.value());
+  else if (calamine.has_value()) *cell.mutable_value() = calamine.value();
   else cell.clear_value();
   if (number_format && !cell.value().has_number_format()) {
     cell.mutable_value()->set_number_format(*number_format);
@@ -252,9 +266,34 @@ int mark_sheet_header(docv1::TableData* data) {
   return marked;
 }
 
-int adopt_calamine_cells(const docv1::Document& calamine, docv1::Document* merged,
-                         std::vector<std::string>* warnings) {
+int adopt_calamine_cells(const docv1::Document& calamine,
+                         const std::vector<IncompleteSheet>& incomplete,
+                         docv1::Document* merged, std::vector<Warning>* warnings) {
   const std::map<std::string, int> targets = sheet_tables(*merged);
+  // A sheet calamine did not read to its end keeps the cells it has: the
+  // part calamine holds (which may be nothing) would replace a whole sheet
+  // with fewer cells. The warning names the table, so a consumer knows by
+  // code which sheets are the first reader's and which are calamine's.
+  std::set<std::string_view> held_back;
+  for (const IncompleteSheet& sheet : incomplete) {
+    held_back.insert(sheet.name);
+    const auto target = targets.find(sheet.name);
+    if (target == targets.end()) continue;
+    const docv1::TableItem& table = merged->tables(target->second);
+    const std::string reader =
+        table.source_size() > 0 && table.source(0).has_collector()
+            ? table.source(0).collector().collector()
+            : "the first reader";
+    // A status can fail with no words of its own; the sentence stands
+    // without them.
+    const std::string why = sheet.reason.empty() ? "" : " (" + sheet.reason + ")";
+    warnings->push_back(
+        Warning(docv1::WARNING_CODE_SHEET_CELLS_NOT_ADOPTED,
+                "sheet '" + sheet.name + "': calamine did not read it to the end" + why
+                    + ", so its cells were not adopted; the sheet keeps " + reader
+                    + "'s cells")
+            .on_item(table.self_ref()));
+  }
   int adopted = 0;
   for (const auto& [sheet, calamine_index] : sheet_tables(calamine)) {
     const auto target = targets.find(sheet);
@@ -264,6 +303,7 @@ int adopt_calamine_cells(const docv1::Document& calamine, docv1::Document* merge
                             "for it, so its cells were left out");
       continue;
     }
+    if (held_back.contains(sheet)) continue;
     docv1::TableItem* table = merged->mutable_tables(target->second);
     std::set<Position> libre_header;
     for (const docv1::TableCell& cell : table->data().table_cells()) {

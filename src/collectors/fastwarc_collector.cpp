@@ -25,7 +25,7 @@ namespace {
 // Payload text is capped: a WARC payload can be a whole video, and the
 // Document model is a text plane, not an archive. The cap matches the
 // server's default payload chunk, and record_end.payload_length still
-// reports the full size for the truncation note.
+// reports the full size for the truncation warning.
 constexpr size_t kPayloadTextBytes = 64U * 1024U;
 
 // Events per gRPC message. Small records (warcinfo, request, metadata) are a
@@ -86,21 +86,30 @@ bool is_latin1_charset(std::string charset) {
          charset == "latin-1" || charset == "l1";
 }
 
-// A payload as Document text. UTF-8 (and ASCII) passes through; a declared
-// ISO-8859-1 payload is transcoded, since every byte maps to one code
-// point. Any other charset is not decoded here: its invalid bytes become
-// U+FFFD and `undecoded` names the charset for the caller's warning.
-std::string payload_text(const warcv1::RecordMetadata& metadata, std::string_view bytes,
+// A payload as Document text, with how many of the payload's bytes the text
+// was made from.
+struct PayloadText {
+  std::string text;
+  size_t bytes_kept = 0;
+};
+
+// UTF-8 (and ASCII) passes through; a declared ISO-8859-1 payload is
+// transcoded, since every byte maps to one code point. Any other charset is
+// not decoded here: its invalid bytes become U+FFFD and `undecoded` names
+// the charset for the caller's warning.
+PayloadText payload_text(const warcv1::RecordMetadata& metadata, std::string_view bytes,
                          bool cut, std::optional<std::string>& undecoded) {
   const std::string_view whole = cut ? drop_split_tail(bytes) : bytes;
-  if (simdutf::validate_utf8(whole.data(), whole.size())) return std::string(whole);
+  if (simdutf::validate_utf8(whole.data(), whole.size())) {
+    return {std::string(whole), whole.size()};
+  }
   if (metadata.has_http_charset() && is_latin1_charset(metadata.http_charset())) {
     std::string out(simdutf::utf8_length_from_latin1(bytes.data(), bytes.size()), '\0');
     out.resize(simdutf::convert_latin1_to_utf8(bytes.data(), bytes.size(), out.data()));
-    return out;
+    return {std::move(out), bytes.size()};
   }
   undecoded = metadata.has_http_charset() ? metadata.http_charset() : "undeclared";
-  return utf8_text(whole);
+  return {utf8_text(whole), whole.size()};
 }
 
 // Header blocks arrive lossless: ordered name/value byte pairs, original
@@ -139,6 +148,27 @@ std::optional<int> status_code(const std::string& status_line) {
   }
   if (end - begin != 3) return std::nullopt;
   return std::stoi(status_line.substr(begin, 3));
+}
+
+// The coding the embedded HTTP message says its body is stored under,
+// lower-cased: "gzip", "br", "gzip, br". Unset when the record declares
+// none, or only "identity", which changes nothing. By convention an archiver
+// that decodes a body before storing it renames or drops the header, so a
+// declared coding means the payload bytes are still encoded.
+std::optional<std::string> content_encoding(const warcv1::RecordMetadata& metadata) {
+  if (!metadata.has_http_headers()) return std::nullopt;
+  auto declared = header_value(metadata.http_headers(), "Content-Encoding");
+  if (!declared) return std::nullopt;
+  std::string& coding = *declared;
+  std::ranges::transform(coding, coding.begin(),
+                         [](unsigned char letter) { return std::tolower(letter); });
+  const auto is_space = [](unsigned char letter) { return std::isspace(letter) != 0; };
+  coding.erase(coding.begin(), std::ranges::find_if_not(coding, is_space));
+  while (!coding.empty() && is_space(static_cast<unsigned char>(coding.back()))) {
+    coding.pop_back();
+  }
+  if (coding.empty() || coding == "identity") return std::nullopt;
+  return declared;
 }
 
 // Like lol-html, this wire carries no document event and no terminal
@@ -208,6 +238,17 @@ class WarcFold {
 
   int records() const { return document_.groups_size(); }
 
+  // A non-recoverable record error. The contract ends the stream after one,
+  // and whether it cut an archive short or left nothing at all is known only
+  // once the stream has ended, so the fold holds it for the caller.
+  struct LostFraming {
+    std::string message;
+    // The offset in the uncompressed archive at which the failed record
+    // began; unset when the service reported none.
+    std::optional<uint64_t> stream_pos;
+  };
+  const std::optional<LostFraming>& lost_framing() const { return lost_framing_; }
+
  private:
   void note_record_error(const warcv1::RecordError& error) {
     if (error.recoverable()) {
@@ -218,11 +259,21 @@ class WarcFold {
                                   " skipped: " + error.message());
       return;
     }
-    // Framing is lost; the server ends the stream after this. What was
-    // already parsed is kept: a clipped archive is a partial success,
-    // matching how the demo treats truncated captures.
-    outcome_.warnings.push_back("archive truncated by a framing error at stream offset " +
-                                std::to_string(error.stream_pos()) + ": " + error.message());
+    // Framing is lost, or the open record's payload could not be read to its
+    // end (the record_end that follows still closes that record). Nothing
+    // after this is a record; the first such error is the one that counts.
+    if (lost_framing_) return;
+    lost_framing_.emplace();
+    lost_framing_->message = error.message();
+    // The contract leaves stream_pos zero when the parser exposes no
+    // position, which is what fastwarc-grpc sends for a framing error. A
+    // zero is therefore an offset only for the record that is open, whose
+    // own start says where it began.
+    if (error.stream_pos() > 0) {
+      lost_framing_->stream_pos = error.stream_pos();
+    } else if (record_open_) {
+      lost_framing_->stream_pos = current_.stream_pos();
+    }
   }
 
   void add_text(int group, std::string text) {
@@ -321,20 +372,39 @@ class WarcFold {
     }
     add_text(index, "content-length: " + std::to_string(metadata.content_length()));
     add_text(index, "payload-length: " + std::to_string(payload_length));
-    if (looks_textual(metadata) && payload_length > 0) {
-      std::optional<std::string> undecoded;
-      std::string text =
-          payload_text(metadata, payload, payload_length > payload.size(), undecoded);
-      if (undecoded && undecoded_charsets_.insert(*undecoded).second) {
-        outcome_.warnings.push_back("payload text in charset " + *undecoded +
-                                    " is not decoded; invalid UTF-8 bytes became U+FFFD");
-      }
-      if (payload_length > payload.size()) {
-        text += "\n[fastwarc: payload truncated to the first " +
-                std::to_string(kPayloadTextBytes) + " of " +
-                std::to_string(payload_length) + " bytes]";
-      }
-      add_text(index, std::move(text));
+    if (!looks_textual(metadata) || payload_length == 0) return;
+    const std::string at_record =
+        "record at stream offset " + std::to_string(metadata.stream_pos());
+    if (const auto coding = content_encoding(metadata)) {
+      // The bytes are a compressed stream, not text in any charset, and this
+      // leg does not decode them (see the request below). Run through the
+      // charset path they would come out as U+FFFD and read as the page's
+      // text, so the body is left out and the record says why.
+      outcome_.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAYLOAD_NOT_DECODED,
+                  at_record + ": payload stored under Content-Encoding " + *coding +
+                      " is not decoded; its text is left out")
+              .on_item(group->self_ref()));
+      return;
+    }
+    const bool cut = payload_length > payload.size();
+    std::optional<std::string> undecoded;
+    PayloadText text = payload_text(metadata, payload, cut, undecoded);
+    if (undecoded && undecoded_charsets_.insert(*undecoded).second) {
+      outcome_.warnings.push_back("payload text in charset " + *undecoded +
+                                  " is not decoded; invalid UTF-8 bytes became U+FFFD");
+    }
+    add_text(index, std::move(text.text));
+    if (cut) {
+      // The cut is said beside the text, never inside it: the item's text
+      // goes on to chunking and embedding as the record's content.
+      outcome_.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAYLOAD_TRUNCATED,
+                  at_record + ": payload text holds the first " +
+                      std::to_string(text.bytes_kept) + " of " +
+                      std::to_string(payload_length) + " bytes")
+              .on_item("#/texts/" + std::to_string(document_.texts_size() - 1))
+              .kept(text.bytes_kept, payload_length));
     }
   }
 
@@ -357,6 +427,7 @@ class WarcFold {
   bool record_open_ = false;
   bool web_captured_ = false;
   bool web_from_response_ = false;
+  std::optional<LostFraming> lost_framing_;
   // Charsets already warned about, so a crawl of one site warns once.
   std::set<std::string> undecoded_charsets_;
 };
@@ -381,6 +452,13 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
   // their defaults (on), which enables magic-byte sniffing of gzip/zstd/lz4
   // streams.
   config->set_parse_http(true);
+  // decode_http_payload stays unset, so a body arrives as it was stored. The
+  // service can decode content encodings, but the contract makes a payload
+  // that fails to read a non-recoverable error that ends the stream, and
+  // fastwarc-grpc 2.0.1 ends it the same way at a record whose coding it has
+  // no decoder for: asking would let one damaged or oddly labelled body cost
+  // every record after it. The fold leaves a still-encoded body out instead,
+  // under WARNING_CODE_PAYLOAD_NOT_DECODED.
   config->set_response_batch_size(kResponseBatchSize);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,
@@ -399,22 +477,49 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
   upload.join();
   const grpc::Status status = stream->Finish();
-  if (!status.ok()) {
-    // A leg cut off by its deadline or by cancellation is not a clipped
-    // archive: the server never got to say where the archive ended, and the
-    // records folded so far are whatever arrived before the cut.
-    if (fold.records() == 0 || status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
-        status.error_code() == grpc::StatusCode::CANCELLED) {
-      // Nothing parsed at all, or a cut-off leg: the failure is the outcome.
-      outcome.error = std::string("fastwarc collector: ") + status.error_message();
-      outcome.code = map_code(status.error_code());
+  // A leg cut off by its deadline or by cancellation is not a clipped
+  // archive: the server never got to say where the archive ended, and the
+  // records folded so far are whatever arrived before the cut. A failed call
+  // that folded nothing has only its failure to report.
+  if (!status.ok() &&
+      (fold.records() == 0 || status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+       status.error_code() == grpc::StatusCode::CANCELLED)) {
+    outcome.error = std::string("fastwarc collector: ") + status.error_message();
+    outcome.code = map_code(status.error_code());
+    return outcome;
+  }
+  if (const auto& lost = fold.lost_framing()) {
+    if (fold.records() == 0) {
+      // The service read the bytes and framed no record in them, then closed
+      // the stream OK: that is how it answers a file that is no archive, or
+      // one damaged from its first byte. There is no document to hand back,
+      // and an empty one under a warning would read as a parse that worked.
+      // The call itself went through, so the failure is the input's.
+      outcome.error = "fastwarc collector: no WARC record could be read: " + lost->message;
+      outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
       return outcome;
     }
+    // A clipped archive is a partial success: the records before the cut are
+    // real and are kept, and the cut is typed so a caller can tell this
+    // document from a whole archive. The archive's full size is not known
+    // (the offset counts uncompressed bytes), so only the kept side is said.
+    Warning truncated(
+        docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+        "archive truncated at " +
+            (lost->stream_pos ? "stream offset " + std::to_string(*lost->stream_pos)
+                              : std::string("an offset the service did not report")) +
+            " (records read: " + std::to_string(fold.records()) + "): " + lost->message);
+    if (lost->stream_pos) truncated = std::move(truncated).kept(*lost->stream_pos);
+    outcome.warnings.push_back(std::move(truncated));
+  }
+  if (!status.ok()) {
     // Records already folded survive a mid-stream transport failure, the
-    // same partial-success reading the framing error above gets.
-    outcome.warnings.push_back(std::string("stream failed after ") +
-                               std::to_string(fold.records()) +
-                               " records: " + status.error_message());
+    // same partial-success reading a clipped archive gets, and the caller is
+    // told the stream never reached its end.
+    outcome.warnings.push_back(
+        Warning(docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+                std::string("stream failed after ") + std::to_string(fold.records()) +
+                    " records: " + status.error_message()));
   }
   outcome.success = true;
   return outcome;

@@ -11,12 +11,18 @@
 // again over the cells that stayed. The libreoffice TableItem itself stays,
 // so every ref into it (a chart's bound table, a picture anchored on the
 // sheet) still resolves.
+//
+// Only a sheet calamine read to its end is adopted. A calamine leg that
+// stops part way is still a successful leg, but the part it holds of a
+// sheet is not the sheet: libreoffice's cells stand for every sheet the leg
+// names as incomplete, and the caller is told so by code.
 #pragma once
 
 #include <string>
 #include <vector>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -39,12 +45,25 @@ void apply_merged_areas(ai::pipestream::document::v1::TableData* data,
 // Returns the number of cells marked column_header.
 int mark_sheet_header(ai::pipestream::document::v1::TableData* data);
 
+// One sheet a workbook reader did not read to its end: its read failed, or
+// the reader's stream ended inside it or before it began. The reader's
+// table for it, when there is one, holds only the cells that arrived.
+struct IncompleteSheet {
+  std::string name;
+  // Why the read stopped, in the reader's words.
+  std::string reason;
+};
+
 // Moves calamine's cells into the matching sheet tables of `merged` (matched
-// by sheet name). Sheets calamine read that `merged` has no table for are
-// left out and named in `warnings`. Returns the number of sheet tables
-// whose cells came from calamine.
+// by sheet name). A sheet named in `incomplete` is not adopted: its table in
+// `merged` keeps the cells it has, and `warnings` gains a
+// WARNING_CODE_SHEET_CELLS_NOT_ADOPTED entry naming that table. Sheets
+// calamine read that `merged` has no table for are left out and named in
+// `warnings`. Returns the number of sheet tables whose cells came from
+// calamine.
 int adopt_calamine_cells(const ai::pipestream::document::v1::Document& calamine,
+                         const std::vector<IncompleteSheet>& incomplete,
                          ai::pipestream::document::v1::Document* merged,
-                         std::vector<std::string>* warnings);
+                         std::vector<Warning>* warnings);
 
 }  // namespace grparse

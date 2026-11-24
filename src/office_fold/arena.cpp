@@ -27,7 +27,43 @@ int index_in_arena(const std::string& ref, const std::string& prefix) {
   return std::atoi(ref.c_str() + prefix.size());
 }
 
+// The code a gap is raised under. WarningCode has no value yet that says
+// "the collector failed part way through reading one item", so a gap takes
+// the value whose promise to a consumer is the same: the item holds the
+// content up to a point and nothing after it. That is
+// SOURCE_CONTENT_TRUNCATED, whose own wording names a limit as the cause
+// where a gap's cause is a failure; the worker's finding stays in the
+// message. A picture that arrived with no bytes at all is the loss
+// PICTURE_IMAGES_SKIPPED already names. This function is the one place to
+// change when the precise value exists.
+docv1::WarningCode gap_code(bool picture_without_bytes) {
+  return picture_without_bytes ? docv1::WARNING_CODE_PICTURE_IMAGES_SKIPPED
+                               : docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+}
+
 }  // namespace
+
+void DocumentArena::report_gap(const officev1::ExtractionGap& gap,
+                               std::string_view what, int page_index,
+                               const std::string& item_ref,
+                               bool picture_without_bytes) {
+  std::string message(what);
+  message += picture_without_bytes
+                 ? " carries no image: the office core could not read it"
+                 : " is incomplete: the office core failed part way through "
+                   "reading it";
+  // The worker's own lines, verbatim and in order: they are the finding.
+  for (int i = 0; i < gap.problems_size(); i++) {
+    message += i == 0 ? " (" : "; ";
+    message += gap.problems(i);
+  }
+  if (gap.problems_size() > 0) message += ")";
+  Warning warning(gap_code(picture_without_bytes), std::move(message));
+  if (page_index >= 0) warning.page_no = page_index + 1;
+  warning.item_ref = item_ref;
+  ++gaps_reported_;
+  warn(std::move(warning));
+}
 
 DocumentArena::DocumentArena() {
   document_.set_schema_name(kSchemaName);
@@ -509,13 +545,17 @@ void DocumentArena::fold_table(const officev1::TableData& table,
       column = -1;
     }
     if (row < 0 || column < 0) {
-      (*item->mutable_meta()->mutable_custom_fields())["cell:" + cell.name()] =
-          str_value(cell.text());
+      // Kept as a cell under its own name, outside the grid, so a table
+      // consumer still sees its text.
+      docv1::TableCell* unplaced = data->add_unplaced_cells();
+      if (!cell.name().empty()) unplaced->set_source_name(cell.name());
+      unplaced->set_text(cell.text());
       continue;
     }
     int row_span = std::max(1, cell.row_span());
     int col_span = std::max(1, cell.column_span());
     docv1::TableCell* out = data->add_table_cells();
+    if (!cell.name().empty()) out->set_source_name(cell.name());
     out->set_start_row_offset_idx(row);
     out->set_end_row_offset_idx(row + row_span);
     out->set_start_col_offset_idx(column);

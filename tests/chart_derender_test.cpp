@@ -8,16 +8,19 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
 #include <sstream>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <print>
 #include <stdexcept>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include <grpcpp/grpcpp.h>
@@ -37,6 +40,7 @@ namespace enrichv1 = ai::pipestream::enrich::v1;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 const std::string kPng = "\x89PNG\r\n\x1a\nfake-chart-pixels";
 
@@ -159,9 +163,17 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
       }
       return grpc::Status::OK;
     }
+    // The trailer counts what was written, as grpc-enrich's does.
+    uint32_t annotations = 0;
+    uint32_t skips = 0;
+    const auto write = [&](const enrichv1::EnrichDocumentResponse& one) {
+      if (one.has_annotation()) ++annotations;
+      if (one.has_skipped()) ++skips;
+      stream->Write(one);
+    };
     enrichv1::EnrichDocumentResponse event;
     event.mutable_started()->set_chart_extractions(seen.document.pictures_size());
-    stream->Write(event);
+    write(event);
     for (const docv1::PictureItem& picture : seen.document.pictures()) {
       event.Clear();
       if (mode_ == FakeMode::kOutputs || mode_ == FakeMode::kSummarySkipped) {
@@ -171,7 +183,7 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
         table->set_self_ref(picture.self_ref());
         table->set_model("chart-vlm");
         *table->mutable_chart_table() = canned_table("Revenue by region");
-        stream->Write(event);
+        write(event);
         event.Clear();
         if (mode_ == FakeMode::kSummarySkipped) {
           event.mutable_skipped()->set_self_ref(picture.self_ref());
@@ -184,14 +196,14 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
           summary->set_model("chart-vlm");
           summary->mutable_chart_summary()->set_text("Revenue is higher in the North.");
         }
-        stream->Write(event);
+        write(event);
         event.Clear();
         enrichv1::ItemAnnotation* code = event.mutable_annotation();
         code->set_self_ref(picture.self_ref());
         code->set_model("chart-vlm");
         code->mutable_chart_code()->set_text("import matplotlib.pyplot as plt");
         code->mutable_chart_code()->set_language(docv1::CODE_LANGUAGE_LABEL_PYTHON);
-        stream->Write(event);
+        write(event);
         continue;
       }
       if (mode_ == FakeMode::kSkip) {
@@ -210,14 +222,15 @@ class FakeEnrichService final : public enrichv1::EnrichService::Service {
         *annotation->mutable_chart_table() =
             mode_ == FakeMode::kEmptyTable ? enrichv1::ChartTable() : canned_table("Revenue by region");
       }
-      stream->Write(event);
+      write(event);
       // A peer that answers the same picture twice (a retry that also
       // delivered the first answer): the second table must not count.
-      if (mode_ == FakeMode::kDuplicate) stream->Write(event);
+      if (mode_ == FakeMode::kDuplicate) write(event);
     }
     event.Clear();
-    event.mutable_complete()->set_succeeded(mode_ == FakeMode::kAnswer ? seen.document.pictures_size() : 0);
-    stream->Write(event);
+    event.mutable_complete()->set_succeeded(annotations);
+    event.mutable_complete()->set_skipped(skips);
+    write(event);
     return grpc::Status::OK;
   }
 
@@ -464,7 +477,7 @@ void verify_picture_description_class_filters() {
   const grparse::ChartDerenderReport ready =
       grparse::derender_charts(nullptr, options, &document);
   require(ready.candidates == 0 && ready.warnings.size() == 1 &&
-              ready.warnings[0].contains("GRPARSE_ENRICH_TARGET"),
+              ready.warnings[0].message.contains("GRPARSE_ENRICH_TARGET"),
           "allow=bar_chart at 0.5 selects the chart but skips without a channel");
 }
 
@@ -559,8 +572,8 @@ void verify_picture_description_api_call_reaches_enrich() {
           "the headers reach enrich as VlmHeader entries in name order");
   require(seen.vlm_endpoint() == "http://api.vlm:9000/v1",
           "the headers travel with the per-request endpoint they are for");
-  for (const std::string& warning : report.warnings) {
-    require(!warning.contains("sk-never-logged"), "no warning carries a header value");
+  for (const grparse::Warning& warning : report.warnings) {
+    require(!warning.message.contains("sk-never-logged"), "no warning carries a header value");
   }
   require(!output.contains("sk-never-logged"), "nothing written to stdout or stderr carries "
                                                "a header value");
@@ -586,18 +599,18 @@ void verify_skip_events_and_empty_tables_count_as_skipped() {
         grparse::derender_charts(server.channel(), options_for(server.target()), &document);
     require(report.candidates == 1 && report.derendered == 0 && report.skipped == 1,
             "a skip event or an empty table is one skipped candidate");
-    require(report.warnings.size() == 1 && report.warnings[0].contains("#/pictures/0"),
+    require(report.warnings.size() == 1 && report.warnings[0].message.contains("#/pictures/0"),
             "the skip names the picture: " +
-                (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+                (report.warnings.empty() ? std::string("no warning") : report.warnings[0].message));
     if (mode == FakeMode::kSkip) {
-      require(report.warnings[0].contains("SKIP_REASON_VLM_ERROR") &&
-                  report.warnings[0].contains("503"),
+      require(report.warnings[0].message.contains("SKIP_REASON_VLM_ERROR") &&
+                  report.warnings[0].message.contains("503"),
               "the peer's reason and detail survive");
     }
     if (mode == FakeMode::kRefused) {
-      require(report.warnings[0].contains("SKIP_REASON_ENDPOINT_REFUSED") &&
-                  report.warnings[0].contains("not public"),
-              "an endpoint the enrich policy refused is reported by name: " + report.warnings[0]);
+      require(report.warnings[0].message.contains("SKIP_REASON_ENDPOINT_REFUSED") &&
+                  report.warnings[0].message.contains("not public"),
+              "an endpoint the enrich policy refused is reported by name: " + report.warnings[0].message);
     }
     require(grparse::data_totals().chart_derender_skipped == skipped_before + 1,
             "the skipped counter moves by one");
@@ -618,9 +631,9 @@ void verify_deadline_bounds_the_leg_and_never_fails_the_document() {
           "the leg returns at its own deadline, not the peer's pace");
   require(report.candidates == 1 && report.derendered == 0 && report.skipped == 1,
           "a timed-out candidate is skipped");
-  require(!report.warnings.empty() && report.warnings[0].contains("DEADLINE_EXCEEDED"),
+  require(!report.warnings.empty() && report.warnings[0].message.contains("DEADLINE_EXCEEDED"),
           "the timeout is reported as such: " +
-              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0].message));
   require(document.SerializeAsString() == before, "a timeout leaves the document untouched");
   // The inbound call's own deadline caps the leg even when the configured
   // timeout is generous.
@@ -644,9 +657,9 @@ void verify_cancel_hook_ends_the_leg() {
       [started] { return std::chrono::steady_clock::now() - started > std::chrono::milliseconds(200); });
   require(std::chrono::steady_clock::now() - started < std::chrono::milliseconds(1000),
           "the leg returns once the caller is gone, not at the peer's pace");
-  require(!report.warnings.empty() && report.warnings[0].contains("CANCELLED"),
+  require(!report.warnings.empty() && report.warnings[0].message.contains("CANCELLED"),
           "the cancel is reported as such: " +
-              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0].message));
 }
 
 // A peer that answers each image before it reads the next: its answers fill
@@ -660,6 +673,7 @@ class InterleavingEnrichService final : public enrichv1::EnrichService::Service 
           stream) override {
     enrichv1::EnrichDocumentRequest request;
     enrichv1::EnrichDocumentResponse event;
+    uint32_t skips = 0;
     while (stream->Read(&request)) {
       if (!request.has_image()) continue;
       event.Clear();
@@ -667,9 +681,10 @@ class InterleavingEnrichService final : public enrichv1::EnrichService::Service 
       event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
       event.mutable_skipped()->set_detail(std::string(512U * 1024U, 'x'));
       if (!stream->Write(event)) break;
+      ++skips;
     }
     event.Clear();
-    event.mutable_complete();
+    event.mutable_complete()->set_skipped(skips);
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -694,8 +709,9 @@ void verify_answers_are_read_while_images_go_out() {
           "the leg finishes long before its deadline");
   require(report.candidates == kPictures && report.skipped == kPictures,
           "every image was answered: " + std::to_string(report.skipped));
-  for (const std::string& warning : report.warnings) {
-    require(!warning.contains("DEADLINE_EXCEEDED"), "the leg did not stall: " + warning.substr(0, 200));
+  for (const grparse::Warning& warning : report.warnings) {
+    require(!warning.message.contains("DEADLINE_EXCEEDED"),
+            "the leg did not stall: " + warning.message.substr(0, 200));
   }
 }
 
@@ -740,10 +756,10 @@ void verify_duplicate_tables_fold_once_and_never_go_negative() {
   }
   require(tabular == 1, "the picture carries one tabular annotation, got " + std::to_string(tabular));
   require(document.pictures(0).source_size() == 1, "the picture carries one GenerationSource");
-  require(report.warnings.size() == 1 && report.warnings[0].contains("#/pictures/0") &&
-              report.warnings[0].contains("duplicate"),
+  require(report.warnings.size() == 1 && report.warnings[0].message.contains("#/pictures/0") &&
+              report.warnings[0].message.contains("duplicate"),
           "the second table is reported as a duplicate: " +
-              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0].message));
 }
 
 // A picture the arena never named gets the positional self_ref on the wire,
@@ -833,10 +849,10 @@ void verify_one_failed_output_keeps_the_others() {
   require(report.derendered == 1 && report.skipped == 0 && report.chart_tables == 1 &&
               report.chart_summaries == 0 && report.chart_codes == 1,
           "the chart is derendered without its summary");
-  require(report.warnings.size() == 1 && report.warnings[0].contains("CHART_OUTPUT_SUMMARY") &&
-              report.warnings[0].contains("empty summary"),
+  require(report.warnings.size() == 1 && report.warnings[0].message.contains("CHART_OUTPUT_SUMMARY") &&
+              report.warnings[0].message.contains("empty summary"),
           "the warning names the skipped output: " +
-              (report.warnings.empty() ? std::string("no warning") : report.warnings[0]));
+              (report.warnings.empty() ? std::string("no warning") : report.warnings[0].message));
   require(!document.pictures(0).meta().has_description() &&
               document.pictures(0).meta().code().text() == "import matplotlib.pyplot as plt",
           "no description, code present");
@@ -886,7 +902,7 @@ void verify_off_by_default_dials_nothing() {
   const grparse::ChartDerenderReport report =
       grparse::derender_charts(nullptr, grparse::ChartDerenderOptions{}, &document);
   require(report.candidates == 1 && report.derendered == 0 && report.skipped == 1 &&
-              report.warnings.size() == 1 && report.warnings[0].contains("GRPARSE_ENRICH_TARGET"),
+              report.warnings.size() == 1 && report.warnings[0].message.contains("GRPARSE_ENRICH_TARGET"),
           "calling the leg without a target names the variable and skips");
   require(grparse::data_totals().chart_derender_skipped == skipped_before + 1,
           "the skip is counted");
@@ -993,6 +1009,295 @@ void verify_item_crops_reach_enrich_with_code_formula_jobs() {
           "a chart-only call sends no code/formula crop");
 }
 
+// Reads the request to its end, then answers with the same events whatever
+// was asked: the stream a test wants the client to reconcile.
+class ScriptedEnrichService final : public enrichv1::EnrichService::Service {
+ public:
+  explicit ScriptedEnrichService(std::vector<enrichv1::EnrichDocumentResponse> events)
+      : events_(std::move(events)) {}
+
+  grpc::Status EnrichDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<enrichv1::EnrichDocumentResponse, enrichv1::EnrichDocumentRequest>*
+          stream) override {
+    enrichv1::EnrichDocumentRequest request;
+    while (stream->Read(&request)) {
+    }
+    for (const enrichv1::EnrichDocumentResponse& event : events_) stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+ private:
+  const std::vector<enrichv1::EnrichDocumentResponse> events_;
+};
+
+enrichv1::EnrichDocumentResponse started_event(uint32_t descriptions, uint32_t code,
+                                               uint32_t formulas) {
+  enrichv1::EnrichDocumentResponse event;
+  event.mutable_started()->set_picture_descriptions(descriptions);
+  event.mutable_started()->set_code_enrichments(code);
+  event.mutable_started()->set_formula_enrichments(formulas);
+  return event;
+}
+
+enum class Job { kDescription, kCode, kFormula };
+
+enrichv1::EnrichDocumentResponse annotation_event(Job job, const std::string& self_ref,
+                                                  const std::string& text) {
+  enrichv1::EnrichDocumentResponse event;
+  enrichv1::ItemAnnotation* annotation = event.mutable_annotation();
+  annotation->set_self_ref(self_ref);
+  annotation->set_model("scripted-vlm");
+  switch (job) {
+    case Job::kDescription: annotation->mutable_description()->set_text(text); break;
+    case Job::kCode: annotation->mutable_code()->set_text(text); break;
+    case Job::kFormula: annotation->mutable_formula()->set_text(text); break;
+  }
+  return event;
+}
+
+enrichv1::EnrichDocumentResponse skipped_event(const std::string& self_ref) {
+  enrichv1::EnrichDocumentResponse event;
+  event.mutable_skipped()->set_self_ref(self_ref);
+  event.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_VLM_ERROR);
+  event.mutable_skipped()->set_detail("endpoint answered 503");
+  return event;
+}
+
+enrichv1::EnrichDocumentResponse complete_event(uint32_t succeeded, uint32_t skipped,
+                                                uint32_t failed) {
+  enrichv1::EnrichDocumentResponse event;
+  event.mutable_complete()->set_succeeded(succeeded);
+  event.mutable_complete()->set_skipped(skipped);
+  event.mutable_complete()->set_failed(failed);
+  return event;
+}
+
+// sample_document plus a code item at #/texts/0 and a formula at #/texts/1.
+docv1::Document document_with_code_and_formula() {
+  docv1::Document document = sample_document();
+  auto* code = document.add_texts()->mutable_code();
+  code->set_self_ref("#/texts/0");
+  code->set_text("x");
+  auto* formula = document.add_texts()->mutable_formula();
+  formula->mutable_base()->set_self_ref("#/texts/1");
+  formula->mutable_base()->set_text("y");
+  return document;
+}
+
+// The leg with every job but chart extraction on, against `events`.
+grparse::ChartDerenderReport enrich_against(std::vector<enrichv1::EnrichDocumentResponse> events,
+                                            docv1::Document* document) {
+  ScriptedEnrichService fake(std::move(events));
+  ServerFixture server(&fake);
+  grparse::ChartDerenderOptions options = options_for(server.target());
+  options.do_chart_extraction = false;
+  options.do_picture_description = true;
+  options.do_code_enrichment = true;
+  options.do_formula_enrichment = true;
+  return grparse::derender_charts(server.channel(), options, document);
+}
+
+std::vector<grparse::Warning> warnings_coded(const grparse::ChartDerenderReport& report,
+                                             docv1::WarningCode code) {
+  std::vector<grparse::Warning> found;
+  for (const grparse::Warning& warning : report.warnings) {
+    if (warning.code == code) found.push_back(warning);
+  }
+  return found;
+}
+
+std::string all_messages(const grparse::ChartDerenderReport& report) {
+  std::string text;
+  for (const grparse::Warning& warning : report.warnings) text += "\n  " + warning.message;
+  return text.empty() ? " (no warnings)" : text;
+}
+
+// An annotation the document cannot take (a reference it does not hold, an
+// item of another kind) is not in the document afterwards, and the caller is
+// told which item, typed, for the description, code and formula jobs alike.
+void verify_unapplied_annotations_are_typed_warnings() {
+  docv1::Document document = document_with_code_and_formula();
+  const grparse::ChartDerenderReport report = enrich_against(
+      {started_event(2, 2, 2),
+       annotation_event(Job::kDescription, "#/pictures/1", "A photograph."),
+       annotation_event(Job::kDescription, "#/pictures/9", "No such picture."),
+       annotation_event(Job::kCode, "#/texts/0", "int x;"),
+       annotation_event(Job::kCode, "#/texts/1", "that item is a formula"),
+       annotation_event(Job::kFormula, "#/texts/1", "a+b"),
+       annotation_event(Job::kFormula, "#/texts/5", "no such item"),
+       complete_event(6, 0, 0)},
+      &document);
+  require(report.pictures_described == 1 && report.codes_enriched == 1 &&
+              report.formulas_enriched == 1,
+          "the annotations that fit are applied");
+  require(document.pictures(1).meta().description().text() == "A photograph." &&
+              document.texts(0).code().text() == "int x;" &&
+              document.texts(1).formula().base().text() == "a+b",
+          "and are in the document");
+  const std::vector<grparse::Warning> unapplied =
+      warnings_coded(report, docv1::WARNING_CODE_ENRICHMENT_NOT_APPLIED);
+  require(unapplied.size() == 3 && unapplied[0].item_ref == "#/pictures/9" &&
+              unapplied[1].item_ref == "#/texts/1" && unapplied[2].item_ref == "#/texts/5",
+          "each unapplied annotation is one ENRICHMENT_NOT_APPLIED warning on its item:" +
+              all_messages(report));
+  require_equal(report.warnings.size(), size_t{3},
+                "a stream whose counts add up raises nothing else");
+  require_equal(report.annotations_received, 6, "every annotation on the stream is counted");
+  require_equal(report.annotations_not_applied, 3,
+                "the annotations that could not be applied are counted");
+}
+
+// The trailer and the selection counts are read and held against what
+// arrived: an item the peer says failed, a count the events do not bear
+// out, and a stream that ends without its trailer each reach the caller
+// typed, and the trailer's numbers are on the report.
+void verify_the_trailer_is_reconciled_with_the_events() {
+  {
+    // Two descriptions selected, one answered, one failed at the peer.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(2, 0, 0),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph."),
+         complete_event(1, 0, 1)},
+        &document);
+    require(report.trailer_seen && report.trailer_succeeded == 1 && report.items_failed == 1,
+            "the trailer's counts are on the report");
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 2 && report.warnings.size() == 2,
+            "a failed item is reported from the trailer and from the selection it leaves "
+            "unanswered:" + all_messages(report));
+    require(mismatched[0].count == std::optional<uint64_t>(1) &&
+                mismatched[0].message.contains("failed") &&
+                mismatched[1].count == std::optional<uint64_t>(1) &&
+                mismatched[1].message.contains("picture description"),
+            "each states how many items it stands for:" + all_messages(report));
+  }
+  {
+    // A trailer that claims more than the stream carried.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(1, 0, 0),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph."),
+         complete_event(3, 2, 0)},
+        &document);
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 2 && report.warnings.size() == 2 &&
+                mismatched[0].message.contains("3 annotation") &&
+                mismatched[1].message.contains("2 skip"),
+            "annotations and skips the trailer counts but the stream never carried are "
+            "each a count mismatch:" + all_messages(report));
+  }
+  {
+    // No trailer at all behind an OK status.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(1, 0, 0),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph.")},
+        &document);
+    require(!report.trailer_seen &&
+                warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE).size() ==
+                    1 &&
+                report.warnings.size() == 1,
+            "a stream that ends without EnrichComplete is reported as incomplete:" +
+                all_messages(report));
+  }
+  {
+    // Every selected item answered, by an annotation or a skip, and a
+    // trailer that agrees: only the peer's own skip is passed on.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(1, 1, 1),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph."),
+         skipped_event("#/texts/0"), skipped_event("#/texts/1"), complete_event(1, 2, 0)},
+        &document);
+    require(report.skips_received == 2 && report.warnings.size() == 2 &&
+                warnings_coded(report, docv1::WARNING_CODE_UNSPECIFIED).size() == 2,
+            "a stream whose counts add up raises no warning of its own:" +
+                all_messages(report));
+  }
+}
+
+// grpc-enrich counts an item that failed outside the VLM call in the
+// trailer's `failed` only, and also names it in a skip event, whose reason
+// is a value newer than the vendored contract (it arrives as a bare
+// number). That stream adds up: the failure is reported once, the skip is
+// not a count the trailer contradicts, and the item was answered.
+void verify_a_failed_item_named_by_a_skip_is_one_failure() {
+  enrichv1::EnrichDocumentResponse internal_error = skipped_event("#/pictures/0");
+  // SKIP_REASON_INTERNAL_ERROR on grpc-enrich main; unknown to this build.
+  internal_error.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(7));
+  internal_error.mutable_skipped()->set_detail(
+      "unexpected failure enriching this item: IllegalStateException");
+  {
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(2, 0, 0),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph."), internal_error,
+         complete_event(1, 0, 1)},
+        &document);
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 1 && mismatched[0].message.contains("failed") &&
+                mismatched[0].count == std::optional<uint64_t>(1),
+            "a failed item the peer also names in a skip is one count mismatch, the "
+            "failure:" + all_messages(report));
+    require(report.skips_received == 1 && report.items_failed == 1 &&
+                report.warnings.size() == 2 &&
+                warnings_coded(report, docv1::WARNING_CODE_UNSPECIFIED).size() == 1,
+            "beside it only the peer's own skip is passed on:" + all_messages(report));
+    require(report.warnings[0].message.contains("#/pictures/0") &&
+                report.warnings[0].message.contains("7") &&
+                report.warnings[0].message.contains("IllegalStateException"),
+            "a skip reason this build has no name for is passed on by its number: " +
+                report.warnings[0].message);
+  }
+  {
+    // More skip events than the trailer's skipped and failed can account for.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(2, 0, 0), internal_error, skipped_event("#/pictures/1"),
+         complete_event(0, 0, 1)},
+        &document);
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 2 && mismatched[0].message.contains("skip") &&
+                mismatched[1].message.contains("failed"),
+            "skip events neither trailer count explains are still a mismatch:" +
+                all_messages(report));
+  }
+}
+
+// A selected picture whose inline pixels do not decode is never sent, so no
+// answer can come back for it; that is said, on the picture, rather than
+// left to look like a picture nobody selected.
+void verify_undecodable_inline_pixels_are_reported() {
+  docv1::Document document = sample_document();
+  document.mutable_pictures(0)->mutable_image()->set_uri("data:image/png;base64,@@@");
+  grparse::ChartDerenderOptions options;
+  options.target = "enrich:unused";
+  const grparse::ChartDerenderReport report = grparse::derender_charts(nullptr, options, &document);
+  require_equal(report.pictures_undecodable, 1, "the undecodable chart picture is counted");
+  const std::vector<grparse::Warning> missing =
+      warnings_coded(report, docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING);
+  require(missing.size() == 1 && missing[0].item_ref == "#/pictures/0" &&
+              report.warnings.size() == 1,
+          "and reported once, on the picture:" + all_messages(report));
+
+  // Selected by two jobs, still one picture and one warning.
+  docv1::Document both = sample_document();
+  both.mutable_pictures(0)->mutable_image()->set_uri("data:image/png;base64,@@@");
+  both.mutable_pictures(1)->mutable_image()->clear_uri();
+  both.mutable_pictures(2)->mutable_image()->clear_uri();
+  options.do_picture_description = true;
+  const grparse::ChartDerenderReport twice = grparse::derender_charts(nullptr, options, &both);
+  require(twice.pictures_undecodable == 1 &&
+              warnings_coded(twice, docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING).size() == 1,
+          "a picture two jobs selected is reported once:" + all_messages(twice));
+}
+
 void verify_repetition_truncation_folds_typed() {
   docv1::Document document;
   auto* code = document.add_texts()->mutable_code();
@@ -1057,6 +1362,10 @@ int main() {
       verify_summary_and_code_fold_once,
       verify_picture_description_api_call_reaches_enrich,
       verify_code_formula_options_reach_enrich_typed,
+      verify_unapplied_annotations_are_typed_warnings,
+      verify_the_trailer_is_reconciled_with_the_events,
+      verify_a_failed_item_named_by_a_skip_is_one_failure,
+      verify_undecodable_inline_pixels_are_reported,
       verify_repetition_truncation_folds_typed,
       verify_item_crops_reach_enrich_with_code_formula_jobs,
   });

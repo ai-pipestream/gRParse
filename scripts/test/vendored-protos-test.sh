@@ -1,12 +1,13 @@
 #!/bin/sh
 # Every vendored contract is byte-identical to its owner's copy at the
 # commit collectors/PINS.tsv names (#246): the collector and backend
-# contracts under collectors/ and backends/, and every sibling's copy of
-# document.proto (the fleet's source of truth lives here; a sibling that
-# vendors it is pinned at the commit where its copy matches). Moving a pin is
-# the explicit act of re-vendoring; editing a vendored file without moving
-# its pin, or a document.proto change without the fleet sweep, fails here
-# with the diff.
+# contracts under collectors/ and backends/, the office contract at the
+# repository root and the shell's peer copy of it (#436), and every
+# sibling's copy of document.proto (the fleet's source of truth lives here;
+# a sibling that vendors it is pinned at the commit where its copy matches).
+# Moving a pin is the explicit act of re-vendoring; editing a vendored file
+# without moving its pin, or a document.proto change without the fleet
+# sweep, fails here with the diff.
 #
 #   sh scripts/test/vendored-protos-test.sh               fetch from GitHub
 #   VENDORED_PROTOS_FROM=<dir> sh ...                     read <dir>/<repo>/<path>

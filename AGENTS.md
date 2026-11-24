@@ -58,7 +58,7 @@ file under `collectors/` copied byte-identical from the sister repo.
 
 | Repo | Default branch | Language | Port | Vendored in `collectors/` | Routed by default for |
 |---|---|---|---|---|---|
-| `grpc-libreoffice` | `main` | C++ (CMake, LibreOfficeKit) | 50053 | none (contract in `office_service.proto` here; gRParse folds its typed events itself) | office formats |
+| `grpc-libreoffice` | `main` | C++ (CMake, LibreOfficeKit) | 50053 | `office_service.proto` at the repository root, pinned in `collectors/PINS.tsv` like the rest (gRParse folds its typed events itself) | office formats |
 | `grpc-pdf-inspector` | `main` | Rust (Cargo, buf) | 50067 | `pdf_types.proto`, `pdf_service.proto` | PDF routing oracle: classifies, and text PDFs take its fast path |
 | `grpc-email` | `main` | Java (Gradle, buf) | 50054 | `email_service.proto` | `.eml`, `.msg`, `message/rfc822` |
 | `grpc-xml` | `main` | Rust (Cargo, buf) | 50066 | `xml.proto`, `xml_service.proto` | `.xml`, `.nxml`, `.xbrl`, METS/GBS archives |
@@ -282,8 +282,9 @@ release runs. Two more gates sit next to it. The anti-drift battery (ctests
 `test_truth_integrity` and `test_fixture_generators` modules under
 `eval/scorecard/tests/`) pins what the passes must keep producing offline:
 the same canonical JSON across runs and input permutations, fixed points for
-repair, the chart and sheet shapes, the mimetype precedence, an exact
-allowlist for colon-keyed custom fields (`cell:?` only), a sha256 manifest
+repair, the chart and sheet shapes, the mimetype precedence, no
+colon-keyed custom field from the office fold (an unplaceable cell is a
+typed `TableData.unplaced_cells` entry, not `cell:?`), a sha256 manifest
 of the fixtures (`eval/scorecard/fixtures/write_manifest.py` updates it on
 purpose), truth files that validate and floors never above their baseline.
 The S3 corpus eval (`eval/s3/run.py`, `eval/s3/README.md`) is the third

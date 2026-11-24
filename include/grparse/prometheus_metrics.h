@@ -51,6 +51,23 @@ enum class CollectorCallStatus : size_t {
 inline constexpr std::array<std::string_view, 4> kCollectorCallStatuses = {
     "ok", "error", "timeout", "unavailable"};
 
+// The embedding backends a failure is counted under: the names
+// EmbeddingModelIdentity::backend takes.
+inline constexpr std::array<std::string_view, 3> kMetricEmbeddingBackends = {
+    "cpu", "openvino", "tensorrt"};
+
+// Where an embedding batch failed: turning its texts into tokens, the
+// backend's inference call, or the check and pooling of what the backend
+// returned.
+enum class EmbeddingFailureStage : size_t {
+  kTokenize = 0,
+  kInference = 1,
+  kOutput = 2,
+};
+
+inline constexpr std::array<std::string_view, 3> kEmbeddingFailureStages = {
+    "tokenize", "inference", "output"};
+
 // Finite upper bounds in seconds for document and collector latency histograms.
 // The final bucket in DurationHistogram::buckets is the +Inf overflow bucket.
 inline constexpr std::array<double, 12> kDurationBoundsSeconds = {
@@ -82,22 +99,70 @@ struct CollectorMetrics {
   uint64_t status(CollectorCallStatus s) const { return calls[static_cast<size_t>(s)]; }
 };
 
+// What a consensus read of a PDF (GRPARSE_PDF_BACKEND naming several
+// backends) went without. Every one of these is also a typed warning on
+// the document it happened to (WARNING_CODE_CONSENSUS_*), which names the
+// backend; the counter is what an operator alerts on, and carries no
+// backend label because no gRParse metric is keyed by a configured target.
+enum class ConsensusEvent : size_t {
+  // A configured backend could not open a document and sat out its vote.
+  kLegOpenFailed = 0,
+  // A backend failed one page's text or raster; the others served it.
+  kLegPageFailed = 1,
+  // A backend was taken out of a document's vote after repeated page
+  // failures.
+  kLegDisabled = 2,
+  // The backends disagreed on how many pages a document has.
+  kPageCountDisagreement = 3,
+  // A page's text was decided by fewer backends than were configured.
+  kPageUndervoted = 4,
+};
+
+inline constexpr std::array<std::string_view, 5> kConsensusEvents = {
+    "leg_open_failed", "leg_page_failed", "leg_disabled", "page_count_disagreement",
+    "page_undervoted"};
+
+struct EmbeddingMetrics {
+  std::array<uint64_t, kEmbeddingFailureStages.size()> failures{};
+
+  uint64_t& failed(EmbeddingFailureStage s) { return failures[static_cast<size_t>(s)]; }
+  uint64_t failed(EmbeddingFailureStage s) const { return failures[static_cast<size_t>(s)]; }
+};
+
 struct PipelineTelemetry {
   std::array<DoctypeMetrics, kMetricDoctypes.size()> doctypes{};
   std::array<CollectorMetrics, kMetricCollectors.size()> collectors{};
+  std::array<uint64_t, kConsensusEvents.size()> consensus{};
+  std::array<EmbeddingMetrics, kMetricEmbeddingBackends.size()> embeddings{};
+  // Exceptions a CallExecutor task let escape to its worker. Each one is a
+  // task that failed outside its own error handling.
+  uint64_t executor_task_exceptions = 0;
 
   DoctypeMetrics& doctype(std::string_view name);
   const DoctypeMetrics& doctype(std::string_view name) const;
   CollectorMetrics& collector(std::string_view name);
   const CollectorMetrics& collector(std::string_view name) const;
+  uint64_t& consensus_events(ConsensusEvent event) {
+    return consensus[static_cast<size_t>(event)];
+  }
+  uint64_t consensus_events(ConsensusEvent event) const {
+    return consensus[static_cast<size_t>(event)];
+  }
+  // Throws std::out_of_range for a name outside kMetricEmbeddingBackends.
+  EmbeddingMetrics& embedding(std::string_view backend);
+  const EmbeddingMetrics& embedding(std::string_view backend) const;
 };
 
-// Snapshot or reset the process-wide per-doctype and per-collector counters.
+// Snapshot or reset the process-wide per-doctype, per-collector, consensus
+// and per-embedding-backend counters.
 PipelineTelemetry pipeline_telemetry();
 void reset_pipeline_telemetry();
 
 void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
                                 uint64_t duration_ns);
+// One exception a CallExecutor task let escape to its worker; exported as
+// grparse_executor_task_exceptions_total.
+void record_executor_task_exception();
 void record_collector_call(std::string_view collector, CollectorCallStatus status,
                            uint64_t duration_ns, uint64_t warnings = 0);
 void record_collector_call(ai::pipestream::parse::v1::Collector collector,
@@ -106,6 +171,11 @@ void record_collector_call(ai::pipestream::parse::v1::Collector collector,
 void record_collector_warnings(std::string_view collector, uint64_t count = 1);
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector,
                                uint64_t count = 1);
+void record_consensus_event(ConsensusEvent event, uint64_t count = 1);
+
+// Counts one failed embedding batch. A backend outside
+// kMetricEmbeddingBackends is not counted, as an unknown collector is not.
+void record_embedding_failure(std::string_view backend, EmbeddingFailureStage stage);
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code);
 std::string_view metric_collector_name(ai::pipestream::parse::v1::Collector collector);
@@ -131,7 +201,10 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
 // rate(busy_seconds[1m]) / workers is the same busy fraction the stdout line
 // prints.  Orientation recovery exports as grparse_pages_rerecognized_total,
 // grparse_rerecognition_passes_total and
-// grparse_page_rotations_total{degrees="90"|"180"|"270"}.  The repair totals
+// grparse_page_rotations_total{degrees="90"|"180"|"270"}.  Pages whose
+// sharper picture render failed (the picture regions were read from the
+// page raster) export as grparse_pages_picture_ocr_at_page_resolution_total.
+// The repair totals
 // export as grparse_repair_changes_total{kind=...} (every RepairTotals
 // counter), the office CV enrichment totals as grparse_office_cv_total{kind=...}
 // and the data-plane totals as grparse_data_changes_total{kind=...}, plus the
@@ -146,7 +219,11 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
 // latency export as grparse_documents_completed_total and
 // grparse_document_duration_seconds; per-collector calls, latency, and
 // warnings export as grparse_collector_calls_total,
-// grparse_collector_duration_seconds, and grparse_collector_warnings_total.
+// grparse_collector_duration_seconds, and grparse_collector_warnings_total;
+// what consensus reads of PDFs went without exports as
+// grparse_pdf_consensus_events_total{kind=...} (every ConsensusEvent).
+// Failed embedding batches export as
+// grparse_embedding_failures_total{backend,stage}.
 // This overload is pure in its inputs.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,

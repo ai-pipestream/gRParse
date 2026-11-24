@@ -10,6 +10,7 @@ install(TARGETS grparse-embed-text RUNTIME DESTINATION bin)
 target_sources(grparse_core PRIVATE
   src/embedding.cpp
   src/embeddings/engine.cpp
+  src/embeddings/failure.cpp
   src/embeddings/cpu_backend.cpp)
 
 if(GRPARSE_EMBED_OPENVINO)
@@ -43,6 +44,13 @@ if(GRPARSE_EMBED_OPENVINO)
   endif()
   target_sources(grparse_core PRIVATE src/embeddings/intel_backend.cpp)
   target_compile_definitions(grparse_core PRIVATE GRPARSE_EMBED_OPENVINO=1)
+  # The same C API backs native OpenVINO for the image models that run
+  # outside ONNX Runtime (src/openvino/openvino_model.cpp: table structure),
+  # beside src/inference_model.cpp in the model-interface library.
+  target_sources(grparse_ort_ep PRIVATE src/openvino/openvino_model.cpp)
+  target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_NATIVE_OPENVINO=1)
+  target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_OPENVINO_INCLUDE}")
+  target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_OPENVINO_C_LIBRARY}")
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_OPENVINO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_OPENVINO_C_LIBRARY}")
 endif()

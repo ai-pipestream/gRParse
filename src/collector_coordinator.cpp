@@ -134,11 +134,13 @@ CoordinatorResult run_collectors(std::vector<PlannedCollector> collectors,
     // account: that is the leg's claims, and the rank order decides the
     // fields below. calamine's cells are the exception: they replace the
     // cells of the sheet tables already merged (workbook_cells.h), so a
-    // workbook's values are calamine's and its shape is libreoffice's.
+    // workbook's values are calamine's and its shape is libreoffice's. A
+    // sheet the leg did not read to its end is left as libreoffice read it.
     if (collectors[index].office_fanout && result.succeeded > 0) {
       if (collectors[index].id == pipestream::parse::v1::COLLECTOR_CALAMINE) {
-        std::vector<std::string> warnings;
-        adopt_calamine_cells(outcome.document, &result.document, &warnings);
+        std::vector<Warning> warnings;
+        adopt_calamine_cells(outcome.document, outcome.incomplete_sheets, &result.document,
+                             &warnings);
         warning_count += warnings.size();
         for (auto& warning : warnings) {
           result.warnings.emplace_back(collectors[index].id, std::move(warning));

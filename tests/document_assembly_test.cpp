@@ -188,7 +188,7 @@ void verify_unknown_region_label_falls_back_loudly() {
   grparse::OcrPage page{1000, 1000, {line("mystery block", 10)}};
   page.regions = {{"aside", 0.9F, 0, 0, 1000, 40}};
 
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data, &warnings);
   require(data.texts_size() == 1, "one region, one block");
@@ -197,10 +197,10 @@ void verify_unknown_region_label_falls_back_loudly() {
           "an unknown label lands on the TEXT catch-all");
   require(base.has_label_raw() && base.label_raw() == "aside",
           "the raw spelling rides label_raw, so version skew loses nothing");
-  require(warnings.size() == 1 && warnings[0].contains("unknown region label") &&
-              warnings[0].contains("'aside'"),
+  require(warnings.size() == 1 && warnings[0].message.contains("unknown region label") &&
+              warnings[0].message.contains("'aside'"),
           "the fallback is named, once: "
-          + (warnings.empty() ? std::string("no warning") : warnings[0]));
+          + (warnings.empty() ? std::string("no warning") : warnings[0].message));
 
   grparse::OcrPage plain{1000, 1000, {line("inside", 10)}};
   plain.regions = {{"text", 0.9F, 0, 0, 1000, 40}};
@@ -234,8 +234,9 @@ void verify_structured_cells_override_geometry() {
   require(header.text() == "Region" && header.col_span() == 2 && header.column_header() &&
               header.start_col_offset_idx() == 0 && header.end_col_offset_idx() == 2,
           "header cell keeps its span and thead flag");
-  require(header.bbox().t() == 290 && header.bbox().r() == 500,
-          "structured cell bbox is the model box");
+  require(header.bbox().l() == 10 && header.bbox().t() == 300 && header.bbox().r() == 90 &&
+              header.bbox().b() == 310,
+          "a structured cell with text takes its words' box, not the model box");
   require(table_data.table_cells(1).text() == "North" && !table_data.table_cells(1).column_header(),
           "body cell binds its line and stays unflagged");
   require(table_data.grid_size() == 2 && table_data.grid(0).cells_size() == 2,
@@ -246,6 +247,56 @@ void verify_structured_cells_override_geometry() {
   require(table_data.grid(1).cells(1).text().empty() &&
               table_data.grid(1).cells(1).start_col_offset_idx() == 1,
           "unclaimed positions blank-fill with their own offsets");
+}
+
+// A table whose structure decode was cut off carries the cut on its region.
+// Assembly says so with a typed warning on the page and on that table's own
+// ref, and a table extended from line geometry names both producers. A
+// table whose decode reached its end raises nothing.
+void verify_a_cut_off_structure_decode_is_a_typed_warning_on_its_table() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000,
+                        {line("Whole", 110), line("Head", 300), line("North", 360),
+                         line("South", 420), line("Alone", 610)}};
+  grparse::LayoutRegion whole{"table", 0.8F, 0, 100, 1000, 150};
+  whole.structured_cells = {{0, 0, 1, 1, false, 0, 100, 500, 150}};
+  // The model placed two cells; the third was built from the line under them.
+  grparse::LayoutRegion extended{"table", 0.8F, 0, 250, 1000, 450};
+  extended.structured_cells = {{0, 0, 1, 1, true, 0, 290, 500, 340},
+                               {1, 0, 1, 1, false, 0, 350, 500, 400},
+                               {2, 0, 1, 1, false, 0, 410, 500, 440}};
+  extended.structure_cut = 2;
+  // Cut off as well, with no text under the model's last cell to add.
+  grparse::LayoutRegion bare{"table", 0.8F, 0, 600, 1000, 650};
+  bare.structured_cells = {{0, 0, 1, 1, false, 0, 600, 500, 650}};
+  bare.structure_cut = 1;
+  page.regions = {whole, extended, bare};
+
+  std::vector<grparse::Warning> warnings;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 7, &cursor, &data, &warnings);
+  require(data.tables_size() == 3, "three tables on the page");
+  require(warnings.size() == 2, "one warning per cut-off table, none for the whole one: " +
+                                    std::to_string(warnings.size()));
+  for (const grparse::Warning& warning : warnings) {
+    require(warning.code == docv1::WARNING_CODE_TABLE_STRUCTURE_TRUNCATED && warning.page_no == 7,
+            "the cut-off is typed and on its page: " + warning.message);
+  }
+  require(warnings[0].item_ref == "#/tables/1" && warnings[1].item_ref == "#/tables/2",
+          "each warning names its own table: " + warnings[0].item_ref + ", " +
+              warnings[1].item_ref);
+  require(warnings[0].message.contains("placed by line geometry") &&
+              warnings[1].message.contains("no row was added"),
+          "the words say whether rows were added: " + warnings[0].message + " | " +
+              warnings[1].message);
+  require(data.tables(0).source_size() == 1 && data.tables(2).source_size() == 1 &&
+              data.tables(2).source(0).collector().model() == "slanet-plus",
+          "a table with no cell from line geometry keeps the model as its one source");
+  require(data.tables(1).source_size() == 2 &&
+              data.tables(1).source(0).collector().model() == "slanet-plus" &&
+              data.tables(1).source(1).collector().model() == "geometry",
+          "the extended table names the model and line geometry");
 }
 
 // A figure region carrying captured PNG bytes becomes an ImageRef data URI
@@ -818,6 +869,89 @@ void verify_recovered_rotation_reaches_page_quality() {
           "an unturned page claims no rotation");
 }
 
+// A picture whose text was to be read from a sharper render of the page,
+// and was read from the page raster because that render failed, reads like
+// any other picture. The loss is said, typed: on the page and on the picture
+// item where there is one, on the page alone for the image areas that are no
+// picture item of their own (the PDF's image placements). A page whose reads
+// came as configured says nothing.
+void verify_a_failed_sharper_render_is_a_typed_warning() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("body text", 10)}};
+  grparse::LayoutRegion chart{"picture", 0.9F, 0, 200, 500, 600};
+  chart.read_at_page_resolution = true;
+  // Too small to have been read at all, so it has nothing to report.
+  const grparse::LayoutRegion icon{"picture", 0.9F, 600, 200, 620, 220};
+  page.regions = {chart, icon};
+  page.sharper_render_failure = grparse::OcrPage::SharperRenderFailure{"backend down", 1};
+
+  std::vector<grparse::Warning> warnings;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 4, &cursor, &data, &warnings);
+  require(data.pictures_size() == 2, "both pictures are still items");
+  std::string chart_ref;
+  for (const auto& picture : data.pictures()) {
+    if (picture.prov(0).bbox().r() == 500) chart_ref = picture.self_ref();
+  }
+  require(warnings.size() == 1,
+          "the picture read at page resolution is one warning: " + std::to_string(warnings.size()));
+  require(warnings[0].code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+          "the warning is typed: " + docv1::WarningCode_Name(warnings[0].code));
+  require(warnings[0].page_no == 4 && !chart_ref.empty() && warnings[0].item_ref == chart_ref,
+          "it names the page and the picture item: '" + warnings[0].item_ref + "'");
+  require(warnings[0].message.contains("page 4") && warnings[0].message.contains(chart_ref) &&
+              warnings[0].message.contains("backend down") &&
+              warnings[0].message.contains("page resolution"),
+          "its words say what happened and why: " + warnings[0].message);
+
+  // Three reads, one of them the picture: the other two were image
+  // placements, which stand for no item, so the page says it for them.
+  page.sharper_render_failure->reads = 3;
+  warnings.clear();
+  grparse::AssemblyCursor mixed_cursor;
+  ai::pipestream::parse::v1::PageData mixed;
+  grparse::append_page_data(page, 4, &mixed_cursor, &mixed, &warnings);
+  require(warnings.size() == 2, "one warning for the picture and one for the page: " +
+                                    std::to_string(warnings.size()));
+  int for_the_picture = 0;
+  int for_the_page = 0;
+  for (const grparse::Warning& warning : warnings) {
+    require(warning.code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+                warning.page_no == 4,
+            "every one is typed and names the page: " + warning.message);
+    if (warning.item_ref.empty()) {
+      ++for_the_page;
+      require(warning.message.contains("2 image areas") && warning.message.contains("backend down"),
+              "the page's warning counts the reads no item stands for: " + warning.message);
+    } else {
+      ++for_the_picture;
+    }
+  }
+  require(for_the_picture == 1 && for_the_page == 1, "one of each");
+
+  // Only placements were read: the page alone says so.
+  grparse::OcrPage placements{1000, 1000, {line("body text", 10)}};
+  placements.sharper_render_failure = grparse::OcrPage::SharperRenderFailure{"backend down", 1};
+  warnings.clear();
+  grparse::AssemblyCursor placements_cursor;
+  ai::pipestream::parse::v1::PageData placements_data;
+  grparse::append_page_data(placements, 2, &placements_cursor, &placements_data, &warnings);
+  require(warnings.size() == 1 && warnings[0].page_no == 2 && warnings[0].item_ref.empty() &&
+              warnings[0].code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+              warnings[0].message.contains("1 image area "),
+          "a page with no picture item still says its reads were weaker");
+
+  // The reads came from the sharper render, or the source has none.
+  grparse::OcrPage sharp{1000, 1000, {line("body text", 10)}};
+  sharp.regions = {{"picture", 0.9F, 0, 200, 500, 600}};
+  warnings.clear();
+  grparse::AssemblyCursor sharp_cursor;
+  ai::pipestream::parse::v1::PageData sharp_data;
+  grparse::append_page_data(sharp, 1, &sharp_cursor, &sharp_data, &warnings);
+  require(warnings.empty(), "a picture read as configured raises nothing");
+}
+
 // Consecutive body list items become one LIST group, in body order and
 // across what were page boundaries; a single item gets its own group, and
 // everything else stays where it was.
@@ -912,6 +1046,37 @@ std::vector<std::string> body_refs(const ai::pipestream::parse::v1::PageData& da
 // p772: the detector drew a text box around one End Bal amount, scoring it
 // above the table. The amount belongs to its cell, not after the table's
 // stray ".00" from a lower row.
+// What a page's source said about its read of the page (a PDF backend that
+// skipped content) leaves the fold through the caller's warnings, typed as
+// it came. A backend repeats a document-level finding on every page call,
+// so the same warning on a later page is not said again.
+void verify_source_warnings_reach_the_folds_caller() {
+  namespace docv1 = ai::pipestream::document::v1;
+  const grparse::Warning document_wide(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+                                       "backend repaired the cross-reference table");
+  const grparse::Warning on_first =
+      grparse::Warning(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED, "backend skipped a stream")
+          .on_page(1);
+  const grparse::Warning on_second =
+      grparse::Warning(docv1::WARNING_CODE_BACKEND_COUNT_MISMATCH, "3 text cells lost")
+          .on_page(2);
+  grparse::OcrPage first{1000, 1000, {line("first page", 100)}};
+  first.source_warnings = {document_wide, on_first};
+  grparse::OcrPage second{1000, 1000, {line("second page", 100)}};
+  second.source_warnings = {document_wide, on_second};
+
+  ai::pipestream::document::v1::Document document;
+  grparse::AssemblyCursor cursor;
+  std::string plain_text;
+  std::vector<grparse::Warning> warnings;
+  grparse::append_page_to_document(first, 1, &cursor, &document, &plain_text, nullptr, &warnings);
+  grparse::append_page_to_document(second, 2, &cursor, &document, &plain_text, nullptr,
+                                   &warnings);
+  require(warnings == std::vector<grparse::Warning>{document_wide, on_first, on_second},
+          "each source warning reaches the caller once, typed, in page order (got " +
+              std::to_string(warnings.size()) + ")");
+}
+
 void verify_ledger_amount_in_a_nested_box_lands_in_its_cell() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{2200, 1701,
@@ -1001,6 +1166,8 @@ int main() {
       verify_whitespace_only_line_is_no_item,
       verify_layout_regions_map_labels_and_emit_items,
       verify_unknown_region_label_falls_back_loudly,
+      verify_source_warnings_reach_the_folds_caller,
+      verify_a_cut_off_structure_decode_is_a_typed_warning_on_its_table,
       verify_every_region_label_reaches_the_document,
       verify_headers_and_footers_are_furniture,
       verify_structured_cells_override_geometry,
@@ -1019,6 +1186,7 @@ int main() {
       verify_body_order_and_column_anchoring,
       verify_lonely_floats_anchor_by_their_top_edge,
       verify_recovered_rotation_reaches_page_quality,
+      verify_a_failed_sharper_render_is_a_typed_warning,
       verify_list_items_join_a_list_group,
       verify_derived_offsets_match_the_assembled_rows,
       verify_ledger_amount_in_a_nested_box_lands_in_its_cell,

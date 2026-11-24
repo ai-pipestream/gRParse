@@ -75,6 +75,12 @@ class WriterFold : public FoldBase {
   // The body item a paragraph becomes, by its style, outline level and list
   // level.
   TextHandle add_paragraph_item(const officev1::Paragraph& paragraph);
+  // Folds one picture event; returns the picture it became or filled in,
+  // empty when the event repeats a picture that is already placed.
+  std::string place_embedded_image(const officev1::EmbeddedImage& image);
+  // Folds one text frame; returns the text item it became, empty when the
+  // frame holds no text or repeats a frame that is already placed.
+  std::string place_text_frame(const officev1::TextFrame& frame);
   // Gives an inline picture the place of the empty paragraph it is anchored
   // in, or remembers that it met none.
   void slot_inline_picture(const officev1::EmbeddedImage& image,

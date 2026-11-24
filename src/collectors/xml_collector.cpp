@@ -34,7 +34,7 @@ CollectorOutcome collect_xml_document(const std::shared_ptr<grpc::Channel>& chan
       });
   return drain_stream<xmlv1::ParseXmlResponse>(
       "xml", *stream, upload,
-      [](const xmlv1::ParseXmlResponse& event, std::vector<std::string>& warnings) {
+      [](const xmlv1::ParseXmlResponse& event, std::vector<Warning>& warnings) {
         if (!event.has_status()) return false;
         for (const auto& warning : event.status().warnings()) {
           std::string text =

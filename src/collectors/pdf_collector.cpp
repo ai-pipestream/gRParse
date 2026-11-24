@@ -86,6 +86,40 @@ bool pdf_info_forces_ocr(const PdfClassification& info) {
   return info.ocr_recommended && !recommends_only_named_scans(info);
 }
 
+const char* pdf_class_name(PdfClass pdf_class) {
+  switch (pdf_class) {
+    case PdfClass::kTextBased: return "text-based";
+    case PdfClass::kScanned: return "scanned";
+    case PdfClass::kImageBased: return "image-based";
+    case PdfClass::kMixed: return "mixed";
+    default: return "unknown";
+  }
+}
+
+Warning cv_route_warning(const PdfClassification& classification,
+                         const PdfRouteDecision& route, bool forced) {
+  return Warning(
+      docv1::WARNING_CODE_ROUTED_TO_CV,
+      "pdf inspector classified the document as " +
+          std::string(pdf_class_name(classification.pdf_class)) +
+          (classification.encoding_issues
+               ? " with encoding issues in the text layer, so its extraction was not taken"
+               : "") +
+          (classification.empty_body
+               ? "; its extraction carried no body text, so it was not taken"
+               : "") +
+          (!classification.ocr_recommended ? ""
+           : route.force_ocr
+               ? "; it recommended OCR over the text layer, so its extraction was not taken"
+               : "; it recommended OCR for the scanned pages it named, and the other pages "
+                 "keep their text layers") +
+          (forced ? "; recognition was forced on every page in place of the embedded layer"
+           : route.ocr_pages.empty()
+               ? "; the CV path's own per-page heuristic decided recognition"
+               : "; recognition restricted to the " + std::to_string(route.ocr_pages.size()) +
+                     " page(s) needing OCR"));
+}
+
 bool pdf_page_is_clean(bool needs_ocr, bool encoding_issues, const std::string& markdown) {
   return !needs_ocr && !encoding_issues && !blank(markdown);
 }

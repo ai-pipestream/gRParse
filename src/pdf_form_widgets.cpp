@@ -14,6 +14,7 @@
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/document_geometry.h"
+#include "grparse/pdf_backend_trailer.h"
 #include "grparse/pdf_page_frame.h"
 #include "grparse/remote_page_source.h"
 #include "targets/sha256.h"
@@ -408,7 +409,11 @@ PdfWidgetFetch fetch_pdf_form_widgets_with_sha256(
       std::optional<pdfv1::LoadStatus> load_status;
       std::string load_detail;
       bool skipped = false;
+      // The answer against its own trailer, so a form the engine read part
+      // of, or that lost fields on the way, is not handed on as the form.
+      PdfParseTally tally;
       while (reader->Read(&message)) {
+        tally.absorb(message);
         if (message.has_header()) {
           const auto& caps = message.header().capabilities();
           load_status = caps.load_status();
@@ -463,6 +468,9 @@ PdfWidgetFetch fetch_pdf_form_widgets_with_sha256(
         page.fields = std::move(list);
         fetch.pages.push_back(std::move(page));
       }
+      // The call covers every page, so a total that does not match names no
+      // page; what the engine skipped names the page the engine named.
+      fetch.warnings = tally.warnings(fetch.engine.empty() ? target : fetch.engine, std::nullopt);
       fetch.ok = true;
       return fetch;
     }
@@ -493,18 +501,19 @@ bool pdf_form_widget_backend_configured() {
   }
 }
 
-std::optional<std::string> fold_pdf_form_widgets_from_backend(
+std::vector<Warning> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     docv1::Document* document, const std::string& precomputed_sha256) {
   std::optional<std::string> configured;
   try {
     configured = remote_pdf_backend_target();
   } catch (const std::exception& error) {
-    return std::string("AcroForm widgets not read: ") + error.what();
+    return {Warning(docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+                    std::string("AcroForm widgets not read: ") + error.what())};
   }
-  if (!configured.has_value() || document == nullptr) return std::nullopt;
+  if (!configured.has_value() || document == nullptr) return {};
   const std::vector<std::string> targets = split_backend_targets(*configured);
-  if (targets.empty()) return std::nullopt;
+  if (targets.empty()) return {};
   const char* handshake_env = std::getenv("GRPARSE_PDF_BACKEND_HANDSHAKE");
   const bool handshake =
       handshake_env == nullptr || std::string_view(handshake_env) != "off";
@@ -512,6 +521,9 @@ std::optional<std::string> fold_pdf_form_widgets_from_backend(
       handshake ? (precomputed_sha256.empty() ? targets::sha256_hex(bytes) : precomputed_sha256)
                 : std::string();
   std::vector<std::string> failures;
+  // The backends that answered and do not read the family, as "target
+  // (engine)".
+  std::vector<std::string> without_family;
   for (const std::string& target : targets) {
     PdfWidgetFetch fetch =
         fetch_pdf_form_widgets_with_sha256(bytes, target, deadline, handshake, sha256);
@@ -520,15 +532,30 @@ std::optional<std::string> fold_pdf_form_widgets_from_backend(
       continue;
     }
     // A backend without the family is no answer; the next one may have it.
-    if (fetch.unsupported) continue;
+    if (fetch.unsupported) {
+      without_family.push_back(fetch.engine.empty() ? target
+                                                    : target + " (" + fetch.engine + ")");
+      continue;
+    }
     fold_pdf_form_widgets(fetch.pages, fetch.engine, document);
-    return std::nullopt;
+    return std::move(fetch.warnings);
   }
-  if (failures.empty()) return std::nullopt;
-  std::string warning = "AcroForm widgets not read:";
-  for (const std::string& failure : failures) warning += " " + failure + ";";
-  warning.pop_back();
-  return warning;
+  // Nobody answered for the family, so whether the PDF has a form is not
+  // known, and the caller must not take the document for one without. A
+  // backend that failed might have read it: that is a failed read, whatever
+  // the others lack. Only when every backend answered and none reads the
+  // family is it the deployment that cannot.
+  if (!failures.empty()) {
+    std::string message = "AcroForm widgets not read:";
+    for (const std::string& failure : failures) message += " " + failure + ";";
+    message.pop_back();
+    return {Warning(docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE, std::move(message))};
+  }
+  std::string message =
+      "AcroForm widgets not read: no configured PDF backend reads form fields:";
+  for (const std::string& backend : without_family) message += " " + backend + ",";
+  message.pop_back();
+  return {Warning(docv1::WARNING_CODE_FORM_FIELDS_UNSUPPORTED, std::move(message))};
 }
 
 }  // namespace grparse

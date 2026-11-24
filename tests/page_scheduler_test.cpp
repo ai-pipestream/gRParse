@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <print>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -306,6 +307,165 @@ void verify_layout_labels_digital_pages_without_ocr() {
   require(metrics.pages_recognized == 0, "OCR remains selective under layout");
 }
 
+// One text-layer PDF page with a chart on it: the embedded layer settles the
+// page, so only its image areas are recognized. The detector below finds the
+// chart as a picture; the PDF also places an image no region covers, large
+// enough to be read on its own.
+class ChartPageSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    grparse::OcrPage page{200, 200,
+                          {{"digital text", {{0, 0}, {40, 0}, {40, 8}, {0, 8}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    page.image_placements = {cv::Rect(130, 150, 60, 40)};
+    return page;
+  }
+
+  cv::Mat render_page(int) const override { return cv::Mat(200, 200, CV_8UC3, cv::Scalar(255)); }
+};
+
+// The same document at the OCR DPI (300 over 200): a raster half again as
+// large, or a backend that refuses the render.
+class SharperChartSource final : public grparse::PageSource {
+ public:
+  explicit SharperChartSource(bool fails) : fails_(fails) {}
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int) const override {
+    if (fails_) throw std::runtime_error("sharper render refused");
+    return cv::Mat(300, 300, CV_8UC3, cv::Scalar(255));
+  }
+
+ private:
+  bool fails_;
+};
+
+// Reads one label out of every crop and remembers how large the crop was,
+// which is how the tests tell a read of the sharper raster from a read of
+// the page raster.
+class CropRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      crops.push_back(image.size());
+    }
+    return grparse::OcrPage{image.cols, image.rows,
+                            {{"label", {{6, 6}, {24, 6}, {24, 14}, {6, 14}}, 0.9F}}};
+  }
+
+  std::mutex mutex;
+  std::vector<cv::Size> crops;
+};
+
+struct ChartRun {
+  std::shared_ptr<const grparse::OcrPage> page;
+  std::vector<cv::Size> crops;
+  uint64_t pages_at_page_resolution = 0;
+  // What assembly says about the page, the form the caller receives.
+  std::vector<grparse::Warning> warnings;
+  std::string picture_ref;
+};
+
+ChartRun read_chart_page(bool pdf, double ocr_image_dpi, bool sharper_render_fails) {
+  CropRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {grparse::LayoutRegion{"picture", 0.9F, 20, 40, 120, 140}};
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.ocr_image_dpi = ocr_image_dpi;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [sharper_render_fails](std::shared_ptr<const std::string>, bool, double render_dpi,
+                             const std::string&) -> std::shared_ptr<grparse::PageSource> {
+        if (render_dpi > grparse::kDefaultRenderDpi) {
+          return std::make_shared<SharperChartSource>(sharper_render_fails);
+        }
+        return std::make_shared<ChartPageSource>();
+      },
+      &detector);
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), pdf, callbacks_for(&result));
+  wait_until_finished(&result);
+  require(!result.failure, "a chart page is read whether or not its sharper render works");
+  require(result.pages.size() == 1, "the chart page is delivered");
+
+  ChartRun run;
+  run.page = result.pages.at(1);
+  run.crops = recognizer.crops;
+  run.pages_at_page_resolution = scheduler.metrics().pages_picture_ocr_at_page_resolution;
+  grparse::AssemblyCursor cursor;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(*run.page, 1, &cursor, &data, &run.warnings);
+  require(data.pictures_size() == 1, "the chart is the page's one picture item");
+  run.picture_ref = data.pictures(0).self_ref();
+  return run;
+}
+
+// Text-layer PDF pages read their image areas from a second, sharper render
+// (Options::ocr_image_dpi). When that render fails the areas are still
+// read, from the page raster, where small text in a chart reads worse or
+// not at all. That weaker read must not pass for the configured one: the
+// page carries the failure and its cause, the picture read that way is
+// marked, the fallback is counted, and assembly turns both into typed
+// warnings. A source with nothing sharper to render (a raster input, or no
+// OCR DPI above the render DPI) reads the page raster by design and says
+// nothing.
+void verify_a_failed_sharper_render_is_kept_on_the_page() {
+  namespace docv1 = ai::pipestream::document::v1;
+  const std::vector<cv::Size> page_raster_crops = {cv::Size(100, 100), cv::Size(60, 40)};
+
+  const ChartRun failed = read_chart_page(/*pdf=*/true, 300.0, /*sharper_render_fails=*/true);
+  require(failed.crops == page_raster_crops,
+          "with the sharper render gone both image areas are read from the page raster");
+  require(failed.page->sharper_render_failure.has_value(),
+          "the page must say its sharper render failed");
+  require(failed.page->sharper_render_failure->cause.contains("sharper render refused") &&
+              failed.page->sharper_render_failure->reads == 2,
+          "with the backend's reason and how many reads fell back: '" +
+              failed.page->sharper_render_failure->cause + "', " +
+              std::to_string(failed.page->sharper_render_failure->reads));
+  require(failed.page->regions.size() == 1 && failed.page->regions[0].read_at_page_resolution,
+          "the picture read from the page raster is marked");
+  require(failed.pages_at_page_resolution == 1, "the fallback is counted, once for the page");
+  require(failed.warnings.size() == 2,
+          "one warning for the picture, one for the placement no item stands for: " +
+              std::to_string(failed.warnings.size()));
+  bool picture_named = false;
+  bool page_named = false;
+  for (const grparse::Warning& warning : failed.warnings) {
+    require(warning.code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+                warning.page_no == 1,
+            "each warning is typed and names the page: " + warning.message);
+    if (warning.item_ref == failed.picture_ref) picture_named = true;
+    if (warning.item_ref.empty()) page_named = true;
+  }
+  require(picture_named && page_named, "the picture item is named, and the page for the rest");
+
+  const ChartRun sharp = read_chart_page(/*pdf=*/true, 300.0, /*sharper_render_fails=*/false);
+  require(sharp.crops == std::vector<cv::Size>{cv::Size(150, 150), cv::Size(90, 60)},
+          "a sharper render that works is what the image areas are read from");
+  require(!sharp.page->sharper_render_failure.has_value() &&
+              !sharp.page->regions[0].read_at_page_resolution &&
+              sharp.pages_at_page_resolution == 0 && sharp.warnings.empty(),
+          "and nothing is reported");
+
+  const ChartRun raster = read_chart_page(/*pdf=*/false, 300.0, /*sharper_render_fails=*/true);
+  require(raster.crops == page_raster_crops, "a raster input has only its own pixels to read");
+  require(!raster.page->sharper_render_failure.has_value() &&
+              !raster.page->regions[0].read_at_page_resolution &&
+              raster.pages_at_page_resolution == 0 && raster.warnings.empty(),
+          "which is no failure: nothing sharper was there to render");
+
+  const ChartRun unconfigured = read_chart_page(/*pdf=*/true, 0.0, /*sharper_render_fails=*/true);
+  require(unconfigured.crops == page_raster_crops &&
+              !unconfigured.page->sharper_render_failure.has_value() &&
+              unconfigured.pages_at_page_resolution == 0 && unconfigured.warnings.empty(),
+          "a deployment that asks for no sharper render reads the page raster and reports nothing");
+}
+
 class FakeStructurer final : public grparse::TableStructurer {
  public:
   grparse::TableStructure recognize(const cv::Mat& crop) override {
@@ -459,6 +619,40 @@ void verify_figure_classification_runs_on_crops() {
   }
   require(scheduler.metrics().figures_classified == 2,
           "classification metric must count figure crops");
+}
+
+// The scheduler says which optional model passes it runs, which is what the
+// parse surfaces read to tell a caller what a document went without (#410).
+// Table structure and figure classification work on layout's regions, so an
+// engine installed without a detector is not a pass that runs.
+void verify_model_passes_name_the_engines_that_run() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  FakeStructurer structurer;
+  FakeClassifier classifier;
+  const auto passes_of = [&](grparse::RegionDetector* layout, grparse::TableStructurer* tables,
+                             grparse::FigureClassifierBase* figures) {
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 2, 2, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+          return std::make_shared<FakeSource>(1);
+        },
+        layout, tables, figures);
+    return scheduler.model_passes();
+  };
+  const auto none = passes_of(nullptr, nullptr, nullptr);
+  require(!none.layout && !none.table_structure && !none.figure_classification,
+          "a scheduler with no engine installed runs none of the passes");
+  const auto all = passes_of(&detector, &structurer, &classifier);
+  require(all.layout && all.table_structure && all.figure_classification,
+          "every installed engine is a pass that runs");
+  const auto layout_only = passes_of(&detector, nullptr, nullptr);
+  require(layout_only.layout && !layout_only.table_structure &&
+              !layout_only.figure_classification,
+          "layout alone runs neither pass that works on its regions");
+  const auto no_layout = passes_of(nullptr, &structurer, &classifier);
+  require(!no_layout.layout && !no_layout.table_structure && !no_layout.figure_classification,
+          "without layout there are no regions, so neither dependent pass runs");
 }
 
 // Docling do_picture_classification=false skips the classifier even when one
@@ -920,6 +1114,135 @@ void verify_partial_digital_merges_with_ocr() {
   require(metrics.pages_read_digitally == 1, "digital metric");
   require(metrics.pages_recognized == 1, "ocr metric");
   require(metrics.pages_rendered == 1, "render metric");
+}
+
+// Three pages, each read a different way, and a source that has something
+// to say about its read of every one of them: page 1's text layer settles
+// the page, page 2's is weak and merges with recognition, page 3 has none
+// and is recognized from its raster. Like a PDF backend's trailer, the
+// warning for a page exists only once the page's text layer was asked for.
+class WarnedSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 3; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      asked_.insert(page_number);
+    }
+    if (page_number == 3) return std::nullopt;
+    grparse::OcrPage page{100, 100,
+                          {{"digital-" + std::to_string(page_number),
+                            {{0, 0}, {40, 0}, {40, 10}, {0, 10}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = page_number == 1;
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+  std::vector<grparse::Warning> page_warnings(int page_number) const override {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!asked_.contains(page_number)) return {};
+    return {grparse::Warning(
+                ai::pipestream::document::v1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+                "backend skipped content on page " + std::to_string(page_number))
+                .on_page(page_number)};
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::set<int> asked_;
+};
+
+// What a source says about its read of a page rides on the page the
+// scheduler delivers, whichever of the three ways the page was read.
+void verify_source_warnings_ride_on_every_delivered_page() {
+  BodyRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {1, 2, 1, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<WarnedSource>();
+      });
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, callbacks_for(&result));
+  wait_until_finished(&result);
+  require(!result.failure && result.pages.size() == 3, "all three pages delivered");
+  const char* const how[] = {"settled by its text layer", "merged with recognition",
+                             "recognized from its raster"};
+  for (int page_number = 1; page_number <= 3; ++page_number) {
+    const auto& warnings = result.pages.at(page_number)->source_warnings;
+    const std::string what = "page " + std::to_string(page_number) + ", " + how[page_number - 1];
+    require(warnings.size() == 1, what + ": the source's warning is on the delivered page");
+    require(warnings[0].code ==
+                    ai::pipestream::document::v1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                warnings[0].page_no == page_number,
+            what + ": typed, and about that page");
+  }
+}
+
+// A source with two things to say that no text-layer read brings on: one it
+// knows from the moment it opened (a consensus backend that could not open
+// the document), and one it learns while rendering the page (a backend
+// taken out of the document after its renders kept failing).
+class LateWarnedSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    return std::nullopt;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    rendered_.store(true);
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+  std::vector<grparse::Warning> page_warnings(int) const override {
+    namespace docv1 = ai::pipestream::document::v1;
+    std::vector<grparse::Warning> warnings = {grparse::Warning(
+        docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED, "backend a could not open the document")};
+    if (rendered_.load()) {
+      warnings.emplace_back(docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED,
+                            "backend b was taken out after its renders failed");
+    }
+    return warnings;
+  }
+
+ private:
+  mutable std::atomic<bool> rendered_{false};
+};
+
+// The scheduler asks a source what it has to say about a page once it has
+// finished reading the page from it, raster included, and asks whether or
+// not the page's text layer was read: forced recognition never reads the
+// text layer, and a document read that way still has to hear which backends
+// its source went without.
+void verify_source_warnings_are_asked_after_the_last_read() {
+  for (const bool forced : {false, true}) {
+    const std::string what = forced ? "forced recognition" : "selective recognition";
+    BodyRecognizer recognizer;
+    grparse::PageScheduler scheduler(
+        recognizer, {1, 2, 1, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+          return std::make_shared<LateWarnedSource>();
+        });
+    grparse::PageScheduler::OcrTuning tuning;
+    if (forced) tuning.mode = grparse::PageScheduler::OcrTuning::Mode::kForce;
+    Result result;
+    scheduler.submit(std::make_shared<const std::string>("memory"), true, tuning,
+                     callbacks_for(&result));
+    wait_until_finished(&result);
+    require(!result.failure && result.pages.size() == 1, what + ": the page is delivered");
+    const auto& warnings = result.pages.at(1)->source_warnings;
+    require(!warnings.empty() && warnings[0].message.contains("could not open"),
+            what + ": what the source knew from its open is on the delivered page");
+    require(warnings.size() == 2 && warnings[1].message.contains("renders failed"),
+            what + ": and so is what it learned while rendering the page");
+  }
 }
 
 // Collects each delivered page alongside the shared Result bookkeeping.
@@ -1780,15 +2103,19 @@ int main() {
       verify_cancellation_drains_bounded_work,
       verify_digital_pages_bypass_render_and_inference,
       verify_layout_labels_digital_pages_without_ocr,
+      verify_a_failed_sharper_render_is_kept_on_the_page,
       verify_table_structure_runs_on_crops,
       verify_do_table_structure_false_skips_structure,
       verify_figure_classification_runs_on_crops,
       verify_do_picture_classification_false_skips,
+      verify_model_passes_name_the_engines_that_run,
       verify_picture_capture_encodes_figure_crops,
       verify_page_capture_encodes_previews,
       verify_barcode_decode_triggers_on_class,
       verify_barcode_gate_and_forced_mode,
       verify_partial_digital_merges_with_ocr,
+      verify_source_warnings_ride_on_every_delivered_page,
+      verify_source_warnings_are_asked_after_the_last_read,
       verify_inspector_page_set_restricts_ocr,
       verify_recognition_modes_outrank_the_page_set,
       verify_ocr_off_reads_only_the_embedded_layer,

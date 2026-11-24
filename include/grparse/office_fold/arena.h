@@ -6,9 +6,11 @@
 
 #include <set>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include "grparse/office_fold/fold_common.h"
+#include "grparse/warning.h"
 
 namespace grparse::office_fold {
 
@@ -41,9 +43,37 @@ class DocumentArena {
   docv1::Document take() { return std::move(document_); }
 
   const std::vector<std::string>& warnings() const { return warnings_; }
+  // The same warnings in the same order, each with what a consumer acts on:
+  // its code, and the page and item it is about where it is about one. A
+  // warning the fold or the worker stated in words only keeps
+  // WARNING_CODE_UNSPECIFIED.
+  const std::vector<Warning>& typed_warnings() const { return typed_warnings_; }
   // Records what the fold had to approximate rather than map, in the order
-  // it happened.
-  void warn(std::string message) { warnings_.push_back(std::move(message)); }
+  // it happened. Both lists grow here and nowhere else, so they cannot
+  // disagree.
+  void warn(Warning warning) {
+    warnings_.push_back(warning.message);
+    typed_warnings_.push_back(std::move(warning));
+  }
+
+  // Reports an item the office core failed part way through reading, which
+  // the worker marks with an ExtractionGap on the item's own event: one
+  // typed warning per gap, on the page (the wire's zero-based index; -1
+  // names none) and the item the fold made of the event (empty when it made
+  // none). `what` names the item in words. picture_without_bytes says the
+  // event is a picture that arrived with no image at all.
+  void report_gap(const officev1::ExtractionGap& gap, std::string_view what,
+                  int page_index, const std::string& item_ref,
+                  bool picture_without_bytes = false);
+  // The same, for any event that can carry a gap; nothing when it has none.
+  template <typename Event>
+  void report_gap_of(const Event& event, std::string_view what, int page_index,
+                     const std::string& item_ref) {
+    if (event.has_gap()) report_gap(event.gap(), what, page_index, item_ref);
+  }
+  // How many gaps were reported so far, to hold against the worker's own
+  // count once the stream is in.
+  int gaps_reported() const { return gaps_reported_; }
 
   const std::string& document_type() const { return document_type_; }
   void set_document_type(std::string type) {
@@ -159,6 +189,8 @@ class DocumentArena {
 
   docv1::Document document_;
   std::vector<std::string> warnings_;
+  std::vector<Warning> typed_warnings_;
+  int gaps_reported_ = 0;
   std::string document_type_;
   std::string language_;
   std::vector<officev1::PageRect> page_rects_;

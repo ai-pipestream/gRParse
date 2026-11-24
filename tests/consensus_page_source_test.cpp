@@ -18,6 +18,7 @@
 #include "grparse/consensus_page_source.h"
 #include "grparse/document_assembly.h"
 #include "grparse/in_memory_document.h"
+#include "grparse/prometheus_metrics.h"
 #include "grparse/remote_page_source.h"
 #include "support/check.h"
 #include "support/fake_pdf_backend.h"
@@ -25,6 +26,8 @@
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
+namespace docv1 = ai::pipestream::document::v1;
 namespace pdfv1 = ai::protomolt::parse::pdf::v1;
 
 constexpr double kPageWidthPts = 612.0;
@@ -177,9 +180,199 @@ std::optional<grparse::PdfBackendFailure> failure_reason(Call call) {
   return std::nullopt;
 }
 
+// The warnings among `warnings` that carry `code`.
+std::vector<grparse::Warning> coded(const std::vector<grparse::Warning>& warnings,
+                                    docv1::WarningCode code) {
+  std::vector<grparse::Warning> out;
+  for (const grparse::Warning& warning : warnings) {
+    if (warning.code == code) out.push_back(warning);
+  }
+  return out;
+}
+
+uint64_t counted(grparse::ConsensusEvent event) {
+  return grparse::pipeline_telemetry().consensus_events(event);
+}
+
+const std::vector<std::vector<std::string>> kStory = {
+    {"The", "survey", "team", "returned"},
+    {"the", "equipment", "on", "time"},
+    {"and", "in", "good", "condition"},
+    {"before", "the", "afternoon", "deadline"},
+};
+
+// Three backends are configured for the vote and two cannot open the
+// document. Every page is then the survivor's reading with no vote behind
+// it, and the caller must hear both things typed: which backends are out,
+// and that the page was not decided by the vote it asked for.
+void verify_legs_dropped_at_open_reach_the_caller() {
+  Server survivor = start("survivor", kStory, true);
+  Server broken_a = start("broken-a", {}, false);
+  Server broken_b = start("broken-b", {}, false);
+  const auto bytes = std::make_shared<const std::string>("%PDF-fake");
+  grparse::reset_pipeline_telemetry();
+
+  const auto source = grparse::open_consensus_pdf_document(
+      bytes, {broken_a.target, survivor.target, broken_b.target}, 144.0);
+  // Known from the open on, before any page's text is asked for: a caller
+  // that only renders (forced recognition) hears it as well.
+  const auto at_open =
+      coded(source->page_warnings(1), docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED);
+  require_equal(at_open.size(), size_t{2},
+                "each backend that could not open the document is named");
+  require(at_open[0].message.contains(broken_a.target) &&
+              at_open[1].message.contains(broken_b.target),
+          "in the configured order, by target: " + at_open[0].message);
+  require(!at_open[0].page_no.has_value() && !at_open[1].page_no.has_value(),
+          "a backend out of the whole document names no page");
+  require(coded(source->page_warnings(1), docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED).empty(),
+          "no page is undervoted before it is read");
+
+  const auto page = source->extract_digital_page(1);
+  require(page.has_value() && joined_text(*page) == "The survey team returned" &&
+              !page->vote.has_value(),
+          "the page is the surviving backend's reading, unvoted");
+  const auto undervoted =
+      coded(source->page_warnings(1), docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED);
+  require_equal(undervoted.size(), size_t{1}, "the unvoted page is marked");
+  require(undervoted[0].page_no == 1 && undervoted[0].message.contains("1 of 3") &&
+              undervoted[0].message.contains(broken_a.target) &&
+              undervoted[0].message.contains(broken_b.target),
+          "with its page, the count, and the backends it went without: " +
+              undervoted[0].message);
+  require(coded(source->page_warnings(2), docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED).empty(),
+          "a page not read yet is not marked");
+
+  require_equal(counted(grparse::ConsensusEvent::kLegOpenFailed), uint64_t{2},
+                "both failed opens are counted");
+  require_equal(counted(grparse::ConsensusEvent::kPageUndervoted), uint64_t{1},
+                "the undervoted page is counted");
+}
+
+// A backend that fails one page's read leaves that page's vote: the page is
+// marked with the backend and its error, the pages it did vote on are not,
+// and one failure takes no backend out of the document.
+void verify_a_failed_page_vote_reaches_the_caller() {
+  Server flaky = start("flaky", kStory, true);
+  Server replica_a = start("replica-a", kStory, true);
+  Server replica_b = start("replica-b", kStory, true);
+  flaky.service->parse_fail_pages = {1};  // zero-based: document page 2
+  const auto bytes = std::make_shared<const std::string>("%PDF-fake");
+  grparse::reset_pipeline_telemetry();
+
+  const auto source = grparse::open_consensus_pdf_document(
+      bytes, {flaky.target, replica_a.target, replica_b.target}, 144.0);
+  require(source->extract_digital_page(1).has_value() && source->page_warnings(1).empty(),
+          "a page every backend read raises nothing");
+  require(source->extract_digital_page(2).has_value(), "the healthy backends read page two");
+  const auto warnings = source->page_warnings(2);
+  require_equal(warnings.size(), size_t{1}, "the page the backend missed has one warning");
+  require(warnings[0].code == docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED &&
+              warnings[0].page_no == 2,
+          "typed WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED on page two, got " +
+              docv1::WarningCode_Name(warnings[0].code));
+  require(warnings[0].message.contains("2 of 3") && warnings[0].message.contains(flaky.target) &&
+              warnings[0].message.contains("injected parse failure"),
+          "naming the count, the backend and its error: " + warnings[0].message);
+  require(source->extract_digital_page(3).has_value() && source->page_warnings(3).empty(),
+          "the next page, read by all three, raises nothing");
+
+  require_equal(counted(grparse::ConsensusEvent::kLegPageFailed), uint64_t{1},
+                "the failed page read is counted");
+  require_equal(counted(grparse::ConsensusEvent::kPageUndervoted), uint64_t{1},
+                "and so is the undervoted page");
+  require_equal(counted(grparse::ConsensusEvent::kLegDisabled), uint64_t{0},
+                "one failure takes no backend out");
+}
+
+// Three page failures in a row take the backend out of the document. From
+// then on the caller is told the backend is out (once it has happened, not
+// before), and every later page is marked as decided without it.
+void verify_a_backend_taken_out_of_the_vote_reaches_the_caller() {
+  Server tripping = start("tripping", kStory, true);
+  Server steady_a = start("steady-a", kStory, true);
+  Server steady_b = start("steady-b", kStory, true);
+  tripping.service->parse_fail_pages = {0, 1, 2};
+  const auto bytes = std::make_shared<const std::string>("%PDF-fake");
+  grparse::reset_pipeline_telemetry();
+
+  const auto source = grparse::open_consensus_pdf_document(
+      bytes, {tripping.target, steady_a.target, steady_b.target}, 144.0);
+  for (int page_number = 1; page_number <= 2; ++page_number) {
+    require(source->extract_digital_page(page_number).has_value(), "the vote carries the page");
+    const auto warnings = source->page_warnings(page_number);
+    require(warnings.size() == 1 &&
+                warnings[0].code == docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED &&
+                warnings[0].page_no == page_number,
+            "before the third failure only the page is marked");
+  }
+  require(source->extract_digital_page(3).has_value(), "the vote carries page three");
+  const auto out = coded(source->page_warnings(3), docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED);
+  require_equal(out.size(), size_t{1}, "the third failure in a row takes the backend out");
+  require(out[0].message.contains(tripping.target) && !out[0].page_no.has_value(),
+          "the warning names the backend and no page: " + out[0].message);
+
+  require(source->extract_digital_page(4).has_value(), "page four is read without it");
+  require(tripping.service->parse_calls == 3, "the backend is not dialed again");
+  const auto fourth = source->page_warnings(4);
+  const auto undervoted = coded(fourth, docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED);
+  require(undervoted.size() == 1 && undervoted[0].page_no == 4 &&
+              undervoted[0].message.contains(tripping.target),
+          "a page read after the backend left is marked too");
+  require(coded(fourth, docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED) == out,
+          "and still says, in the same words, which backend is out");
+
+  require_equal(counted(grparse::ConsensusEvent::kLegPageFailed), uint64_t{3},
+                "three failed page reads");
+  require_equal(counted(grparse::ConsensusEvent::kLegDisabled), uint64_t{1},
+                "one backend taken out");
+  require_equal(counted(grparse::ConsensusEvent::kPageUndervoted), uint64_t{4},
+                "four undervoted pages");
+}
+
+// Backends that disagree on the page count: said once for the document,
+// with each count, and a page past the shorter backend's end is marked as
+// decided without it.
+void verify_a_page_count_disagreement_reaches_the_caller() {
+  Server short_leg = start("short", {kStory[0], kStory[1]}, true);
+  Server long_a = start("long-a", kStory, true);
+  Server long_b = start("long-b", kStory, true);
+  const auto bytes = std::make_shared<const std::string>("%PDF-fake");
+  grparse::reset_pipeline_telemetry();
+
+  const auto source = grparse::open_consensus_pdf_document(
+      bytes, {short_leg.target, long_a.target, long_b.target}, 144.0);
+  require(source->extract_digital_page(1).has_value(), "page one is read by all three");
+  const auto first = source->page_warnings(1);
+  require_equal(first.size(), size_t{1}, "the disagreement is the only warning on page one");
+  require(first[0].code == docv1::WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT &&
+              !first[0].page_no.has_value(),
+          "typed WARNING_CODE_CONSENSUS_PAGE_COUNT_DISAGREEMENT, about the document");
+  require(first[0].message.contains(short_leg.target + " reports 2") &&
+              first[0].message.contains(long_a.target + " reports 4"),
+          "each backend's count is said: " + first[0].message);
+
+  require(source->extract_digital_page(3).has_value(), "page three is read by the longer two");
+  const auto undervoted =
+      coded(source->page_warnings(3), docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED);
+  require(undervoted.size() == 1 && undervoted[0].page_no == 3 &&
+              undervoted[0].message.contains(short_leg.target),
+          "a page past the shorter backend's end is decided without it");
+
+  require_equal(counted(grparse::ConsensusEvent::kPageCountDisagreement), uint64_t{1},
+                "the disagreement is counted once for the document");
+  require_equal(counted(grparse::ConsensusEvent::kLegPageFailed), uint64_t{0},
+                "a page past a backend's end is not a failure of that backend");
+}
+
 }  // namespace
 
 int main() {
+  verify_legs_dropped_at_open_reach_the_caller();
+  verify_a_failed_page_vote_reaches_the_caller();
+  verify_a_backend_taken_out_of_the_vote_reaches_the_caller();
+  verify_a_page_count_disagreement_reaches_the_caller();
+
   const std::vector<std::string> reading = {
       "The", "survey", "team", "returned", "the", "equipment",
       "on", "time", "and", "in", "good", "condition."};
@@ -678,6 +871,47 @@ int main() {
       for (const auto& rec : voted->reconciliation) {
         require(rec.missing == 0 && rec.order_breaks == 0, what + ": the legs agree");
       }
+    }
+  }
+
+  // What one leg's backend says about its own read survives the vote: a leg
+  // that skipped part of a page, or gave up on it, still took part in (or
+  // dropped out of) deciding that page, and the caller hears it whichever
+  // leg won and wherever the leg sits in the configured order.
+  {
+    const grparse_test::FakePdfPage clean =
+        grparse_test::text_page({"The survey team returned", "the equipment on time"});
+    grparse_test::FakePdfPage damaged = clean;
+    damaged.warnings = {{"content stream damaged; 4 text objects skipped",
+                         grparse_test::pdfv1::PDF_FAMILY_TEXT_CELLS}};
+    grparse_test::FakePdfPage gave_up = clean;
+    gave_up.warnings = {{"page skipped: bad xref entry"}};
+    gave_up.no_chunk = true;
+    const std::string pdf = "%PDF-leg-warnings";
+    grparse_test::ScopedPdfBackend clean_leg;
+    grparse_test::ScopedPdfBackend warned_leg;
+    clean_leg.backend().add_document(pdf, {clean, clean});
+    warned_leg.backend().add_document(pdf, {damaged, gave_up});
+    const auto pdf_bytes = std::make_shared<const std::string>(pdf);
+    namespace docv1 = ai::pipestream::document::v1;
+    for (const auto& order : std::vector<std::vector<std::string>>{
+             {clean_leg.target(), warned_leg.target()}, {warned_leg.target(), clean_leg.target()}}) {
+      const std::string what =
+          order.front() == warned_leg.target() ? "warned leg first" : "clean leg first";
+      const auto source = grparse::open_consensus_pdf_document(pdf_bytes, order, 144.0);
+      require(source->extract_digital_page(1).has_value(), what + ": page one is read");
+      const auto first = source->page_warnings(1);
+      require(first.size() == 1 && first[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                  first[0].page_no == 1 && first[0].message.contains("4 text objects skipped"),
+              what + ": the leg that skipped content says so through the vote");
+      const auto second_page = source->extract_digital_page(2);
+      require(second_page.has_value() && second_page->lines.size() == 2,
+              what + ": page two is read by the leg that could");
+      const auto second = source->page_warnings(2);
+      require(second.size() == 1 &&
+                  second[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                  second[0].page_no == 2 && second[0].message.contains("bad xref entry"),
+              what + ": the leg that gave up on the page says so through the vote");
     }
   }
 

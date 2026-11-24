@@ -25,12 +25,20 @@ option java_package = "ai.pipestream.office.v1";
 //   RESOURCE_EXHAUSTED - the document exceeds the configured byte cap.
 //   FAILED_PRECONDITION- the document package is broken and would need
 //                        LibreOffice's repair path, which the request did
-//                        not opt into (allow_package_repair).
+//                        not opt into (allow_package_repair); or an option
+//                        of the request could not be applied to this
+//                        document (skip_hidden, paint_used_range), in
+//                        which case nothing was emitted.
 //   UNIMPLEMENTED      - reserved; this version implements the repair path
 //                        when allow_package_repair is set.
 //   DEADLINE_EXCEEDED  - the worker exceeded the per-document timeout and
 //                        was killed.
-//   INTERNAL           - the worker crashed or failed mid-render.
+//   INTERNAL           - the worker crashed or failed mid-render, or the
+//                        typed content the request selected could not be
+//                        extracted (the office core could not be reached,
+//                        or the extraction aborted part way). Events sent
+//                        before the status are then incomplete, and no
+//                        RenderStatus follows them.
 service OfficeRenderService {
   // StreamPages renders every page of the uploaded document as a PNG image.
   // The client streams the document as chunks, marking the last one complete.
@@ -194,7 +202,11 @@ message StreamOptions {
   int32 timeout_seconds = 9;
   // How tracked changes (redlines) are displayed in the loaded document
   // before paint and extraction. Unspecified leaves the document as stored.
-  // First nonzero value in the upload stream wins.
+  // First nonzero value in the upload stream wins. Applied or refused: when
+  // FINAL or ORIGINAL leaves any tracked change behind, or the document,
+  // its view, or the command dispatcher cannot be reached, the call fails
+  // with FAILED_PRECONDITION before anything is emitted. Only text
+  // documents carry tracked changes; other classes are left as they are.
   TrackedChangeDisplay tracked_changes = 10;
   // When set to SVG, each page is exported as a vector graphic instead of
   // a raster. PageImage.format is PAGE_IMAGE_FORMAT_SVG and the png field
@@ -202,18 +214,29 @@ message StreamOptions {
   PageVectorFormat vector_format = 11;
   // When true, hidden sheets and hidden slides are omitted from page
   // images and from DocumentInfo.page_count / page_rects. Typed content
-  // for hidden parts is still extracted. First true wins.
+  // for hidden parts is still extracted. First true wins. Applied or
+  // refused: when the visibility of a sheet or slide cannot be read, the
+  // call fails with FAILED_PRECONDITION before anything is emitted rather
+  // than paint a part that may be hidden.
   bool skip_hidden = 12;
   // When true, spreadsheet page images are cropped to the used cell range
   // instead of the full sheet canvas. No effect on other document classes.
-  // First true wins.
+  // First true wins. Applied or refused: when a sheet's used range cannot
+  // be read, the call fails with FAILED_PRECONDITION before anything is
+  // emitted rather than paint the full canvas.
   bool paint_used_range = 13;
   // When true, each presentation slide is followed by its notes page as an
   // extra PageImage (and an extra DocumentInfo.page_rects entry). Notes
   // pages are painted in notes-page space. First true wins.
   bool include_notes_pages = 14;
   // Form field values to write into the loaded document before paint and
-  // export. Matched by FormField.name. First non-empty list wins.
+  // export. Matched by FormField.name, draw-page controls inside group
+  // shapes included. First non-empty list wins. Applied or refused: each
+  // value is written and read back; a name no field carries, a value the
+  // field cannot take, two different values for one name, or a field that
+  // does not hold the value afterwards fails the call with
+  // FAILED_PRECONDITION naming the field, before anything is emitted. The
+  // write is never recorded as a tracked change.
   repeated FormFillValue form_values = 15;
   // Character spans in the document's annotation text space to redact:
   // overlapping line boxes are painted black on page images, and matching
@@ -252,8 +275,10 @@ enum PageVectorFormat {
 message FormFillValue {
   // The field's name as stored in the document (FormField.name).
   string name = 1;
-  // The value to write: text content, a dropdown entry (or its index as
-  // text), or "true"/"false" for a checkbox.
+  // The value to write: text content for a text field; one of the entries
+  // (or its zero-based index as decimal text) for a dropdown or list box;
+  // true/1/yes/on or false/0/no/off, any letter case, for a checkbox or
+  // option button. Anything else for a checkbox or list is refused.
   string value = 2;
 }
 
@@ -478,6 +503,13 @@ message PageRect {
   int64 width_twips = 3;
   // Page height in twips.
   int64 height_twips = 4;
+  // The PageImage.index of the page this rectangle lays out. Entries are in
+  // emission order, and for spreadsheets, presentations, and drawings a
+  // sheet or slide left out of the pages (StreamOptions.skip_hidden, or a
+  // part with no size) leaves a gap in these indexes rather than renumbering
+  // the pages after it. Absent from servers that predate it, whose entries
+  // are indexed by position.
+  optional int32 page_index = 5;
 }
 
 // DocumentInfo describes the document the render core loaded; always the
@@ -488,23 +520,31 @@ message DocumentInfo {
   // The source format extension the server resolved (for example "docx").
   string source_format = 2;
   // Pages that will be emitted (StreamPages) or rendered into the PDF. For
-  // spreadsheets this counts sheets, for presentations slides.
+  // spreadsheets this counts the sheets that are painted, for presentations
+  // the slides (and notes pages, when requested). It is a count, not an
+  // index bound: with skip_hidden the indexes of the painted pages can
+  // exceed it.
   int32 page_count = 3;
   // The office core's document class: "text", "spreadsheet", "presentation",
   // "drawing", or "other".
   string document_type = 4;
   // The layout rectangle of every page, in page order, from the same layout
-  // every typed position was measured in. One entry per page_count; a
-  // consumer maps any document-absolute position to its page-local
-  // equivalent by subtracting the containing page's origin.
+  // every typed position was measured in. One entry per page_count, each
+  // naming its page through PageRect.page_index; a consumer maps any
+  // document-absolute position to its page-local equivalent by subtracting
+  // the containing page's origin.
   repeated PageRect page_rects = 5;
 }
 
 // PageImage is one rendered page. Pages arrive in page order, one event per
 // page.
 message PageImage {
-  // Zero-based page index (sheet index for spreadsheets, slide index for
-  // presentations).
+  // Zero-based page index. For a text document, the page's ordinal. For a
+  // spreadsheet, presentation, or drawing, the ordinal of the sheet, slide,
+  // or drawing page the image shows, the one its Sheet or Slide event
+  // carries: a sheet or slide left out of the pages (skip_hidden) does not
+  // renumber the ones after it. A presentation's notes page carries the
+  // presentation's slide count plus its slide's ordinal.
   int32 index = 1;
   // Rendered width in pixels.
   int32 width_px = 2;
@@ -585,11 +625,12 @@ message DocumentMetadata {
   string subject = 3;
   // Document keywords; empty when unset.
   repeated string keywords = 4;
-  // Creation time as milliseconds since the Unix epoch, UTC; 0 when unset.
-  int64 created_epoch_ms = 5;
-  // Last-modification time as milliseconds since the Unix epoch, UTC; 0 when
-  // unset.
-  int64 modified_epoch_ms = 6;
+  // Creation time as milliseconds since the Unix epoch, UTC, negative before
+  // 1970; unset when the document carries none.
+  optional int64 created_epoch_ms = 5;
+  // Last-modification time as milliseconds since the Unix epoch, UTC,
+  // negative before 1970; unset when the document carries none.
+  optional int64 modified_epoch_ms = 6;
   // Name of the author of the last save; empty when unset.
   string modified_by = 7;
   // The application that produced the document, as stored in it.
@@ -598,9 +639,9 @@ message DocumentMetadata {
   int32 editing_cycles = 9;
   // Total editing time in seconds, as tracked by the producing application.
   int64 editing_duration_seconds = 10;
-  // Last print time as milliseconds since the Unix epoch, UTC; 0 when never
-  // printed.
-  int64 printed_epoch_ms = 11;
+  // Last print time as milliseconds since the Unix epoch, UTC, negative
+  // before 1970; unset when never printed.
+  optional int64 printed_epoch_ms = 11;
   // Name of the last printer of the document; empty when never printed.
   string printed_by = 12;
   // The document's default language as a BCP 47 style tag, for example
@@ -638,7 +679,8 @@ message UserProperty {
     double number = 3;
     // A boolean value.
     bool flag = 4;
-    // A date or datetime value as milliseconds since the Unix epoch, UTC.
+    // A date or datetime value as milliseconds since the Unix epoch, UTC,
+    // negative before 1970.
     int64 epoch_ms = 5;
   }
 }
@@ -716,6 +758,18 @@ message TextRun {
   int32 highlight_rgb = 22;
 }
 
+// ExtractionGap marks a typed event whose extraction the office core cut
+// short: a table whose cell walk threw part way, a cell, frame, note,
+// index or object whose properties stopped answering, a paragraph that
+// lost a text portion, an image that could not be encoded. The event is
+// still sent, holding what was read, so a consumer can keep it or drop it,
+// but never mistake it for the whole item.
+message ExtractionGap {
+  // What failed, one line per failure while this item was read, in order.
+  // The same lines are in RenderStatus.warnings.
+  repeated string problems = 1;
+}
+
 // Paragraph is one body paragraph of a text document, in reading order, with
 // its styled runs and its exact layout anchors. The anchors are caret
 // positions from the live layout the page images were painted from: start is
@@ -755,6 +809,11 @@ message Paragraph {
   // not be measured. start and end give text-flow anchors; line_rects give
   // the true bounding boxes.
   repeated LineBox line_rects = 12;
+  // Present when the office core failed part way through reading this
+  // paragraph: the event holds what was read before the failure and
+  // nothing after it; a text portion that could not be read is missing
+  // from runs. Absent when it was read in full.
+  ExtractionGap gap = 13;
 }
 
 // Footnote is one footnote or endnote, with its citation label, its content
@@ -774,6 +833,10 @@ message Footnote {
   TwipsPoint anchor = 5;
   // The note's content runs, in order, flattened across its paragraphs.
   repeated TextRun runs = 6;
+  // Present when the office core failed part way through reading this
+  // note: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 7;
 }
 
 // Comment is one document comment: a Writer comment anchored in the text
@@ -790,8 +853,9 @@ message Comment {
   string author = 3;
   // The comment author's initials; empty when unset.
   string initials = 4;
-  // Creation time as milliseconds since the Unix epoch, UTC; 0 when unset.
-  int64 epoch_ms = 5;
+  // Creation time as milliseconds since the Unix epoch, UTC, negative before
+  // 1970; unset when the comment carries none.
+  optional int64 epoch_ms = 5;
   // The comment's plain text content.
   string text = 6;
   // The comment's rich content runs when the office core exposes them,
@@ -848,8 +912,8 @@ message TrackedChangeSuccessor {
   // The superseded change's author.
   string author = 3;
   // The superseded change's time as milliseconds since the Unix epoch,
-  // UTC; 0 when unset.
-  int64 epoch_ms = 4;
+  // UTC, negative before 1970; unset when the change carries none.
+  optional int64 epoch_ms = 4;
   // The superseded change's comment; empty when unset.
   string comment = 5;
 }
@@ -868,9 +932,9 @@ message TrackedChange {
   string kind_name = 3;
   // The change author's name.
   string author = 4;
-  // The change time as milliseconds since the Unix epoch, UTC; 0 when
-  // unset.
-  int64 epoch_ms = 5;
+  // The change time as milliseconds since the Unix epoch, UTC, negative
+  // before 1970; unset when the change carries none.
+  optional int64 epoch_ms = 5;
   // The change's comment; empty when unset.
   string comment = 6;
   // This change's number in the document, 1 up in the order the
@@ -1053,6 +1117,10 @@ message DocumentIndex {
   TwipsPoint anchor = 5;
   // The generated index text runs, flattened across its paragraphs.
   repeated TextRun runs = 6;
+  // Present when the office core failed part way through reading this
+  // index: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 7;
 }
 
 // TableCellData is one cell of a table.
@@ -1108,6 +1176,10 @@ message TableData {
   // measurements to their cells (TableCellData.line_rects) without the size
   // cap.
   repeated LineBox line_rects = 8;
+  // Present when the office core failed part way through reading this
+  // table: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 9;
 }
 
 // EmbeddedImage is one image object embedded in the document, with its bytes
@@ -1123,7 +1195,10 @@ message EmbeddedImage {
   // MIME type of data. The original embedded format when the graphic
   // provider can round-trip it, otherwise "image/png".
   string mime_type = 4;
-  // The image bytes.
+  // The image bytes. Empty only when gap is present: a picture the office
+  // core gave no graphic for (a linked file that was not loaded, a format it
+  // could not decode) still arrives, with its name and size, no data, and a
+  // gap that says why and names the link.
   bytes data = 5;
   // Caret position of the image's text anchor in the live layout. Unset for
   // images on drawing pages, whose geometry arrives on the matching
@@ -1154,6 +1229,11 @@ message EmbeddedImage {
   // to the body at the anchor's caret. The caret point and page are then
   // where the header is laid out on its first page.
   bool in_header_footer = 13;
+  // Present when the office core failed part way through reading this
+  // image: the event holds what was read before the failure and
+  // nothing after it (an image that could not be encoded at all has no
+  // data and no mime_type). Absent when it was read in full.
+  ExtractionGap gap = 14;
 }
 
 // EmbeddedObjectKind classifies an embedded object's inner content.
@@ -1228,7 +1308,8 @@ message EmbeddedChart {
   // The primary y axis title; empty when unset.
   string y_axis_title = 5;
   // Category labels from the category axis, in order; empty for charts
-  // without a category axis, such as scatter.
+  // without a category axis, such as scatter. A numeric category axis
+  // (years held as numbers) has its numbers here as text.
   repeated string categories = 6;
   // The chart's data series, in order.
   repeated EmbeddedChartSeries series = 7;
@@ -1238,6 +1319,15 @@ message EmbeddedChart {
   // contract does not model. Reuses TableData; its caret start and end
   // points are left unset.
   TableData tabular = 8;
+}
+
+// EmbeddedSheet is one non-empty sheet of an embedded spreadsheet.
+message EmbeddedSheet {
+  // The sheet's name.
+  string name = 1;
+  // The sheet's used range as a cell grid. Reuses TableData; its caret
+  // start and end points are left unset.
+  TableData table = 2;
 }
 
 // EmbeddedObject is one embedded object discovered in the loaded document:
@@ -1275,9 +1365,10 @@ message EmbeddedObject {
   bytes replacement_image = 11;
   // The extracted chart; set only when kind is EMBEDDED_OBJECT_KIND_CHART.
   EmbeddedChart chart = 12;
-  // The embedded spreadsheet's used range as a cell grid; set only when
-  // kind is EMBEDDED_OBJECT_KIND_SPREADSHEET. Reuses TableData; its caret
-  // start and end points are left unset.
+  // The used range of the embedded spreadsheet's first non-empty sheet as
+  // a cell grid; set only when kind is EMBEDDED_OBJECT_KIND_SPREADSHEET.
+  // Every non-empty sheet, this one included, is in inner_sheets. Reuses
+  // TableData; its caret start and end points are left unset.
   TableData inner_table = 13;
   // The StarMath command string; set only when kind is
   // EMBEDDED_OBJECT_KIND_FORMULA.
@@ -1287,6 +1378,13 @@ message EmbeddedObject {
   // to the body at the anchor's caret. The caret point and page are then
   // where the header is laid out on its first page.
   bool in_header_footer = 15;
+  // Present when the office core failed part way through reading this
+  // object: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 16;
+  // Every non-empty sheet of an embedded spreadsheet, in sheet order; set
+  // only when kind is EMBEDDED_OBJECT_KIND_SPREADSHEET.
+  repeated EmbeddedSheet inner_sheets = 17;
 }
 
 // SheetCellType is the office core's cell content classification, mirroring
@@ -1379,20 +1477,33 @@ message SheetCell {
   int32 merged_columns = 8;
   // Row span of a merged region anchored at this cell; 1 when not merged.
   int32 merged_rows = 9;
-  // True when the cell's number format is a date, time, or datetime format,
-  // so number is a date serial rather than a plain quantity.
+  // True when the cell holds a number (a value, or a formula whose result
+  // is a number) under a date, time, or datetime format, so number is a
+  // date serial rather than a plain quantity. Text under such a format,
+  // like a "Date" header over a date column, is never marked.
   bool is_datetime = 10;
   // The cell's wall-clock date and time, resolved from its serial against
   // the document's own null date; set only when is_datetime. A spreadsheet
   // date states no timezone, so neither does this.
   CellDateTime datetime = 11;
-  // True when the cell's number format is a logical format, so number is 0
-  // or 1 standing for false or true.
+  // True when the cell holds a number under a logical format, so number is
+  // 0 or 1 standing for false or true. Text is never marked.
   bool is_boolean = 12;
   // The office core's error code for a formula cell that evaluates to an
   // error; 0 when the cell holds a value. display carries the rendered
   // error literal.
   int32 error_code = 13;
+  // What a formula cell evaluated to: SHEET_CELL_TYPE_VALUE when number
+  // holds the numeric result (is_datetime and is_boolean then say how to
+  // read it), SHEET_CELL_TYPE_TEXT when the result is text and display
+  // carries it. Unset for cells that are not formulas and for a formula
+  // that evaluates to an error (error_code says so). Without it a formula
+  // yielding 0 and a formula yielding text look the same in number.
+  SheetCellType formula_result = 14;
+  // Present when the office core failed part way through reading this
+  // cell: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 15;
 }
 
 // SheetRow is one used row of a sheet, streamed the moment it is parsed.
@@ -1525,6 +1636,10 @@ message TextFrame {
   // to the body at the anchor's caret. The caret point and page are then
   // where the header is laid out on its first page.
   bool in_header_footer = 10;
+  // Present when the office core failed part way through reading this
+  // frame: the event holds what was read before the failure and
+  // nothing after it. Absent when it was read in full.
+  ExtractionGap gap = 11;
 }
 
 // Shape is one draw-page shape of a text document: a custom shape, a text
@@ -1741,13 +1856,16 @@ message PdfChunk {
 }
 
 // RenderStatus is the final event of a successful response stream, carrying
-// outcome counters. Failures arrive as gRPC status codes instead.
+// outcome counters. Failures arrive as gRPC status codes instead, and a
+// stream that ends without a RenderStatus is not a complete document.
 message RenderStatus {
   // State is the terminal outcome of the render.
   enum State {
     // Unset; never emitted by the server.
     STATE_UNSPECIFIED = 0;
-    // The render completed and every event was emitted.
+    // The render completed and every selected part was walked to its end.
+    // Problems with single items are listed in warnings; an item cut short
+    // carries an ExtractionGap and is counted in incomplete_items.
     STATE_OK = 1;
   }
   // The terminal outcome.
@@ -1761,6 +1879,10 @@ message RenderStatus {
   int64 output_bytes = 4;
   // Wall-clock render time in milliseconds, measured in the worker.
   int64 render_millis = 5;
+  // Typed events sent with an ExtractionGap: items the office core failed
+  // part way through reading, sent with what was read. 0 when every item
+  // was read in full.
+  int32 incomplete_items = 6;
 }
 
 // GetServiceInfoRequest asks for the service's capabilities.

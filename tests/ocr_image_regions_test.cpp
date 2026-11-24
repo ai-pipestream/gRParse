@@ -2,7 +2,9 @@
 // before; image placements a region of any label overlaps; a large placement
 // no region overlaps (a raster figure the detector split into icons or
 // missed); small, off-page and region-less small placements skipped; a figure
-// and the picture over it read once; output in reading position order.
+// and the picture over it read once; output in reading position order; and
+// the question "is this region one of the picture reads" answers the way the
+// reads were chosen.
 
 #include <string>
 #include <vector>
@@ -82,6 +84,25 @@ void verify_reads_clip_merge_and_order() {
   require(first.size() == 2 && first[0].y == 1500, "pictures are read before placements");
 }
 
+// A caller that reports on the picture reads (which pictures were read
+// from a weaker raster) must name exactly the regions that were read.
+void verify_the_picture_read_question_matches_the_reads() {
+  const std::vector<grparse::LayoutRegion> regions = {
+      region("picture", 100, 100, 600, 500),    // read
+      region("text", 100, 600, 600, 900),       // not a picture
+      region("picture", 700, 100, 720, 500),    // narrower than the minimum side
+      region("picture", 1690, 100, 2400, 500),  // 10 px left of it once clipped
+      region("picture", 100, 2300, 600, 2700),  // off the raster
+      region("picture", 900, 1200, 1500, 1600), // read
+  };
+  std::vector<bool> read;
+  for (const auto& each : regions) read.push_back(grparse::read_as_picture(each, kWidth, kHeight, 32));
+  require(read == std::vector<bool>{true, false, false, false, false, true},
+          "only a picture region of the minimum side, on the raster, is a picture read");
+  require(grparse::ocr_image_rects(regions, {}, kWidth, kHeight, 32).size() == 2,
+          "and those are the rectangles read");
+}
+
 }  // namespace
 
 int main() {
@@ -90,5 +111,6 @@ int main() {
       verify_a_placement_under_any_label_is_read_whole,
       verify_a_large_placement_without_a_region_is_read,
       verify_reads_clip_merge_and_order,
+      verify_the_picture_read_question_matches_the_reads,
   });
 }

@@ -41,7 +41,7 @@ CollectorOutcome collect_ebcdic_document(const std::shared_ptr<grpc::Channel>& c
   return drain_stream<ebcdicv1::ParseEbcdicResponse>(
       "ebcdic", *stream, upload,
       [](const ebcdicv1::ParseEbcdicResponse& event,
-         std::vector<std::string>& warnings) {
+         std::vector<Warning>& warnings) {
         if (!event.has_status()) return false;
         for (const auto& warning : event.status().warnings()) {
           warnings.push_back(ebcdicv1::WarningCode_Name(warning.code()) + ": " +

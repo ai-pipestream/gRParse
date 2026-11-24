@@ -13,6 +13,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "grparse/document_passwords.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -55,11 +56,22 @@ class PagePreviewSession {
   // Attaches a PNG preview of each page in `page_range` (or all pages when
   // unset) to `document->mutable_pages()`. Opens and probes the underlying
   // PageSource on the first call.
-  void attach(ai::pipestream::document::v1::Document* document,
-              std::optional<std::pair<int, int>> page_range = std::nullopt);
+  //
+  // Returns what the caller asked for and did not get, as
+  // WARNING_CODE_PAGE_PREVIEW_FAILED: one warning naming the page for each
+  // page whose render or encode failed, or a single warning without a page
+  // when the document could not be opened for rendering at all. That one is
+  // said once per session, however many slices follow, since it is about
+  // the document and not about any page of it. A request that is over
+  // (`stop` answered true) reports nothing for the pages it left: its
+  // status says what happened to it.
+  [[nodiscard]] std::vector<Warning> attach(
+      ai::pipestream::document::v1::Document* document,
+      std::optional<std::pair<int, int>> page_range = std::nullopt);
 
  private:
   bool ensure_open();
+  bool stopped() const;
 
   std::shared_ptr<const std::string> bytes_;
   std::function<bool()> stop_;
@@ -71,6 +83,9 @@ class PagePreviewSession {
   int page_count_ = 0;
   bool open_attempted_ = false;
   bool open_succeeded_ = false;
+  // Why the document did not open, until attach() has said so; unset when
+  // it opened, when the request ended first, and once it has been reported.
+  std::optional<std::string> open_failure_;
 };
 
 // Attaches a PNG preview of every page to Document.pages for a PDF a
@@ -84,6 +99,9 @@ class PagePreviewSession {
 // pages the PDF has that the document never named are added with only their
 // number and preview. Bytes that do not open as a PDF leave the document
 // exactly as it was: a preview is an aid, never a reason to fail a parse.
+// What could not be attached comes back as PagePreviewSession::attach
+// returns it, so the caller that asked for page images is told which are
+// missing instead of finding out from their absence.
 //
 // `page_range` (inclusive, 1-indexed, the request's Docling page_range)
 // limits the pages rendered, so a document trimmed to a span gains no entries
@@ -92,11 +110,14 @@ class PagePreviewSession {
 // the rest are skipped. The source's backend calls also run no later than
 // `deadline`, and a render in flight is cancelled once `stop` answers true:
 // a helper thread polls `stop` while pages render, so it must be safe to
-// call from another thread.
-void attach_page_previews(
+// call from another thread. `passwords` are the request's candidates for an
+// encrypted document: the collector that folded it opened it with one, and
+// the render needs the same one.
+[[nodiscard]] std::vector<Warning> attach_page_previews(
     std::shared_ptr<const std::string> bytes, ai::pipestream::document::v1::Document* document,
     std::optional<std::pair<int, int>> page_range = std::nullopt,
     const std::function<bool()>& stop = {},
-    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max());
+    std::chrono::system_clock::time_point deadline = std::chrono::system_clock::time_point::max(),
+    DocumentPasswords passwords = {});
 
 }  // namespace grparse

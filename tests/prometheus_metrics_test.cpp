@@ -63,6 +63,7 @@ void verify_render_counters_and_gauges() {
   metrics.pages_rendered = 13;
   metrics.pages_recognized = 5;
   metrics.pages_layout_labelled = 4;
+  metrics.pages_picture_ocr_at_page_resolution = 12;
   metrics.tables_structured = 1;
   metrics.figures_classified = 6;
   metrics.barcodes_decoded = 2;
@@ -119,6 +120,8 @@ void verify_render_counters_and_gauges() {
   require_contains(text, "grparse_pages_rendered_total 13\n", "rendered pages counter");
   require_contains(text, "grparse_pages_ocr_total 5\n", "ocr pages counter");
   require_contains(text, "grparse_pages_layout_total 4\n", "layout pages counter");
+  require_contains(text, "grparse_pages_picture_ocr_at_page_resolution_total 12\n",
+                   "pages whose sharper picture render failed");
   require_contains(text, "grparse_tables_structured_total 1\n", "tables counter");
   require_contains(text, "grparse_figures_classified_total 6\n", "figures counter");
   require_contains(text, "grparse_barcodes_decoded_total 2\n", "barcodes counter");
@@ -306,12 +309,17 @@ void verify_render_doctype_and_collector_families() {
   libreoffice.duration.buckets[1] = 2;  // <= 0.025 s
   libreoffice.duration.buckets[6] = 3;  // <= 1 s
   libreoffice.duration.sum_ns = 2'500'000'000ULL;
+  telemetry.executor_task_exceptions = 7;
 
   const std::string text = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
       grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
       grparse::OfficeCvTotals{}, 0, 0, telemetry);
 
+  require_contains(text, "# TYPE grparse_executor_task_exceptions_total counter\n",
+                   "escaped task exceptions type line");
+  require_contains(text, "grparse_executor_task_exceptions_total 7\n",
+                   "escaped task exceptions count");
   require_contains(text, "# HELP grparse_documents_completed_total ", "completed help line");
   require_contains(text, "# TYPE grparse_documents_completed_total counter\n",
                    "completed type line");
@@ -414,6 +422,67 @@ void verify_render_doctype_and_collector_families() {
                    "collector warnings type line");
   require_contains(text, "grparse_collector_warnings_total{collector=\"libreoffice\"} 9\n",
                    "libreoffice warnings count");
+}
+
+// The embedding failure counter is one family with a series for every
+// backend and stage, so a dashboard sees a zero before the first failure and
+// a rate() never starts from a missing series.
+void verify_render_embedding_failure_family() {
+  grparse::PipelineTelemetry telemetry;
+  telemetry.embedding("openvino").failed(grparse::EmbeddingFailureStage::kInference) = 2;
+  telemetry.embedding("cpu").failed(grparse::EmbeddingFailureStage::kOutput) = 1;
+
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 0, 0, telemetry);
+
+  require_contains(text, "# HELP grparse_embedding_failures_total ",
+                   "embedding failures help line");
+  require_contains(text, "# TYPE grparse_embedding_failures_total counter\n",
+                   "embedding failures type line");
+  require_contains(
+      text, "grparse_embedding_failures_total{backend=\"openvino\",stage=\"inference\"} 2\n",
+      "openvino inference failures");
+  require_contains(text,
+                   "grparse_embedding_failures_total{backend=\"cpu\",stage=\"output\"} 1\n",
+                   "cpu output failures");
+  for (std::string_view backend : grparse::kMetricEmbeddingBackends) {
+    for (std::string_view stage : grparse::kEmbeddingFailureStages) {
+      require_contains(text,
+                       "grparse_embedding_failures_total{backend=\"" + std::string(backend) +
+                           "\",stage=\"" + std::string(stage) + "\"} ",
+                       "embedding failure series " + std::string(backend) + "/" +
+                           std::string(stage));
+    }
+  }
+}
+
+// A recorded failure is in the next snapshot under its own labels, a backend
+// the family does not name is not counted anywhere, and a reset clears it.
+void verify_live_embedding_failures_are_counted() {
+  grparse::reset_pipeline_telemetry();
+  grparse::record_embedding_failure("tensorrt", grparse::EmbeddingFailureStage::kTokenize);
+  grparse::record_embedding_failure("tensorrt", grparse::EmbeddingFailureStage::kTokenize);
+  grparse::record_embedding_failure("openvino", grparse::EmbeddingFailureStage::kInference);
+  grparse::record_embedding_failure("made-up", grparse::EmbeddingFailureStage::kInference);
+
+  const grparse::PipelineTelemetry telemetry = grparse::pipeline_telemetry();
+  require(telemetry.embedding("tensorrt").failed(grparse::EmbeddingFailureStage::kTokenize) == 2,
+          "two tensorrt tokenize failures");
+  require(telemetry.embedding("openvino").failed(grparse::EmbeddingFailureStage::kInference) == 1,
+          "one openvino inference failure");
+  uint64_t total = 0;
+  for (const auto& backend : telemetry.embeddings) {
+    for (const uint64_t count : backend.failures) total += count;
+  }
+  require(total == 3, "a backend outside the family is counted nowhere");
+
+  grparse::reset_pipeline_telemetry();
+  require(grparse::pipeline_telemetry()
+                  .embedding("tensorrt")
+                  .failed(grparse::EmbeddingFailureStage::kTokenize) == 0,
+          "a reset clears the embedding failures");
 }
 
 void verify_doctype_classification_and_collector_status_mapping() {
@@ -567,6 +636,46 @@ void verify_live_pipeline_telemetry_and_run_collectors() {
   grparse::reset_pipeline_telemetry();
 }
 
+// What consensus reads of PDFs went without is a counter family of its own,
+// one series per event whether or not it ever happened, fed by the live
+// process counters the consensus source records into.
+void verify_consensus_events_are_counted_and_rendered() {
+  grparse::PipelineTelemetry telemetry;
+  telemetry.consensus_events(grparse::ConsensusEvent::kLegOpenFailed) = 2;
+  telemetry.consensus_events(grparse::ConsensusEvent::kPageUndervoted) = 7;
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 0, 0, telemetry);
+  require_contains(text, "# HELP grparse_pdf_consensus_events_total ", "consensus help line");
+  require_contains(text, "# TYPE grparse_pdf_consensus_events_total counter\n",
+                   "consensus type line");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_open_failed\"} 2\n",
+                   "legs that could not open a document");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_page_failed\"} 0\n",
+                   "a series exists before its first event");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_disabled\"} 0\n",
+                   "legs taken out of a vote");
+  require_contains(
+      text, "grparse_pdf_consensus_events_total{kind=\"page_count_disagreement\"} 0\n",
+      "documents whose backends disagreed on the page count");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"page_undervoted\"} 7\n",
+                   "pages decided by fewer backends than configured");
+
+  grparse::reset_pipeline_telemetry();
+  grparse::record_consensus_event(grparse::ConsensusEvent::kLegDisabled);
+  grparse::record_consensus_event(grparse::ConsensusEvent::kLegPageFailed, 3);
+  const grparse::PipelineTelemetry live = grparse::pipeline_telemetry();
+  require(live.consensus_events(grparse::ConsensusEvent::kLegDisabled) == 1 &&
+              live.consensus_events(grparse::ConsensusEvent::kLegPageFailed) == 3 &&
+              live.consensus_events(grparse::ConsensusEvent::kLegOpenFailed) == 0,
+          "recorded consensus events show in the live snapshot");
+  grparse::reset_pipeline_telemetry();
+  require(grparse::pipeline_telemetry().consensus_events(
+              grparse::ConsensusEvent::kLegPageFailed) == 0,
+          "and reset with the rest of the pipeline telemetry");
+}
+
 void verify_http_listener() {
   grparse::MetricsHttpServer server(0, [] { return std::string("test_metric 1\n"); });
   require(server.port() != 0, "port 0 must resolve to a bound port");
@@ -610,8 +719,11 @@ int main() {
       verify_render_ep_fallback_counter,
       verify_render_ort_session_placements,
       verify_render_doctype_and_collector_families,
+      verify_render_embedding_failure_family,
+      verify_live_embedding_failures_are_counted,
       verify_doctype_classification_and_collector_status_mapping,
       verify_live_pipeline_telemetry_and_run_collectors,
+      verify_consensus_events_are_counted_and_rendered,
       verify_http_listener,
       verify_renderer_exception_becomes_500,
   });

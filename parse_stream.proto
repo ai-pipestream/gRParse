@@ -77,7 +77,14 @@ message DocumentChunk {
   // ConvertDocumentOptions fields of the same names: REPORT attaches the
   // findings to each CollectorDocument event, ENFORCE fails the stream with
   // FAILED_PRECONDITION at the first collector Document that breaks a rule.
-  // The CV path's page events carry no tree to check.
+  // Pages that stream with no collector Document behind them (the CV path,
+  // and an inspector-streamed prefix a CV run finished) are checked once the
+  // last of them is out, as the Document they fold to with the complete
+  // event's heading levels and the repair event applied: REPORT puts those
+  // findings on DocumentComplete.structure_findings, ENFORCE fails the
+  // stream with the status ConvertSource returns for the same document. The
+  // page events are already on the wire by then, so the status is what
+  // tells an ENFORCE client to discard them.
   optional StructureValidation structure_validation = 10;
   repeated StructureRule structure_validation_rules = 11;
   optional StructureRepairs structure_repairs = 12;
@@ -117,7 +124,9 @@ message DocumentChunk {
   // Document, and the complete event's section_header_levels still ship.
   // With slim_collector_documents as well, nothing on the stream rebuilds
   // a collector's repaired items. Resolved from the first chunk that sets
-  // it.
+  // it. structure_validation REPORT or ENFORCE needs the folded pages to
+  // check them, so with either the server still keeps the fold; false then
+  // only drops the repair event.
   optional bool repair_delta = 16;
 }
 
@@ -211,6 +220,10 @@ message CollectorDocument {
   repeated string warnings = 3;
   // What DocumentChunk.structure_validation REPORT found in `document`.
   repeated StructureFinding structure_findings = 4;
+  // The same warnings as `warnings`, in the same order, each with its typed
+  // code, page and item where the collector stated them. `warnings` stays
+  // for readers that predate this field.
+  repeated ai.pipestream.document.v1.CollectorWarning typed_warnings = 5;
 }
 
 // CollectorFailure records one collector that could not contribute. The
@@ -324,6 +337,50 @@ message DocumentComplete {
   // so a reader of a recorded stream knows the missing repair events were
   // asked for, not lost.
   bool repair_delta_omitted = 6;
+  // The same warnings as `warnings`, in the same order, each with its typed
+  // code, page and item where the CV path stated them, and the CV collector
+  // as its source. `warnings` stays for readers that predate this field.
+  repeated ai.pipestream.document.v1.CollectorWarning typed_warnings = 7;
+  // What DocumentChunk.structure_validation REPORT found in the Document
+  // the stream's own page events fold to (see structure_validation): the
+  // pages no CollectorDocument event stands for, with section_header_levels
+  // and the repair event applied, so the refs are the repaired document's.
+  // Empty when every page came from a collector Document, whose findings
+  // ride its CollectorDocument event instead.
+  repeated StructureFinding structure_findings = 8;
+  // What the PDF inspector read from the file's own dictionaries (title,
+  // authors, dates, the catalog /Lang) when it classified a PDF and the CV
+  // path read it: the Document.source_meta ConvertSource puts on the same
+  // document. No collector_document event stands for the CV pages, so the
+  // metadata rides here. Absent when no inspector read the document, when
+  // the inspector failed (collector_failures names it), and when the file
+  // has none; an inspector whose own Document was taken carries it on that
+  // collector_document instead.
+  optional ai.pipestream.document.v1.DocumentMeta source_meta = 9;
+  // The steps ConvertSource runs on this document under its default options
+  // that this stream did not run, in enum order. What they add is absent
+  // from the page events for that reason alone; the document itself may or
+  // may not have had any of it. Empty when the stream left no step out.
+  repeated StreamOmittedStep omitted_steps = 10;
+}
+
+// A step ConvertSource runs on the finished Document and
+// StreamProcessDocument does not run at all: each needs the whole document
+// and a call to another service, after the pages are already on the wire.
+// DocumentComplete.omitted_steps names each one this deployment is
+// configured for, so a reader of the stream knows a difference from the
+// unary result is the surface's and not the document's.
+enum StreamOmittedStep {
+  STREAM_OMITTED_STEP_UNSPECIFIED = 0;
+  // The AcroForm widgets of a PDF. ConvertSource asks the PDF backend
+  // (GRPARSE_PDF_BACKEND) for them and folds them in as field items unless
+  // extract_form_fields is false; the stream's events carry no field item,
+  // whether or not the PDF has a form.
+  STREAM_OMITTED_STEP_FORM_FIELDS = 1;
+  // The enrichment leg (GRPARSE_ENRICH_TARGET): the tables of raster
+  // charts, and the picture, code and formula annotations a ConvertSource
+  // request can ask of it. The stream's items carry none of them.
+  STREAM_OMITTED_STEP_ENRICHMENT = 2;
 }
 
 message StreamDocumentRequest {
@@ -440,12 +497,39 @@ message DocumentNode {
 message StreamSourceResult {
   uint32 source_index = 1;
   string filename = 2;
+  // True when a Document was produced for this source, that is, when its
+  // final_document was sent. It does not say the Document is whole: a
+  // source one collector failed on while another succeeded still converts,
+  // with success true. `status` is the field that tells a full conversion
+  // from a thinner one; `success` keeps this meaning for the clients that
+  // predate `status`.
   bool success = 3;
+  // A line for logs and for readers that predate the typed fields: the
+  // failure of a failed source, or the failed collectors of a partial one
+  // joined into one string. Nothing is carried here alone: a failed
+  // source's status and classification are on the error envelope sent
+  // before this result, and a partial one's collectors are in
+  // collector_failures.
   optional string error_message = 4;
   // Present on success when the document is also (or instead) emitted as
   // final_document. Keeping it optional avoids double-shipping large docs
   // when the client only wants the final_document payload.
   optional string document_name = 5;
+  // How the source's conversion ended, in the vocabulary the unary
+  // ConvertDocumentResponse.status uses for the same event:
+  // CONVERSION_STATUS_SUCCESS when every planned collector contributed,
+  // CONVERSION_STATUS_PARTIAL_SUCCESS when a Document was produced without
+  // the collectors collector_failures names, CONVERSION_STATUS_FAILURE when
+  // no Document was produced (the error envelope before this result says
+  // why). CONVERSION_STATUS_UNSPECIFIED comes only from a server that
+  // predates this field, where `success` is all there is to read.
+  ConversionStatus status = 6;
+  // The collectors that failed while another produced the Document, one
+  // entry each with the classification the unary surface puts on that
+  // collector's ErrorItem. Non-empty exactly when status is
+  // CONVERSION_STATUS_PARTIAL_SUCCESS: the final_document lacks what these
+  // collectors would have contributed.
+  repeated CollectorFailure collector_failures = 7;
 }
 
 // StreamSourceOutputs is the rest of one source's conversion: the exports,
@@ -477,6 +561,15 @@ message StreamSourceOutputs {
   // (see ConvertDocumentResponse.text_offsets). Empty when the document has
   // no text items.
   repeated TextOffset text_offsets = 5;
+  // What `chunks` left out of the document (see
+  // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
+  // everything the chunker serializes, and when no chunks were asked for.
+  // What an export left out rides inside `exports`, as on the unary surface.
+  optional RenderOmissions chunk_omissions = 6;
+  // The options the request set that were accepted and not applied as named
+  // (see ConvertDocumentResponse.option_notices). The same list for every
+  // source of the request.
+  repeated OptionNotice option_notices = 7;
 }
 
 // StreamErrorCode is the stable machine class of a StreamError.

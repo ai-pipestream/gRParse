@@ -255,6 +255,11 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageSource> source;
     std::shared_ptr<Ticket::State> request;
     int page_number = 0;
+    // What the source said about its read of this page
+    // (PageSource::page_warnings), held from the render stage until the
+    // page is assembled, so it reaches the delivered page whichever way the
+    // page ends up being read. Stage-ordered like the timings below.
+    std::vector<Warning> source_warnings;
     // Set when the page enters the render queue; delivery latency is measured
     // from here so it includes every queue wait, not just compute.
     std::chrono::steady_clock::time_point scheduled_at{};
@@ -407,6 +412,7 @@ class PageScheduler::Impl final {
     snapshot.page_latency_ns = latency_sum_ns_.load();
     snapshot.pages_rerecognized = pages_rerecognized_.load();
     snapshot.rerecognition_passes = rerecognition_passes_.load();
+    snapshot.pages_picture_ocr_at_page_resolution = pages_picture_ocr_at_page_resolution_.load();
     for (size_t turn = 0; turn < rotations_applied_.size(); ++turn) {
       snapshot.rotations_applied[turn] = rotations_applied_[turn].load();
     }
@@ -415,6 +421,12 @@ class PageScheduler::Impl final {
 
   size_t page_window() const { return options_.page_window; }
   bool captures_page_images() const { return options_.capture_page_images; }
+  ModelPasses model_passes() const {
+    const bool layout = region_detector_ != nullptr;
+    return {.layout = layout,
+            .table_structure = layout && table_structurer_ != nullptr,
+            .figure_classification = layout && figure_classifier_ != nullptr};
+  }
 
  private:
   // The page-image decision for one document: its own tuning when it says,
@@ -738,6 +750,8 @@ class PageScheduler::Impl final {
                   : mode == OcrTuning::Mode::kOff || digital->skip_ocr;
           if (embedded_settles && region_detector_ == nullptr &&
               !captures_page_images(page->request->tuning)) {
+            // The text layer was this page's last read from its source.
+            digital->source_warnings = page->source->page_warnings(page->page_number);
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
@@ -761,6 +775,12 @@ class PageScheduler::Impl final {
           const StageTimer stage(page->timings.render_ms);
           image = page->source->render_page(page->page_number);
         }
+        // Asked once the page's last read from its source is done, and
+        // whether or not its text layer was read: a source can have learned
+        // something on the render (a consensus backend taken out after its
+        // renders kept failing), and forced recognition reads no text layer
+        // yet must still hear what the source went without from its open on.
+        page->source_warnings = page->source->page_warnings(page->page_number);
         pages_rendered_.fetch_add(1);
         if (page->request->cancelled.load()) {
           complete_page(page, PageOutcome::kCancelled);
@@ -880,8 +900,24 @@ class PageScheduler::Impl final {
             // Rectangles read sharper from a second render at the OCR DPI
             // when one is configured; the page raster otherwise.
             const auto& renderer = job.page->request->ocr_renderer;
-            const cv::Mat sharp = rects.empty() || !renderer ? cv::Mat()
-                                                             : renderer->render(job.page->page_number);
+            std::string sharp_failure;
+            const cv::Mat sharp = rects.empty() || !renderer
+                                      ? cv::Mat()
+                                      : renderer->render(job.page->page_number, &sharp_failure);
+            // A sharper render that was configured and failed leaves the
+            // rectangles to the page raster, where small text reads worse
+            // or not at all. The page and the pictures read that way keep
+            // the fact, and assembly reports it, so the weaker read never
+            // passes for the configured one.
+            if (!sharp_failure.empty()) {
+              pages_picture_ocr_at_page_resolution_.fetch_add(1);
+              assembled.sharper_render_failure =
+                  OcrPage::SharperRenderFailure{std::move(sharp_failure), rects.size()};
+              for (auto& region : regions) {
+                region.read_at_page_resolution = read_as_picture(
+                    region, job.image.cols, job.image.rows, kMinPictureReadSide);
+              }
+            }
             for (const cv::Rect& roi : rects) {
               const StageTimer stage(timings.ocr_ms);
               if (sharp.empty()) {
@@ -923,7 +959,13 @@ class PageScheduler::Impl final {
                 cell.top += roi.y;
                 cell.bottom += roi.y;
               }
-              if (structure.truncated) extend_truncated_table(region, assembled.lines);
+              if (structure.truncated) {
+                // The cut is kept on the region before the rows under it
+                // are built from the page's lines: assembly reports it, and
+                // the cells past it are not the model's.
+                region.structure_cut = region.structured_cells.size();
+                extend_truncated_table(region, assembled.lines);
+              }
             }
           }
           // Classification also runs on picture crops only, same grouping.
@@ -983,6 +1025,7 @@ class PageScheduler::Impl final {
           job.image.release();
           assembled.regions = std::move(regions);
           assembled.layout_model = std::move(layout_model);
+          assembled.source_warnings = std::move(job.page->source_warnings);
           result = std::make_shared<const OcrPage>(std::move(assembled));
         }
         enqueue_assembly(job.page, std::move(result));
@@ -1074,6 +1117,7 @@ class PageScheduler::Impl final {
   std::atomic<uint64_t> pages_rerecognized_{0};
   std::atomic<uint64_t> rerecognition_passes_{0};
   std::array<std::atomic<uint64_t>, kRotationDegrees.size()> rotations_applied_{};
+  std::atomic<uint64_t> pages_picture_ocr_at_page_resolution_{0};
 };
 
 PageScheduler::Ticket::Ticket(std::weak_ptr<State> state) : state_(std::move(state)) {}
@@ -1114,5 +1158,6 @@ PageScheduler::Metrics PageScheduler::metrics() const { return impl_->metrics();
 
 size_t PageScheduler::page_window() const { return impl_->page_window(); }
 bool PageScheduler::captures_page_images() const { return impl_->captures_page_images(); }
+PageScheduler::ModelPasses PageScheduler::model_passes() const { return impl_->model_passes(); }
 
 }  // namespace grparse

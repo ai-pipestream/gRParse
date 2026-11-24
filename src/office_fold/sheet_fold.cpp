@@ -15,16 +15,36 @@ namespace grparse::office_fold {
 namespace {
 
 // The cell's typed value: text stays the display string, and the value says
-// what the sheet actually holds. An error beats a formula, because a
-// formula that failed has no value to report. False when the cell holds
-// nothing the schema types.
+// what the sheet actually holds. A formula cell keeps both halves: its
+// source in formula_source and its cached result in kind, typed exactly as
+// a value cell's would be. A failed formula's result is its error literal;
+// a formula that yields text has no kind arm to fill, and the text stays
+// the cell's text. False when the cell holds nothing the schema types.
 bool typed_cell_value(const officev1::SheetCell& cell, docv1::CellValue* out) {
   bool typed = true;
-  if (cell.error_code() != 0) {
+  const bool is_formula = cell.type() == officev1::SHEET_CELL_TYPE_FORMULA;
+  // Only formula_result says what a formula evaluated to. Without it number
+  // reads 0 for a text result as for a zero, and older workers set
+  // is_datetime and is_boolean from the cell's number format alone, text
+  // results included, so neither mark is a statement about the result.
+  const bool numeric_result =
+      is_formula && cell.formula_result() == officev1::SHEET_CELL_TYPE_VALUE;
+  const bool text_result =
+      is_formula && cell.formula_result() == officev1::SHEET_CELL_TYPE_TEXT;
+  const bool failed = cell.error_code() != 0;
+  if (is_formula && !cell.formula().empty()
+      && (failed || numeric_result || text_result)) {
+    out->set_formula_source(cell.formula());
+  }
+  if (failed) {
     out->set_error(cell.display().empty()
                        ? "Err:" + std::to_string(cell.error_code())
                        : cell.display());
-  } else if (cell.type() == officev1::SHEET_CELL_TYPE_FORMULA) {
+  } else if (text_result) {
+    typed = out->has_formula_source();
+  } else if (is_formula && !numeric_result) {
+    // The worker did not say what the formula evaluated to, so no result
+    // is claimed: the legacy formula arm, with no cached value.
     out->set_formula(cell.formula());
   } else if (cell.is_boolean()) {
     out->set_boolean(cell.number() != 0);
@@ -37,7 +57,7 @@ bool typed_cell_value(const officev1::SheetCell& cell, docv1::CellValue* out) {
     when->set_hour(cell.datetime().hour());
     when->set_minute(cell.datetime().minute());
     when->set_second(cell.datetime().second());
-  } else if (cell.type() == officev1::SHEET_CELL_TYPE_VALUE) {
+  } else if (cell.type() == officev1::SHEET_CELL_TYPE_VALUE || numeric_result) {
     out->set_number(cell.number());
   } else {
     typed = false;
@@ -142,7 +162,28 @@ void SheetFold::on_sheet(const officev1::Sheet& sheet) {
 
 void SheetFold::on_sheet_row(const officev1::SheetRow& row) {
   auto found = sheet_table_.find(row.sheet_index());
-  if (found == sheet_table_.end()) return;
+  const auto name = sheet_name_.find(row.sheet_index());
+  // A cell the office core failed on names its sheet's table, and its place
+  // in the grid in words (the wire's zero-based row and column, as GridCell
+  // counts them): CollectorWarning locates an item, not a cell.
+  const auto report_cell_gaps = [&](const std::string& table_ref) {
+    for (const officev1::SheetCell& cell : row.cells()) {
+      if (!cell.has_gap()) continue;
+      arena_.report_gap(cell.gap(),
+                        "cell at row " + std::to_string(row.row()) + ", column "
+                            + std::to_string(cell.column()) + " of sheet "
+                            + (name != sheet_name_.end()
+                                   ? "'" + name->second + "'"
+                                   : std::to_string(row.sheet_index())),
+                        row.sheet_index(), table_ref);
+    }
+  };
+  if (found == sheet_table_.end()) {
+    // The row folds into nothing; what its cells lost is still reported.
+    report_cell_gaps(std::string());
+    return;
+  }
+  report_cell_gaps(arena_.document().tables(found->second).self_ref());
   docv1::TableData* data =
       arena_.document().mutable_tables(found->second)->mutable_data();
   // One provenance entry per used row, locating it in the sheet grid; the
@@ -153,10 +194,7 @@ void SheetFold::on_sheet_row(const officev1::SheetRow& row) {
     docv1::GridCell* grid = row_prov->mutable_grid();
     grid->set_row(row.row());
     grid->set_col(row.cells(0).column());
-    if (auto name = sheet_name_.find(row.sheet_index());
-        name != sheet_name_.end()) {
-      grid->set_sheet(name->second);
-    }
+    if (name != sheet_name_.end()) grid->set_sheet(name->second);
   }
   for (const officev1::SheetCell& cell : row.cells()) {
     docv1::TableCell* out = place_sheet_cell(cell, row.row(), data);
@@ -174,6 +212,19 @@ void SheetFold::on_named_range(const officev1::SheetNamedRange& range) {
   docv1::NamedRange* out = arena_.document().add_named_ranges();
   out->set_name(range.name());
   out->set_kind("named");
+  // The office core's NamedRangeFlag bits (com.sun.star.sheet), one typed
+  // field each: what the workbook uses the name for.
+  constexpr int32_t kFilterCriteria = 1;
+  constexpr int32_t kPrintArea = 2;
+  constexpr int32_t kColumnHeader = 4;
+  constexpr int32_t kRowHeader = 8;
+  constexpr int32_t kHidden = 16;
+  const int32_t flags = range.type_flags();
+  out->set_filter_criteria((flags & kFilterCriteria) != 0);
+  out->set_print_area((flags & kPrintArea) != 0);
+  out->set_repeat_columns((flags & kColumnHeader) != 0);
+  out->set_repeat_rows((flags & kRowHeader) != 0);
+  out->set_hidden((flags & kHidden) != 0);
   // A name pointing at cells resolves to a span; a name holding an
   // expression has no rectangle and keeps only its name. Workbook-scoped
   // names arrive before any sheet header, so the sheet is named later.
@@ -199,6 +250,7 @@ void SheetFold::on_database_range(const officev1::SheetDatabaseRange& range) {
   }
   out->set_has_headers(range.contains_header());
   out->set_has_totals(range.totals_row());
+  out->set_auto_filter(range.auto_filter());
 }
 
 void SheetFold::on_cell_comment(const officev1::SheetCellComment& comment) {

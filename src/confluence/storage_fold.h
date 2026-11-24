@@ -11,6 +11,7 @@
 #include <google/protobuf/repeated_ptr_field.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "grparse/warning.h"
 #include "storage_node.h"
 #include "storage_table.h"
 
@@ -35,7 +36,7 @@ struct InlineRun {
 
 class StorageFold {
  public:
-  StorageFold(docv1::Document* document, std::vector<std::string>* warnings)
+  StorageFold(docv1::Document* document, std::vector<Warning>* warnings)
       : document_(document), warnings_(warnings) {}
 
   // Walks a container's children: inline content accumulates into one text
@@ -130,7 +131,7 @@ class StorageFold {
   }
 
   docv1::Document* document_ = nullptr;
-  std::vector<std::string>* warnings_ = nullptr;
+  std::vector<Warning>* warnings_ = nullptr;
   std::vector<std::pair<std::string, std::string>> stamps_;
   int emitted_ = 0;
 };

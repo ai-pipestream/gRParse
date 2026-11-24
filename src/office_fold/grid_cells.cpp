@@ -109,6 +109,8 @@ bool quantity_cell(const docv1::TableCell& cell) {
   if (!cell.has_value()) return false;
   switch (cell.value().kind_case()) {
     case docv1::CellValue::kNumber:
+    case docv1::CellValue::kDecimal:
+    case docv1::CellValue::kInteger:
     case docv1::CellValue::kBoolean:
     case docv1::CellValue::kDatetime:
       return true;

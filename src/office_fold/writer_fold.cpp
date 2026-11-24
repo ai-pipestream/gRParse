@@ -35,6 +35,12 @@ void set_chain(const std::string& next, const std::string& prev,
   if (!prev.empty()) out->set_chain_prev(prev);
 }
 
+// What a gap warning calls a named thing: its kind, and its name when it
+// has one.
+std::string named(const char* kind, const std::string& name) {
+  return name.empty() ? std::string(kind) : std::string(kind) + " '" + name + "'";
+}
+
 // The identity of an anchored object's event: every per-page copy of a
 // header's object carries the same one.
 std::string object_key(const char* kind, const std::string& name,
@@ -97,11 +103,18 @@ TextHandle WriterFold::add_paragraph_item(
 
 void WriterFold::on_paragraph(const officev1::Paragraph& paragraph) {
   const std::string text = concat_runs(paragraph.runs());
-  if (record_empty_paragraph(paragraph, text)) return;
+  if (record_empty_paragraph(paragraph, text)) {
+    // No item comes of a blank paragraph; what it lost is still a loss.
+    arena_.report_gap_of(paragraph, "paragraph", paragraph.page_index(),
+                         std::string());
+    return;
+  }
   const long long length = runs_length(paragraph.runs());
   // Provenance charspans are 0-indexed within the item's own text; the
   // document-absolute paragraph offset stays on the office wire only.
   TextHandle handle = add_paragraph_item(paragraph);
+  arena_.report_gap_of(paragraph, "paragraph", paragraph.page_index(),
+                       handle.ref);
   paragraph_starts_[{paragraph.page_index(), paragraph.start().x(),
                      paragraph.start().y()}] = handle.ref;
   fill_from_runs(paragraph.runs(), handle);
@@ -134,6 +147,7 @@ void WriterFold::on_table(const officev1::TableData& table) {
     table_spans_.emplace_back(table.start().y(), table.end().y());
   }
   arena_.fold_table(table, item);
+  arena_.report_gap_of(table, "table", table.page_index(), table_ref);
   // The layout's selection over the table can report a box that ends
   // above the table's first caret (an object anchored in a cell, laid out
   // on an earlier page); it is not the table's.
@@ -205,6 +219,15 @@ void WriterFold::slot_inline_picture(const officev1::EmbeddedImage& image,
 }
 
 void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
+  const std::string picture_ref = place_embedded_image(image);
+  if (image.has_gap()) {
+    arena_.report_gap(image.gap(), named("picture", image.name()),
+                      image.page_index(), picture_ref, image.data().empty());
+  }
+}
+
+std::string WriterFold::place_embedded_image(
+    const officev1::EmbeddedImage& image) {
   std::string parent = "#/body";
   // A slide picture belongs under its slide; its geometry is already
   // page-local, unlike a text document's document-absolute anchors.
@@ -217,7 +240,9 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
     // A sheet picture comes from the sheet's draw page, page_index being
     // the sheet index; it belongs under that sheet's group.
     for (const docv1::GroupItem& group : arena_.document().groups()) {
-      if (group.label() == docv1::GROUP_LABEL_SHEET
+      // has_sheet tells a sheet of the document from a sheet group of an
+      // embedded workbook, which carries no SheetMeta and no index.
+      if (group.label() == docv1::GROUP_LABEL_SHEET && group.has_sheet()
           && group.sheet().index() == image.page_index()) {
         parent = group.self_ref();
         break;
@@ -252,7 +277,7 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
           static_cast<double>(image.height_twips()));
       ref->set_uri(data_uri(image.mime_type(), image.data()));
     }
-    return;
+    return picture_ref;
   }
   // A header or footer logo repeats on the pages of its page style; it is
   // furniture, kept once, never a body picture at the header's caret.
@@ -263,7 +288,7 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
                                 std::to_string(std::hash<std::string>{}(image.data())),
                                 image.width_twips(), image.height_twips(), -1, nullptr))
              .second) {
-      return;
+      return std::string();
     }
     if (parent == "#/body") parent = "#/furniture";
   } else if (!page_local) {
@@ -276,7 +301,7 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
         image.has_anchor() ? &image.anchor() : nullptr);
     const std::string next_ref =
         "#/pictures/" + std::to_string(arena_.document().pictures_size());
-    if (repeats_placed_object(key, next_ref)) return;
+    if (repeats_placed_object(key, next_ref)) return std::string();
   }
   const docv1::GroupItem* container = arena_.group_by_ref(parent);
   const bool furniture =
@@ -319,15 +344,21 @@ void WriterFold::on_embedded_image(const officev1::EmbeddedImage& image) {
       picture->mutable_prov(0)->mutable_grid()->set_sheet(group->name());
     }
   }
+  return picture_ref;
 }
 
 void WriterFold::on_footnote(const officev1::Footnote& footnote) {
   // A note with no text (its mark kept, its body emptied) has nothing to
   // read.
-  if (blank_text(concat_runs(footnote.runs()))) return;
+  if (blank_text(concat_runs(footnote.runs()))) {
+    arena_.report_gap_of(footnote, "footnote", footnote.page_index(),
+                         std::string());
+    return;
+  }
   TextHandle handle =
       arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_FOOTNOTE,
                       docv1::CONTENT_LAYER_BODY, "#/body");
+  arena_.report_gap_of(footnote, "footnote", footnote.page_index(), handle.ref);
   const std::string text = concat_runs(footnote.runs());
   handle.base->set_text(text);
   handle.base->set_orig(text);
@@ -352,18 +383,26 @@ void WriterFold::add_header_footer(const officev1::HeaderFooter& block,
   const docv1::DocItemLabel label = block.footer()
       ? docv1::DOC_ITEM_LABEL_PAGE_FOOTER
       : docv1::DOC_ITEM_LABEL_PAGE_HEADER;
+  // A header repeats on every page of its style, so its lines carry no
+  // page of their own and a gap in one names none.
+  const char* what = block.footer() ? "footer paragraph" : "header paragraph";
   for (const officev1::Paragraph& paragraph : block.paragraphs()) {
     // A blank header line is spacing, not furniture text.
-    if (blank_text(concat_runs(paragraph.runs()))) continue;
+    if (blank_text(concat_runs(paragraph.runs()))) {
+      arena_.report_gap_of(paragraph, what, -1, std::string());
+      continue;
+    }
     TextHandle handle = arena_.add_text(TextKind::kText, label,
                                         docv1::CONTENT_LAYER_FURNITURE,
                                         "#/furniture");
+    arena_.report_gap_of(paragraph, what, -1, handle.ref);
     fill_from_runs(paragraph.runs(), handle);
     if (!paragraph.style().empty()) {
       handle.base->set_style_name(paragraph.style());
     }
-    (*handle.base->mutable_meta()->mutable_custom_fields())["page_style"] =
-        str_value(block.page_style());
+    if (!block.page_style().empty()) {
+      handle.base->set_page_style_name(block.page_style());
+    }
     // The header repeats on each page, always at the same place; where on
     // the page is not on the wire, so the entries name the page alone.
     const long long length = runs_length(paragraph.runs());
@@ -381,6 +420,7 @@ void WriterFold::on_document_index(const officev1::DocumentIndex& index) {
   TextHandle handle =
       arena_.add_text(TextKind::kText, docv1::DOC_ITEM_LABEL_DOCUMENT_INDEX,
                       docv1::CONTENT_LAYER_BODY, "#/body");
+  arena_.report_gap_of(index, "document index", index.page_index(), handle.ref);
   const std::string text = concat_runs(index.runs());
   handle.base->set_text(text);
   handle.base->set_orig(text);
@@ -396,18 +436,24 @@ void WriterFold::on_document_index(const officev1::DocumentIndex& index) {
 }
 
 void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
+  const std::string text_ref = place_text_frame(frame);
+  arena_.report_gap_of(frame, named("text frame", frame.name()),
+                       frame.page_index(), text_ref);
+}
+
+std::string WriterFold::place_text_frame(const officev1::TextFrame& frame) {
   frames_seen_ = true;
   // A frame with no text (a border, a picture holder whose picture streams
   // on its own) is no text item.
   const std::string text = concat_runs(frame.runs());
-  if (blank_text(text)) return;
+  if (blank_text(text)) return std::string();
   const bool header_object = frame.in_header_footer();
   if (header_object) {
     if (!header_objects_
              .insert(object_key("frame", frame.name(), text, frame.width_twips(),
                                 frame.height_twips(), -1, nullptr))
              .second) {
-      return;
+      return std::string();
     }
   } else {
     const std::string key = object_key(
@@ -415,7 +461,7 @@ void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
         frame.page_index(), frame.has_anchor() ? &frame.anchor() : nullptr);
     const std::string group_ref =
         "#/groups/" + std::to_string(arena_.document().groups_size());
-    if (repeats_placed_object(key, group_ref)) return;
+    if (repeats_placed_object(key, group_ref)) return std::string();
   }
   const docv1::ContentLayer layer =
       header_object ? docv1::CONTENT_LAYER_FURNITURE : docv1::CONTENT_LAYER_BODY;
@@ -442,6 +488,7 @@ void WriterFold::on_text_frame(const officev1::TextFrame& frame) {
   // A frame streams after the body text; like an unslotted picture it is
   // judged against the finished body and placed by where it sits.
   if (!header_object) floating_items_.insert(group->self_ref());
+  return handle.ref;
 }
 
 void WriterFold::on_shape(const officev1::Shape& shape) {
@@ -547,9 +594,15 @@ void WriterFold::place_headers_footers() {
         found != pages_by_style.end()) {
       pages.insert(pages.end(), found->second.begin(), found->second.end());
     }
-    // A header of a page style no page is laid out in never shows.
+    // A header of a page style no page is laid out in never shows. No item
+    // comes of its lines, and a gap in one is still reported.
     if (pages.empty() && !document.pages().empty()) {
       unused++;
+      for (const officev1::Paragraph& paragraph : block.paragraphs()) {
+        arena_.report_gap_of(paragraph,
+                             block.footer() ? "footer paragraph" : "header paragraph",
+                             -1, std::string());
+      }
       continue;
     }
     std::ranges::sort(pages);

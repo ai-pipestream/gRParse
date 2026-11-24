@@ -151,10 +151,15 @@ docv1::Document document() {
   return document;
 }
 
-parsev1::DocumentExports exports() {
-  parsev1::DocumentExports exports;
-  exports.set_md("storage connectors e2e");
-  return exports;
+// The response ConvertSource would hold for the document when its target
+// runs.
+parsev1::ConvertDocumentResponse conversion() {
+  parsev1::ConvertDocumentResponse converted;
+  converted.set_status(parsev1::CONVERSION_STATUS_SUCCESS);
+  *converted.mutable_document()->mutable_doc() = document();
+  converted.mutable_document()->set_filename("e2e.md");
+  converted.mutable_document()->mutable_exports()->set_md("storage connectors e2e");
+  return converted;
 }
 
 std::string strip(const std::string& key, const std::string& prefix) {
@@ -165,7 +170,7 @@ std::string strip(const std::string& key, const std::string& prefix) {
 std::map<std::string, std::string> deliver(const parsev1::Target& target, const std::string& label,
                                            const std::string& prefix) {
   parsev1::TargetResult result;
-  const grpc::Status status = grparse::targets::deliver(target, document(), exports(), &result);
+  const grpc::Status status = grparse::targets::deliver(target, conversion(), &result);
   require(status.ok(), label + " delivers: " + status.error_message());
   std::map<std::string, std::string> keys;
   for (const auto& object : result.objects()) {
@@ -187,7 +192,8 @@ void read_back(storage::ObjectStore& store, const std::string& prefix,
 }
 
 void targets() {
-  const auto bundle = grparse::targets::build_bundle(document(), exports());
+  parsev1::TargetResult built;
+  const auto bundle = grparse::targets::build_bundle(conversion(), &built);
   std::set<std::string> expected;
   for (const auto& file : bundle) expected.insert(file.path);
 
