@@ -159,8 +159,8 @@ docv1::RefItem* mutable_parent_of(docv1::Document* document, const std::string& 
 }
 
 // Re-points every chapter picture whose `src` names an archive entry at
-// `epub:<href>`, and returns the hrefs so referenced. The raw attribute
-// value survives as a custom field for anyone who needs the author's text.
+// `epub:<href>`, and returns the hrefs so referenced. The attribute value
+// as the author wrote it stays on the image, in source_ref.
 std::set<std::string> localize_chapter_pictures(const std::string& chapter_href,
                                                 docv1::Document* chapter) {
   std::set<std::string> referenced;
@@ -168,9 +168,8 @@ std::set<std::string> localize_chapter_pictures(const std::string& chapter_href,
     if (!picture.has_image()) continue;
     const std::string resolved = resolve_epub_href(chapter_href, picture.image().uri());
     if (resolved.empty()) continue;
-    auto& fields = *picture.mutable_meta()->mutable_custom_fields();
-    if (!fields.contains("html.src")) {
-      fields["html.src"].set_string_value(picture.image().uri());
+    if (!picture.image().has_source_ref()) {
+      picture.mutable_image()->set_source_ref(picture.image().uri());
     }
     picture.mutable_image()->set_uri(epub_reference(resolved));
     referenced.insert(resolved);

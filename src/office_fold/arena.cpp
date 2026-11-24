@@ -27,18 +27,14 @@ int index_in_arena(const std::string& ref, const std::string& prefix) {
   return std::atoi(ref.c_str() + prefix.size());
 }
 
-// The code a gap is raised under. WarningCode has no value yet that says
-// "the collector failed part way through reading one item", so a gap takes
-// the value whose promise to a consumer is the same: the item holds the
-// content up to a point and nothing after it. That is
-// SOURCE_CONTENT_TRUNCATED, whose own wording names a limit as the cause
-// where a gap's cause is a failure; the worker's finding stays in the
+// The code a gap is raised under: the office core failed part way through
+// reading one part of the source and went on, which is what
+// SOURCE_PART_READ_FAILED says. The worker's own finding stays in the
 // message. A picture that arrived with no bytes at all is the loss
-// PICTURE_IMAGES_SKIPPED already names. This function is the one place to
-// change when the precise value exists.
+// PICTURE_IMAGES_SKIPPED already names.
 docv1::WarningCode gap_code(bool picture_without_bytes) {
   return picture_without_bytes ? docv1::WARNING_CODE_PICTURE_IMAGES_SKIPPED
-                               : docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+                               : docv1::WARNING_CODE_SOURCE_PART_READ_FAILED;
 }
 
 }  // namespace

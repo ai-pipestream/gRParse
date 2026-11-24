@@ -208,8 +208,10 @@ void verify_images_are_placed_and_inlined() {
   require(placed.image().uri() == "data:image/jpeg;base64," + grparse::encode_base64("JPEGBYTES", 9),
           "the placed picture's bytes are inlined");
   const auto& fields = placed.meta().custom_fields();
-  require(fields.contains("html.src") && fields.at("html.src").string_value() == "images/a.jpg",
-          "the author's relative src survives as a custom field");
+  require(placed.image().source_ref() == "images/a.jpg",
+          "the author's relative src is the image's source_ref, got '" +
+              placed.image().source_ref() + "'");
+  require(!fields.contains("html.src"), "the src rides no custom field");
   require(fields.contains("epub.manifest_id") &&
               fields.at("epub.manifest_id").string_value() == "img-OPS/images/a.jpg",
           "the retired skeleton picture's manifest facts moved onto the chapter picture");

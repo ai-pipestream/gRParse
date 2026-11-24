@@ -329,7 +329,7 @@ void verify_an_extraction_gap_is_a_typed_collector_warning() {
   require(outcome.success, "collection succeeds: " + outcome.error);
   const grparse::Warning* gap = nullptr;
   for (const grparse::Warning& warning : outcome.warnings) {
-    if (warning.code == ai::pipestream::document::v1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED) {
+    if (warning.code == ai::pipestream::document::v1::WARNING_CODE_SOURCE_PART_READ_FAILED) {
       gap = &warning;
     }
   }
