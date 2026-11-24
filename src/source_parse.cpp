@@ -2085,12 +2085,17 @@ CollectorOutcome take_inspector_extraction(const ParseInputs& inputs,
                                            const PdfRouteDecision& route) {
   PdfParseResult fast = parsed;
   if (inputs.previews) {
-    attach_page_previews(inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
-                         [&inputs] {
-                           return inputs.call.cancelled() ||
-                                  std::chrono::system_clock::now() >= inputs.inbound_deadline;
-                         },
-                         inputs.inbound_deadline);
+    // The request asked for page images: the ones that could not be rendered
+    // ride the leg's warnings, so their absence is not the only sign.
+    for (Warning& missing : attach_page_previews(
+             inputs.bytes, &fast.outcome.document, inputs.tuning.page_range,
+             [&inputs] {
+               return inputs.call.cancelled() ||
+                      std::chrono::system_clock::now() >= inputs.inbound_deadline;
+             },
+             inputs.inbound_deadline, inputs.tuning.passwords)) {
+      fast.outcome.warnings.push_back(std::move(missing));
+    }
   }
   if (!route.fast_path) {
     // NATIVE asked for the text layer as it is; say what the models would

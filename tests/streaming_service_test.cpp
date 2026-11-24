@@ -68,6 +68,7 @@ namespace pdfv1 = ai::pipestream::pdf::v1;
 namespace pipestream = ai::pipestream;
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 // Field-wise message equality. Serialized bytes are not a stable identity:
 // protobuf map fields (Chunk.metadata, Chunk.typed_metadata) iterate in a
@@ -2255,8 +2256,12 @@ struct UnaryPdfRun {
 };
 
 // One unary ConvertSource for a .pdf against a gRParse whose only
-// configured collector is the given pdf inspector target.
-UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
+// configured collector is the given pdf inspector target. `page_images`
+// asks for a rendered image of every page; a non-empty `password` rides the
+// call's metadata as the candidate for an encrypted document.
+UnaryPdfRun run_unary_pdf(const std::string& pdf_target, bool page_images = false,
+                          const std::string& bytes = "%PDF-in-memory",
+                          const std::string& password = {}) {
   FakeRecognizer recognizer;
   grparse::PageScheduler scheduler(
       recognizer, {2, 3, 2, 3, 2, 2, 2},
@@ -2277,11 +2282,12 @@ UnaryPdfRun run_unary_pdf(const std::string& pdf_target) {
       grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
+  if (!password.empty()) context.AddMetadata("document-password", password);
   pipestream::parse::v1::ConvertSourceRequest request;
   auto* source = request.mutable_request()->add_sources()->mutable_file();
   source->set_filename("routing.pdf");
-  const std::string bytes = "%PDF-in-memory";
   source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+  if (page_images) request.mutable_request()->mutable_options()->set_include_page_images(true);
   UnaryPdfRun run;
   run.status = client->ConvertSource(&context, request, &run.response);
   server->Shutdown(std::chrono::system_clock::now() + 2s);
@@ -4696,6 +4702,101 @@ void verify_streaming_pdf_fast_path_skips_previews_when_off() {
   require(pdf_backend.backend().render_calls() == 0, "nothing was rendered");
 }
 
+// The typed preview failures among `warnings`: what a caller that asked for
+// page images reads to learn which ones it did not get.
+std::vector<docv1::CollectorWarning> preview_failures(
+    const google::protobuf::RepeatedPtrField<docv1::CollectorWarning>& warnings) {
+  std::vector<docv1::CollectorWarning> failures;
+  for (const docv1::CollectorWarning& warning : warnings) {
+    if (warning.code() == docv1::WARNING_CODE_PAGE_PREVIEW_FAILED) failures.push_back(warning);
+  }
+  return failures;
+}
+
+// A unary parse that asked for page images and lost one says which: the
+// response is still OK, the pages that rendered keep their images, and the
+// document carries a typed warning naming the page that has none.
+void verify_unary_pdf_fast_path_names_the_page_without_a_preview() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_two_page_pdf(pdf_backend.backend());
+  pdf_backend.backend().fail_renders_of_page(1);
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run =
+      run_unary_pdf(inspector_server.target(), /*page_images=*/true, kTwoPagePdf);
+  require(run.status.ok(), "a lost preview must not fail the parse: " + run.status.error_message());
+  const auto& document = run.response.response().document().doc();
+  require(document.pages().at(1).has_image(), "the page that rendered carries its image");
+  require(!document.pages().at(2).has_image(), "the page that failed carries none");
+  const auto failures = preview_failures(document.warnings());
+  require_equal(failures.size(), size_t{1}, "one typed warning for the one missing page image");
+  require(failures.front().has_page_no() && failures.front().page_no() == 2,
+          "the warning names the page without an image");
+  require(failures.front().source().collector() == "pdf",
+          "the warning rides the leg whose document lost the image");
+  require(!failures.front().message().empty(), "the warning keeps words for a person");
+}
+
+// A unary parse whose document could not be opened for rendering at all is
+// told once, about the document, instead of once for every page.
+void verify_unary_pdf_fast_path_says_when_no_preview_could_be_rendered() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run =
+      run_unary_pdf(inspector_server.target(), /*page_images=*/true, kTwoPagePdf);
+  require(run.status.ok(), "missing previews must not fail the parse: " +
+                               run.status.error_message());
+  const auto& document = run.response.response().document().doc();
+  require(!document.pages().at(1).has_image() && !document.pages().at(2).has_image(),
+          "no page carries an image");
+  const auto failures = preview_failures(document.warnings());
+  require_equal(failures.size(), size_t{1}, "one typed warning about the document");
+  require(!failures.front().has_page_no(), "a document that never opened names no page");
+}
+
+// An encrypted PDF the inspector read with the request's password gets its
+// page images rendered with the same password.
+void verify_unary_pdf_fast_path_renders_previews_of_an_encrypted_pdf() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_two_page_pdf(pdf_backend.backend());
+  pdf_backend.backend().require_password(kTwoPagePdf, "open-sesame");
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun run = run_unary_pdf(inspector_server.target(), /*page_images=*/true,
+                                        kTwoPagePdf, "open-sesame");
+  require(run.status.ok(), "encrypted fast-path parse failed: " + run.status.error_message());
+  const auto& document = run.response.response().document().doc();
+  require(preview_failures(document.warnings()).empty(),
+          "the request's password opens the document for previews");
+  require(document.pages().at(1).has_image() && document.pages().at(2).has_image(),
+          "both pages of the encrypted document carry their images");
+}
+
+// The streamed fast path reports the same loss: the collector document that
+// follows the pages carries the typed warning for the page with no preview.
+void verify_streaming_pdf_fast_path_names_the_page_without_a_preview() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_two_page_pdf(pdf_backend.backend());
+  pdf_backend.backend().fail_renders_of_page(1);
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/true);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run =
+      run_stream_pdf(inspector_server.target(), /*capture_page_images=*/true, kTwoPagePdf);
+  require(run.status.ok(), "a lost preview must not fail the stream: " +
+                               run.status.error_message());
+  require(run.events.size() == 4, "two pages, the document, complete");
+  require(run.events.at(0).page().page_meta().has_image(), "page one streams with its preview");
+  require(!run.events.at(1).page().page_meta().has_image(), "page two streams without one");
+  const auto& collector_document = run.events.at(2).collector_document();
+  const auto failures = preview_failures(collector_document.typed_warnings());
+  require_equal(failures.size(), size_t{1}, "one typed warning for the one missing preview");
+  require(failures.front().has_page_no() && failures.front().page_no() == 2,
+          "the warning names the page without a preview");
+  require(collector_document.warnings_size() == collector_document.typed_warnings_size(),
+          "the typed warning has its words beside it");
+}
+
 // Serves the inspector's page-document contract for a three-page text
 // document: each page's markdown, then its slice of the fold, then the
 // whole fold and the trailer. After page one's slice it waits until the
@@ -4876,6 +4977,68 @@ void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
     require(complete.typed_warnings(index).source().collector() == "grparse-cv",
             "the CV path is the source of the complete event's warnings");
   }
+}
+
+const std::string kThreePagePdf = "%PDF-three-page-preview-fixture";
+
+void add_three_page_pdf(grparse_test::FakePdfBackend& backend) {
+  backend.add_document(kThreePagePdf,
+                       {grparse_test::text_page({"One"}), grparse_test::text_page({"Two"}),
+                        grparse_test::text_page({"Three"})});
+}
+
+// Pages that stream one by one as the inspector reads them each ask the
+// preview session for their own image; a page that gets none is named on
+// the collector document that follows the pages.
+void verify_streaming_pdf_page_by_page_names_the_page_without_a_preview() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_three_page_pdf(pdf_backend.backend());
+  pdf_backend.backend().fail_renders_of_page(1);
+  SlicingPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), /*capture_page_images=*/true, kThreePagePdf,
+      [&inspector](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && event.page().page_number() == 1) inspector.first_page_read();
+      });
+  require(run.status.ok(), "streamed fast path failed: " + run.status.error_message());
+  require(run.events.size() == 5, "three page events, the collector document, then complete");
+  require(run.events.at(0).page().page_meta().has_image() &&
+              !run.events.at(1).page().page_meta().has_image() &&
+              run.events.at(2).page().page_meta().has_image(),
+          "pages one and three stream with their previews, page two without");
+  const auto failures = preview_failures(run.events.at(3).collector_document().typed_warnings());
+  require_equal(failures.size(), size_t{1}, "one typed warning for the one missing preview");
+  require(failures.front().has_page_no() && failures.front().page_no() == 2,
+          "the warning names the page without a preview");
+}
+
+// When recognition takes the document over after a streamed run, the run's
+// pages are already on the wire and no collector document follows them: a
+// preview one of them lost is said on the complete event instead.
+void verify_streaming_pdf_handed_to_the_cv_path_keeps_the_preview_warning() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  add_three_page_pdf(pdf_backend.backend());
+  pdf_backend.backend().fail_renders_of_page(0);
+  SlicingPdfInspector inspector(/*needs_ocr_page=*/2);
+  PdfInspectorServer inspector_server(&inspector);
+  const StreamPdfRun run = run_stream_pdf(
+      inspector_server.target(), /*capture_page_images=*/true, kThreePagePdf,
+      [&inspector](const pipestream::parse::v1::DocumentStreamEvent& event) {
+        if (event.has_page() && event.page().page_number() == 1) inspector.first_page_read();
+      });
+  require(run.status.ok(), "the handed-over stream failed: " + run.status.error_message());
+  require(run.events.size() == 4, "three page events then complete; got " +
+                                      std::to_string(run.events.size()));
+  require(!run.events.at(0).page().page_meta().has_image(),
+          "the streamed page whose render failed carries no preview");
+  const auto& complete = run.events.back().complete();
+  const auto failures = preview_failures(complete.typed_warnings());
+  require_equal(failures.size(), size_t{1}, "one typed warning for the one missing preview");
+  require(failures.front().has_page_no() && failures.front().page_no() == 1,
+          "the warning names the streamed page without a preview");
+  require(complete.typed_warnings_size() == complete.warnings_size(),
+          "every warning on the complete event keeps its words beside it");
 }
 
 // Streams a three-page text document page by page whose whole-document
@@ -6433,11 +6596,17 @@ int main() {
         verify_collector_document_moves_into_its_event();
         verify_streaming_pdf_fast_path_streams_page_by_page();
         verify_streaming_pdf_hands_the_rest_to_the_cv_path();
+        verify_streaming_pdf_page_by_page_names_the_page_without_a_preview();
+        verify_streaming_pdf_handed_to_the_cv_path_keeps_the_preview_warning();
         verify_streamed_pages_plus_repair_rebuild_the_document();
         verify_stream_is_invariant_under_worker_counts();
         verify_repair_delta_opt_out_keeps_no_fold();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
+        verify_unary_pdf_fast_path_names_the_page_without_a_preview();
+        verify_unary_pdf_fast_path_says_when_no_preview_could_be_rendered();
+        verify_unary_pdf_fast_path_renders_previews_of_an_encrypted_pdf();
+        verify_streaming_pdf_fast_path_names_the_page_without_a_preview();
         verify_pdf_without_backend_fails_precondition();
         verify_streaming_pdf_classification_restricts_recognition();
         verify_pages_stream_before_the_document_finishes();

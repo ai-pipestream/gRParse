@@ -877,10 +877,15 @@ class DocumentStreamReactor final
           deadline, leg.tuning.passwords, std::move(registry));
     }
     std::map<int, pipestream::document::v1::PageItem> previews;
-    const auto stream_page = [&weak_gate, &preview_session, &previews](PdfPageSlice slice) {
+    // The previews that could not be rendered, kept until the leg knows
+    // which event carries its warnings.
+    std::vector<Warning> preview_warnings;
+    const auto stream_page = [&weak_gate, &preview_session, &previews,
+                              &preview_warnings](PdfPageSlice slice) {
       if (preview_session.has_value()) {
-        preview_session->attach(&slice.document,
-                                std::pair<int, int>{slice.page_no, slice.page_no});
+        std::ranges::move(preview_session->attach(
+                              &slice.document, std::pair<int, int>{slice.page_no, slice.page_no}),
+                          std::back_inserter(preview_warnings));
         if (const auto page = slice.document.pages().find(slice.page_no);
             page != slice.document.pages().end()) {
           previews[slice.page_no] = page->second;
@@ -949,9 +954,12 @@ class DocumentStreamReactor final
       } else if (preview_session.has_value()) {
         // Rendered before the reactor sees the document, on this thread,
         // where the blocking work already is.
-        preview_session->attach(&parsed.outcome.document, leg.tuning.page_range);
+        std::ranges::move(
+            preview_session->attach(&parsed.outcome.document, leg.tuning.page_range),
+            std::back_inserter(preview_warnings));
       }
       preview_session.reset();
+      std::ranges::move(preview_warnings, std::back_inserter(parsed.outcome.warnings));
       deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
               streamed, pdf_elapsed_ns);
       return;
@@ -975,10 +983,17 @@ class DocumentStreamReactor final
         // Every page went out and only the Document's own checks failed:
         // the part settles on the collector's outcome, with nothing left
         // to recognize.
+        std::ranges::move(preview_warnings, std::back_inserter(parsed.outcome.warnings));
         deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
                 /*pages_streamed=*/true, pdf_elapsed_ns);
         return;
       }
+      // The run's pages keep the previews they streamed with, and no
+      // collector document follows them: the ones that got none are said on
+      // the complete event.
+      with_reactor(weak_gate, [&preview_warnings](DocumentStreamReactor& reactor) {
+        reactor.note_preview_failures(std::move(preview_warnings));
+      });
       leg.tuning.page_range =
           std::pair<int, int>{first_left, leg.tuning.page_range.has_value()
                                               ? leg.tuning.page_range->second
@@ -1016,6 +1031,14 @@ class DocumentStreamReactor final
         "pages 1-" + std::to_string(first_left - 1) +
         " streamed from the pdf inspector's text layer as they were read; pages " +
         std::to_string(first_left) + " onward went through the CV path");
+  }
+
+  // Page images a streamed run asked for and did not get, when recognition
+  // takes the rest of the document and the run's own outcome is never
+  // delivered.
+  void note_preview_failures(std::vector<Warning> warnings) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::ranges::move(warnings, std::back_inserter(assembly_warnings_));
   }
 
   // The CV run started on the info event while the inspector still
