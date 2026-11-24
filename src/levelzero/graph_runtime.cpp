@@ -66,6 +66,8 @@ struct PackArgs {
 // boundaries, which the XMX kernels' block reads need.
 constexpr size_t kArenaSlack = 64;
 constexpr size_t kBlock = 32;
+// Input shapes whose recorded launches a model keeps.
+constexpr size_t kPlans = 32;
 
 uint16_t half_bits(float value) {
   const _Float16 narrow = static_cast<_Float16>(value);
@@ -126,8 +128,6 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
   queue_desc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
   ze_check(zeCommandQueueCreate(device_.context(), device_.device(), &queue_desc, &queue_), "command queue");
-  auto list_desc = ze_desc<ze_command_list_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC);
-  ze_check(zeCommandListCreate(device_.context(), device_.device(), &list_desc, &list_), "command list");
   auto fence_desc = ze_desc<ze_fence_desc_t>(ZE_STRUCTURE_TYPE_FENCE_DESC);
   ze_check(zeFenceCreate(queue_, &fence_desc, &fence_), "fence");
 }
@@ -166,32 +166,39 @@ void GraphModel::build_fp16_weights() {
 
 GraphModel::~GraphModel() {
   if (fence_ != nullptr) zeFenceDestroy(fence_);
-  if (list_ != nullptr) zeCommandListDestroy(list_);
+  drop_plans();
   if (queue_ != nullptr) zeCommandQueueDestroy(queue_);
 }
 
 std::vector<HostTensor> GraphModel::run(const float* input, const std::vector<int64_t>& shape) {
   std::lock_guard lock(mutex_);
-  std::vector<HostTensor> outputs;
-  record(input, shape, &outputs);
-  execute();
-  return outputs;
+  const Plan& plan = plan_for(shape);
+  try {
+    return execute(plan, input);
+  } catch (...) {
+    drop_plans();  // nothing recorded before a failed run is trusted again
+    throw;
+  }
 }
 
 std::vector<HostTensor> GraphModel::run_profiled(const float* input, const std::vector<int64_t>& shape,
                                                  std::vector<double>* node_microseconds) {
   std::lock_guard lock(mutex_);
-  std::vector<HostTensor> outputs;
+  // A list of its own, never kept: its launches signal timestamp events.
+  Plan plan;
   profiling_ = true;
   profile_nodes_.clear();
+  std::vector<HostTensor> outputs;
   try {
-    record(input, shape, &outputs);
+    record(shape, &plan);
+    profiling_ = false;
+    outputs = execute(plan, input);
   } catch (...) {
     profiling_ = false;
+    if (plan.list != nullptr) zeCommandListDestroy(plan.list);
     throw;
   }
-  profiling_ = false;
-  execute();
+  zeCommandListDestroy(plan.list);
   auto properties = ze_desc<ze_device_properties_t>(ZE_STRUCTURE_TYPE_DEVICE_PROPERTIES);
   ze_check(zeDeviceGetProperties(device_.device(), &properties), "device properties");
   node_microseconds->assign(ir_.nodes.size(), 0.0);
@@ -205,19 +212,63 @@ std::vector<HostTensor> GraphModel::run_profiled(const float* input, const std::
   return outputs;
 }
 
-void GraphModel::execute() {
+GraphModel::Plan& GraphModel::plan_for(const std::vector<int64_t>& shape) {
+  for (Plan& plan : plans_) {
+    if (plan.shape == shape) {
+      plan.used = ++plan_clock_;
+      return plan;
+    }
+  }
+  // Past the bound the least recently used shape gives up its list, which
+  // is reset and recorded over.  Recording may drop every kept plan: a
+  // buffer that grows moves the addresses they hold.
+  Plan plan;
+  if (plans_.size() >= kPlans) {
+    const auto oldest = std::min_element(plans_.begin(), plans_.end(),
+                                         [](const Plan& a, const Plan& b) { return a.used < b.used; });
+    plan.list = oldest->list;
+    plans_.erase(oldest);
+  }
+  try {
+    record(shape, &plan);
+  } catch (...) {
+    if (plan.list != nullptr) zeCommandListDestroy(plan.list);
+    throw;
+  }
+  plan.used = ++plan_clock_;
+  return plans_.emplace_back(std::move(plan));
+}
+
+void GraphModel::drop_plans() {
+  for (Plan& plan : plans_) zeCommandListDestroy(plan.list);
+  plans_.clear();
+}
+
+// The input into its staging buffer, the plan's launches, the outputs out
+// of theirs.  The staging buffers are host memory the kernels read and
+// write directly, so the one list submitted is the plan's.
+std::vector<HostTensor> GraphModel::execute(const Plan& plan, const float* input) {
   const auto step = [&](ze_result_t result, const char* what) {
     if (result != ZE_RESULT_SUCCESS) {
       throw InferenceDeviceError(std::format("{}: {} failed ({})", device_.description(), what, ze_name(result)));
     }
   };
-  step(zeCommandQueueExecuteCommandLists(queue_, 1, &list_, fence_), "graph submission");
+  std::memcpy(io_in_, input, numel(plan.shape) * sizeof(float));
+  ze_command_list_handle_t list = plan.list;
+  step(zeCommandQueueExecuteCommandLists(queue_, 1, &list, fence_), "graph submission");
   step(zeFenceHostSynchronize(fence_, UINT64_MAX), "graph run");
   step(zeFenceReset(fence_), "fence reset");
+  std::vector<HostTensor> outputs(plan.output_shapes.size());
+  for (size_t i = 0; i < outputs.size(); ++i) {
+    outputs[i].shape = plan.output_shapes[i];
+    outputs[i].data.resize(numel(outputs[i].shape));
+    std::memcpy(outputs[i].data.data(), io_out_ + plan.output_floats[i] * sizeof(float),
+                outputs[i].data.size() * sizeof(float));
+  }
+  return outputs;
 }
 
-void GraphModel::record(const float* input, const std::vector<int64_t>& input_shape,
-                        std::vector<HostTensor>* outputs) {
+void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
   std::vector<Value> values(ir_.values.size());
   for (size_t id = 0; id < ir_.values.size(); ++id) {
     const IrValue& v = ir_.values[id];
@@ -872,23 +923,34 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
       if (input >= 0 && last_use_[size_t(input)] == index) release(values[size_t(input)]);
     }
   }
-  // Grow the arena and the float staging buffers to this call's peak, then record.
-  const auto grow = [this](char** memory, size_t* have, size_t want, size_t element) {
+  // Grow the arena and the float staging buffers to this shape's peak, then
+  // record.  A buffer that grows moves, and the kept plans hold its old
+  // address: they are dropped.
+  bool moved = false;
+  const auto grow = [&](char** memory, size_t* have, size_t want, size_t element, bool host) {
     if (want <= *have) return;
     if (*memory != nullptr) zeMemFree(device_.context(), *memory);
     *have = want + want / 2;
-    *memory = static_cast<char*>(device_.allocate(*have * element));
+    const size_t bytes = *have * element;
+    *memory = static_cast<char*>(host ? device_.allocate_host(bytes) : device_.allocate(bytes));
+    moved = true;
   };
   size_t output_floats = 0;
   for (int id : ir_.outputs) output_floats += (numel(values[size_t(id)].shape) + 15) / 16 * 16;
-  grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_);
-  grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float));
-  grow(&io_out_, &io_out_floats_, output_floats, sizeof(float));
-  ze_check(zeCommandListReset(list_), "command list reset");
-  ze_check(zeCommandListAppendMemoryCopy(list_, io_in_, input, numel(input_shape) * sizeof(float), nullptr, 0,
-                                         nullptr),
-           "input upload");
-  ze_check(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr), "graph barrier");
+  grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_, false);
+  grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float), true);
+  grow(&io_out_, &io_out_floats_, output_floats, sizeof(float), true);
+  if (moved) drop_plans();
+  if (plan->list == nullptr) {
+    auto list_desc = ze_desc<ze_command_list_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_LIST_DESC);
+    ze_check(zeCommandListCreate(device_.context(), device_.device(), &list_desc, &plan->list), "command list");
+  } else {
+    ze_check(zeCommandListReset(plan->list), "command list reset");
+  }
+  list_ = plan->list;
+  plan->shape = input_shape;
+  plan->output_shapes.clear();
+  plan->output_floats.clear();
   {
     const char* src = io_in_;
     char* dst = arena_ + input_offset * esize_;
@@ -901,22 +963,17 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
     current_node_ = node_index;
     body(arena_);
   }
-  outputs->reserve(ir_.outputs.size());
   size_t out_at = 0;
   for (int id : ir_.outputs) {
     const Value& v = values[size_t(id)];
-    HostTensor& t = outputs->emplace_back();
-    t.shape = v.shape;
-    t.data.resize(numel(v.shape));
+    plan->output_shapes.push_back(v.shape);
+    plan->output_floats.push_back(out_at);
     const char* src = ptr(v, arena_);
     char* dst = io_out_ + out_at * sizeof(float);
-    const int count = int(t.data.size());
+    const int count = int(numel(v.shape));
     args(kernels_->from_real, {P(src), P(dst), P(count)});
     launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
-    ze_check(zeCommandListAppendMemoryCopy(list_, t.data.data(), dst, t.data.size() * sizeof(float), nullptr, 0,
-                                           nullptr),
-             "output readback");
-    out_at += (t.data.size() + 15) / 16 * 16;
+    out_at += (size_t(count) + 15) / 16 * 16;
   }
   ze_check(zeCommandListClose(list_), "command list close");
 }
