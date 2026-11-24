@@ -9,7 +9,7 @@
 namespace grparse::levelzero {
 namespace {
 
-constexpr int kFloat = 1;  // TensorProto.DataType.FLOAT
+constexpr int kFloat = 1, kInt32 = 6, kInt64 = 7;
 
 class Reader {
  public:
@@ -35,7 +35,14 @@ class Reader {
     return out;
   }
 
-  // Skips one field's value of wire type `type`.
+  std::string_view message() { return take(varint()); }
+
+  float fixed32() {
+    float value = 0;
+    std::memcpy(&value, take(4).data(), 4);
+    return value;
+  }
+
   void skip(uint32_t type) {
     switch (type) {
       case 0: (void)varint(); return;
@@ -46,9 +53,17 @@ class Reader {
     }
   }
 
+  // The next field's (number, wire type).
+  std::pair<uint32_t, uint32_t> key() {
+    const uint64_t key = varint();
+    return {static_cast<uint32_t>(key >> 3), static_cast<uint32_t>(key & 7)};
+  }
+
   [[noreturn]] void fail(std::string_view why) const {
     throw std::runtime_error(what_ + ": not a readable ONNX model (" + std::string(why) + ")");
   }
+
+  const std::string& what() const { return what_; }
 
  private:
   std::string_view bytes_;
@@ -63,72 +78,190 @@ void append_floats(std::string_view raw, std::vector<float>* out, const Reader& 
   std::memcpy(out->data() + start, raw.data(), raw.size());  // little-endian, as ONNX stores it
 }
 
-void read_tensor(std::string_view message, const std::string& what,
-                 std::map<std::string, OnnxTensor>* out) {
+// A varint field, packed (wire type 2) or one value (wire type 0).
+void append_varints(Reader& reader, uint32_t type, std::vector<int64_t>* out) {
+  if (type == 0) {
+    out->push_back(static_cast<int64_t>(reader.varint()));
+    return;
+  }
+  Reader packed(reader.message(), reader.what());
+  while (!packed.done()) out->push_back(static_cast<int64_t>(packed.varint()));
+}
+
+OnnxTensor read_tensor(std::string_view message, const std::string& what, std::string* name) {
   Reader reader(message, what);
-  std::string name;
   OnnxTensor tensor;
-  int64_t data_type = 0;
+  std::string raw;
   while (!reader.done()) {
-    const uint64_t key = reader.varint();
-    const auto field = static_cast<uint32_t>(key >> 3);
-    const auto type = static_cast<uint32_t>(key & 7);
-    if (field == 1 && type == 0) {
-      tensor.dims.push_back(static_cast<int64_t>(reader.varint()));
-    } else if (field == 1 && type == 2) {
-      Reader packed(reader.take(reader.varint()), what);
-      while (!packed.done()) tensor.dims.push_back(static_cast<int64_t>(packed.varint()));
+    const auto [field, type] = reader.key();
+    if (field == 1) {
+      append_varints(reader, type, &tensor.dims);
     } else if (field == 2 && type == 0) {
-      data_type = static_cast<int64_t>(reader.varint());
+      tensor.data_type = static_cast<int>(reader.varint());
     } else if (field == 4 && type == 2) {
-      append_floats(reader.take(reader.varint()), &tensor.values, reader);
+      append_floats(reader.message(), &tensor.values, reader);
     } else if (field == 4 && type == 5) {
-      append_floats(reader.take(4), &tensor.values, reader);
+      tensor.values.push_back(reader.fixed32());
+    } else if ((field == 5 || field == 7) && (type == 0 || type == 2)) {  // int32_data, int64_data
+      append_varints(reader, type, &tensor.ints);
     } else if (field == 8 && type == 2) {
-      name = std::string(reader.take(reader.varint()));
+      *name = std::string(reader.message());
     } else if (field == 9 && type == 2) {
-      append_floats(reader.take(reader.varint()), &tensor.values, reader);
+      raw = std::string(reader.message());
     } else {
       reader.skip(type);
     }
   }
-  if (data_type != kFloat) return;  // shape constants and the like
+  if (!raw.empty() && tensor.data_type == kFloat) append_floats(raw, &tensor.values, reader);
+  if (!raw.empty() && (tensor.data_type == kInt64 || tensor.data_type == kInt32)) {
+    const size_t width = tensor.data_type == kInt64 ? 8 : 4;
+    if (raw.size() % width != 0) reader.fail("integer data of a partial element");
+    for (size_t at = 0; at < raw.size(); at += width) {
+      int64_t value = 0;
+      if (width == 8) {
+        std::memcpy(&value, raw.data() + at, 8);
+      } else {
+        int32_t narrow = 0;
+        std::memcpy(&narrow, raw.data() + at, 4);
+        value = narrow;
+      }
+      tensor.ints.push_back(value);
+    }
+  }
   size_t expected = 1;
   for (const int64_t dim : tensor.dims) expected *= static_cast<size_t>(dim);
-  if (tensor.values.size() != expected) {
-    reader.fail("initializer " + name + " holds " + std::to_string(tensor.values.size()) +
-                " floats for " + std::to_string(expected) + " elements");
+  const size_t held = tensor.data_type == kFloat ? tensor.values.size() : tensor.ints.size();
+  const bool typed = tensor.data_type == kFloat || tensor.data_type == kInt64 || tensor.data_type == kInt32;
+  if (typed && held != expected) {
+    reader.fail("tensor " + *name + " holds " + std::to_string(held) + " values for " +
+                std::to_string(expected) + " elements");
   }
-  (*out)[name] = std::move(tensor);
+  return tensor;
+}
+
+std::string read_value_info_name(std::string_view message, const std::string& what) {
+  Reader reader(message, what);
+  while (!reader.done()) {
+    const auto [field, type] = reader.key();
+    if (field == 1 && type == 2) return std::string(reader.message());
+    reader.skip(type);
+  }
+  return {};
+}
+
+void read_attribute(std::string_view message, const std::string& what, OnnxNode* node) {
+  Reader reader(message, what);
+  std::string name;
+  OnnxAttribute attribute;
+  while (!reader.done()) {
+    const auto [field, type] = reader.key();
+    if (field == 1 && type == 2) {
+      name = std::string(reader.message());
+    } else if (field == 2 && type == 5) {
+      attribute.f = reader.fixed32();
+    } else if (field == 3 && type == 0) {
+      attribute.i = static_cast<int64_t>(reader.varint());
+    } else if (field == 4 && type == 2) {
+      attribute.s = std::string(reader.message());
+    } else if (field == 5 && type == 2) {
+      std::string unused;
+      attribute.t = read_tensor(reader.message(), what, &unused);
+    } else if (field == 7 && type == 2) {
+      append_floats(reader.message(), &attribute.floats, reader);
+    } else if (field == 7 && type == 5) {
+      attribute.floats.push_back(reader.fixed32());
+    } else if (field == 8 && (type == 0 || type == 2)) {
+      append_varints(reader, type, &attribute.ints);
+    } else {
+      reader.skip(type);
+    }
+  }
+  node->attributes[name] = std::move(attribute);
+}
+
+OnnxNode read_node(std::string_view message, const std::string& what) {
+  Reader reader(message, what);
+  OnnxNode node;
+  while (!reader.done()) {
+    const auto [field, type] = reader.key();
+    if (field == 1 && type == 2) {
+      node.inputs.emplace_back(reader.message());
+    } else if (field == 2 && type == 2) {
+      node.outputs.emplace_back(reader.message());
+    } else if (field == 4 && type == 2) {
+      node.op_type = std::string(reader.message());
+    } else if (field == 5 && type == 2) {
+      read_attribute(reader.message(), what, &node);
+    } else {
+      reader.skip(type);
+    }
+  }
+  return node;
 }
 
 }  // namespace
 
-std::map<std::string, OnnxTensor> parse_onnx_initializers(const std::string& bytes,
-                                                         const std::string& what) {
-  std::map<std::string, OnnxTensor> out;
+const OnnxAttribute* OnnxNode::attribute(const std::string& name) const {
+  const auto found = attributes.find(name);
+  return found == attributes.end() ? nullptr : &found->second;
+}
+
+OnnxGraph parse_onnx_graph(const std::string& bytes, const std::string& what) {
+  OnnxGraph out;
   Reader model(bytes, what);
   bool saw_graph = false;
+  std::vector<std::string> declared_inputs;
   while (!model.done()) {
-    const uint64_t key = model.varint();
-    const auto type = static_cast<uint32_t>(key & 7);
-    if ((key >> 3) != 7 || type != 2) {
+    const auto [field, type] = model.key();
+    if (field != 7 || type != 2) {
       model.skip(type);
       continue;
     }
     saw_graph = true;
-    Reader graph(model.take(model.varint()), what);
+    Reader graph(model.message(), what);
     while (!graph.done()) {
-      const uint64_t graph_key = graph.varint();
-      const auto graph_type = static_cast<uint32_t>(graph_key & 7);
-      if ((graph_key >> 3) == 5 && graph_type == 2) {
-        read_tensor(graph.take(graph.varint()), what, &out);
+      const auto [graph_field, graph_type] = graph.key();
+      if (graph_field == 1 && graph_type == 2) {
+        out.nodes.push_back(read_node(graph.message(), what));
+      } else if (graph_field == 5 && graph_type == 2) {
+        std::string name;
+        OnnxTensor tensor = read_tensor(graph.message(), what, &name);
+        out.constants[name] = std::move(tensor);
+      } else if (graph_field == 11 && graph_type == 2) {
+        declared_inputs.push_back(read_value_info_name(graph.message(), what));
+      } else if (graph_field == 12 && graph_type == 2) {
+        out.outputs.push_back(read_value_info_name(graph.message(), what));
       } else {
         graph.skip(graph_type);
       }
     }
   }
   if (!saw_graph) model.fail("no graph");
+  for (const OnnxNode& node : out.nodes) {
+    if (node.op_type != "Constant") continue;
+    const OnnxAttribute* value = node.attribute("value");
+    if (value == nullptr || !value->t || node.outputs.size() != 1) model.fail("a Constant without a tensor");
+    out.constants[node.outputs[0]] = *value->t;
+  }
+  for (std::string& name : declared_inputs) {
+    if (!out.constants.contains(name)) out.inputs.push_back(std::move(name));
+  }
+  return out;
+}
+
+OnnxGraph read_onnx_graph(const std::filesystem::path& path) {
+  std::ifstream file(path, std::ios::binary);
+  if (!file) throw std::runtime_error(path.string() + ": cannot be opened");
+  const std::string bytes((std::istreambuf_iterator<char>(file)), std::istreambuf_iterator<char>());
+  return parse_onnx_graph(bytes, path.string());
+}
+
+std::map<std::string, OnnxTensor> parse_onnx_initializers(const std::string& bytes,
+                                                         const std::string& what) {
+  std::map<std::string, OnnxTensor> out;
+  for (auto& [name, tensor] : parse_onnx_graph(bytes, what).constants) {
+    if (tensor.data_type == kFloat) out.emplace(name, std::move(tensor));
+  }
   return out;
 }
 

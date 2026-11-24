@@ -17,7 +17,7 @@
 
 #include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
-#include "levelzero/table_decoder.h"
+#include "levelzero/table_gpu.h"
 
 namespace grparse {
 namespace {
@@ -166,10 +166,10 @@ class TableStructureEngine::Impl {
   // Neither TensorRT nor OpenVINO can import the released model: its decoder
   // is one ONNX Loop whose carried tensors grow each step.  The same network
   // runs split (scripts/split_slanet.py): the encoder once per crop, then on
-  // TensorRT one fixed-shape step per token (decode_split), and under
-  // OpenVINO the native Level Zero decoder (src/levelzero/), every step of a
-  // table in one launch, after the encoder on native OpenVINO at FP32 (FP16
-  // changes tokens).  A missing file fails startup, naming the script.
+  // TensorRT one fixed-shape step per token (decode_split), and under an
+  // OpenVINO selection natively on the Intel GPU through Level Zero
+  // (src/levelzero/), encoder and decoder alike, every step of a table in
+  // one launch.  A missing file fails startup, naming the script.
   // Returns the token vocabulary, one token per line.
   std::string load_split_model(const std::filesystem::path& model_path) {
     const auto directory = model_path.parent_path();
@@ -182,9 +182,7 @@ class TableStructureEngine::Impl {
                                " (scripts/fetch-models.sh derives it from slanet_plus.onnx)");
     }
     if (ort_ep_selection().ep == OrtEp::kOpenVino) {
-      encoder_ = make_openvino_model(ModelSpec{encoder_path, "table structure encoder",
-                                               OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
-      level_zero_ = level_zero_decoder(step_path);
+      level_zero_ = level_zero_model(directory);
     } else {
       encoder_ = make_inference_model(ModelSpec{encoder_path, "table structure encoder",
                                                 OrtPrecision::kFloat32, kIntraOpProcessDefault, {}});
@@ -195,30 +193,31 @@ class TableStructureEngine::Impl {
     return std::string(std::istreambuf_iterator<char>(vocab_file), std::istreambuf_iterator<char>());
   }
 
-  // The process's Level Zero decoder on the selection's OpenVINO GPU: GPU is
-  // Level Zero GPU 0, GPU.<n> GPU n.  Any other device, or a build without
-  // the decoder, refuses the model.
-  static levelzero::TableDecoder* level_zero_decoder(const std::filesystem::path& step_path) {
+  // The process's Level Zero table structure on the selection's OpenVINO
+  // GPU: GPU is Level Zero GPU 0, GPU.<n> GPU n.  Any other device, or a
+  // build without it, refuses the model.
+  static levelzero::TableStructureGpu* level_zero_model(const std::filesystem::path& directory) {
     const std::string device = ort_ep_selection().openvino_device;
     int index = -1;
     if (device == "GPU") index = 0;
     if (device.starts_with("GPU.")) index = std::atoi(device.c_str() + 4);
     if (index < 0) {
-      throw ep_refusal("table structure decoder", step_path,
-                       "the native decoder runs on an Intel GPU; GRPARSE_OPENVINO_DEVICE is " + device);
+      throw ep_refusal("table structure", directory,
+                       "it runs natively on an Intel GPU; GRPARSE_OPENVINO_DEVICE is " + device);
     }
 #ifdef GRPARSE_TABLE_LEVEL_ZERO
-    levelzero::TableDecoder* decoder = nullptr;
+    levelzero::TableStructureGpu* model = nullptr;
     try {
-      decoder = &levelzero::TableDecoder::shared(step_path, index);
+      model = &levelzero::TableStructureGpu::shared(directory, index);
     } catch (const std::exception& error) {
-      throw ep_refusal("table structure decoder", step_path, error.what());
+      throw ep_refusal("table structure", directory, error.what());
     }
+    record_level_zero_placement("table structure encoder");
     record_level_zero_placement("table structure decoder");
-    return decoder;
+    return model;
 #else
-    throw ep_refusal("table structure decoder", step_path,
-                     "this build carries no Level Zero decoder (GRPARSE_TABLE_LEVEL_ZERO)");
+    throw ep_refusal("table structure", directory,
+                     "this build carries no Level Zero table structure (GRPARSE_TABLE_LEVEL_ZERO)");
 #endif
   }
 
@@ -381,27 +380,18 @@ class TableStructureEngine::Impl {
     probs->assign(prob_data, prob_data + prob_shape[1] * prob_shape.back());
   }
 
-  // The split model: the encoder once, then one decoder step per token from
-  // sos, feeding back the argmax as a one-hot, until eos after the first
-  // step or kMaxSteps (the released loop's 501), with the softmax the
-  // released graph applies to the structure scores.
-  // Encoder features in, every step's logits and boxes out of one launch,
-  // turned into probabilities as decode_split does.
+  // The image in, every step's logits and boxes out of one GPU run, turned
+  // into probabilities as decode_split does.
   void decode_level_zero(const std::vector<float>& tensor, std::vector<float>* boxes,
                          std::vector<float>* probs) {
-    const TensorView image{TensorElement::kFloat32, tensor.data(), {1, 3, kInputSize, kInputSize}};
-    const Tensor features = encoder_->run(std::span(&image, 1)).front();
-    if (features.element_count() != size_t(levelzero::kPositions) * levelzero::kChannels) {
-      throw std::runtime_error("Table structure encoder output shape mismatch");
-    }
 #ifdef GRPARSE_TABLE_LEVEL_ZERO
-    const levelzero::DecodedTable decoded =
-        level_zero_->decode(std::span(features.floats(), features.element_count()));
+    const levelzero::DecodedTable decoded = level_zero_->decode(tensor);
     for (int step = 0; step < decoded.steps; ++step) {
       append_probabilities(decoded.logits.data() + size_t(step) * levelzero::kVocab, probs);
     }
     boxes->assign(decoded.location.begin(), decoded.location.end());
 #else
+    (void)tensor;
     (void)boxes;
     (void)probs;
 #endif
@@ -417,6 +407,10 @@ class TableStructureEngine::Impl {
     }
   }
 
+  // The split model: the encoder once, then one decoder step per token from
+  // sos, feeding back the argmax as a one-hot, until eos after the first
+  // step or kMaxSteps (the released loop's 501), with the softmax the
+  // released graph applies to the structure scores.
   void decode_split(const std::vector<float>& tensor, std::vector<float>* boxes,
                      std::vector<float>* probs) {
     constexpr int kMaxSteps = 501;
@@ -462,7 +456,7 @@ class TableStructureEngine::Impl {
   Ort::Session session_{nullptr};
   std::unique_ptr<InferenceModel> encoder_;
   std::unique_ptr<InferenceModel> step_;
-  levelzero::TableDecoder* level_zero_ = nullptr;  // process-wide, see TableDecoder::shared
+  levelzero::TableStructureGpu* level_zero_ = nullptr;  // process-wide, see TableStructureGpu::shared
   std::string input_name_;
   std::vector<std::string> output_names_;
   std::vector<const char*> output_name_pointers_;
