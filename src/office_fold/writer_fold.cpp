@@ -400,8 +400,9 @@ void WriterFold::add_header_footer(const officev1::HeaderFooter& block,
     if (!paragraph.style().empty()) {
       handle.base->set_style_name(paragraph.style());
     }
-    (*handle.base->mutable_meta()->mutable_custom_fields())["page_style"] =
-        str_value(block.page_style());
+    if (!block.page_style().empty()) {
+      handle.base->set_page_style_name(block.page_style());
+    }
     // The header repeats on each page, always at the same place; where on
     // the page is not on the wire, so the entries name the page alone.
     const long long length = runs_length(paragraph.runs());

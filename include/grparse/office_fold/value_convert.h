@@ -6,7 +6,6 @@
 #include <cstdint>
 #include <string>
 
-#include <google/protobuf/struct.pb.h>
 #include <google/protobuf/timestamp.pb.h>
 
 #include "grparse/office_fold/fold_common.h"
@@ -46,9 +45,6 @@ std::string hex_color(uint32_t color_rgb);
 docv1::Script script_for(int escapement);
 
 std::string mime_for_extension(const std::string& extension);
-
-google::protobuf::Value str_value(const std::string& text);
-google::protobuf::Value num_value(double number);
 
 // "%g", the spelling the office collector's own tabular projection uses,
 // so a series value reads the same whether it arrived typed or projected.

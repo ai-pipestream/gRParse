@@ -18,34 +18,36 @@ std::string field_kind(const officev1::FormField& field) {
   return kind;
 }
 
-// One fieldmark parameter as the string map the schema keeps them in. A
-// list keeps one entry per key rather than a joined string, so no separator
-// has to be guessed back out on the way in.
+// One fieldmark parameter in the type the office core stored it in. The
+// text-only map printed a double through std::to_string (1e-7 became
+// "0.000000") and spread a list over name[0], name[1] keys; the typed arm
+// keeps the value exact and a list one list.
 void set_parameter(const officev1::FormFieldParameter& parameter,
-                   google::protobuf::Map<std::string, std::string>* out) {
+                   docv1::FieldParameter* out) {
+  out->set_name(parameter.name());
   switch (parameter.value_case()) {
     case officev1::FormFieldParameter::kBoolValue:
-      (*out)[parameter.name()] = parameter.bool_value() ? "true" : "false";
+      out->set_bool_value(parameter.bool_value());
       return;
     case officev1::FormFieldParameter::kIntValue:
-      (*out)[parameter.name()] = std::to_string(parameter.int_value());
+      out->set_int_value(parameter.int_value());
       return;
     case officev1::FormFieldParameter::kDoubleValue:
-      (*out)[parameter.name()] = std::to_string(parameter.double_value());
+      out->set_double_value(parameter.double_value());
       return;
     case officev1::FormFieldParameter::kStringValue:
-      (*out)[parameter.name()] = parameter.string_value();
+      out->set_string_value(parameter.string_value());
       return;
-    case officev1::FormFieldParameter::VALUE_NOT_SET:
-      if (parameter.string_list().empty()) {
-        (*out)[parameter.name()] = std::string();
-        return;
-      }
-      for (int entry = 0; entry < parameter.string_list_size(); entry++) {
-        (*out)[parameter.name() + "[" + std::to_string(entry) + "]"] =
-            parameter.string_list(entry);
+    case officev1::FormFieldParameter::VALUE_NOT_SET: {
+      // A list-of-text value sits beside the oneof on the wire, so no arm
+      // set means a list, possibly empty; an empty list is still a list,
+      // never a missing value.
+      docv1::StringList* list = out->mutable_string_list();
+      for (const std::string& entry : parameter.string_list()) {
+        list->add_values(entry);
       }
       return;
+    }
   }
 }
 
@@ -126,9 +128,10 @@ void FormFold::set_identity(const officev1::FormField& field,
   if (field.selected_index() >= 0) {
     item->set_selected_index(field.selected_index());
   }
-  auto* parameters = item->mutable_parameters();
+  // Each parameter keeps its stored type and its place in source order; the
+  // text-only parameters map stays empty.
   for (const officev1::FormFieldParameter& parameter : field.parameters()) {
-    set_parameter(parameter, parameters);
+    set_parameter(parameter, item->add_typed_parameters());
   }
 }
 

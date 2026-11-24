@@ -457,10 +457,11 @@ void verify_inline_drawings_keep_their_place_and_their_types() {
           "the inline drawings stay well formed");
 }
 
-// The one escape that is allowed to carry a colon, pinned so it stays the
-// only one: a cell whose office name anchors at no grid position has nowhere
-// typed to go, and its text is kept rather than dropped.
-void verify_the_only_colon_key_is_the_unplaceable_cell_escape() {
+// A cell whose office name anchors at no grid position used to be the one
+// colon-keyed custom field the fold minted ("cell:?"). It has a typed home
+// now, TableData.unplaced_cells, so the fold mints no colon key at all and
+// the cell still keeps its text.
+void verify_an_unplaceable_cell_is_typed_and_mints_no_colon_key() {
   OfficeMapper mapper;
   officev1::StreamPagesResponse event;
   officev1::TableData* table = event.mutable_table();
@@ -478,16 +479,15 @@ void verify_the_only_colon_key_is_the_unplaceable_cell_escape() {
   mapper.consume(event);
   const docv1::Document document = mapper.take();
 
-  std::vector<std::string> colon_keys;
-  for (const std::string& key : custom_field_keys(document)) {
-    const std::string bare = key.substr(key.find(": ") + 2);
-    if (bare.contains(':')) colon_keys.push_back(bare);
-  }
-  require(colon_keys == std::vector<std::string>{"cell:?"},
-          "the unplaceable cell escape is the only colon-keyed custom field the fold mints");
-  require(document.tables(0).meta().custom_fields().at("cell:?").string_value() ==
-              "anchors nowhere",
-          "the unplaceable cell still keeps its text");
+  require_no_colon_keys(document, "the unplaceable cell fold");
+  require(custom_field_keys(document).empty(),
+          "the unplaceable cell rides no custom field at all");
+  const docv1::TableData& data = document.tables(0).data();
+  require(data.unplaced_cells_size() == 1 && data.unplaced_cells(0).source_name() == "?" &&
+              data.unplaced_cells(0).text() == "anchors nowhere",
+          "the unplaceable cell keeps its text and its name as an unplaced cell");
+  require(data.table_cells_size() == 1 && data.table_cells(0).text() == "in the grid",
+          "the placed cell stays the only grid cell");
 }
 
 // Two folds of one event sequence render to the same canonical bytes: no
@@ -516,7 +516,7 @@ int main() {
       verify_the_chart_composite_is_exactly_one_of_each,
       verify_sheet_header_marking_keeps_the_spans,
       verify_inline_drawings_keep_their_place_and_their_types,
-      verify_the_only_colon_key_is_the_unplaceable_cell_escape,
+      verify_an_unplaceable_cell_is_typed_and_mints_no_colon_key,
       verify_identical_streams_fold_to_identical_bytes,
   });
 }

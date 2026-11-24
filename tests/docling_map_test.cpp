@@ -1,5 +1,6 @@
 #include <cstdio>
 #include <cstdlib>
+#include <map>
 #include <optional>
 #include <print>
 #include <stdexcept>
@@ -393,11 +394,12 @@ void verify_table_fold_grid_and_off_grid_cells() {
                    cell.start_col_offset_idx() == 1;
   }
   require(split_placed, "the split cell anchors where its name says");
-  require(item.meta().custom_fields().count("cell:B2.1") == 0,
-          "an anchored split cell needs no custom field");
-  require(item.meta().custom_fields().at("cell:?").string_value() ==
-              "stray text",
-          "a cell name anchoring nowhere still keeps its text");
+  require(item.meta().custom_fields().empty(),
+          "no table cell rides a value map");
+  require(item.data().unplaced_cells_size() == 1 &&
+              item.data().unplaced_cells(0).source_name() == "?" &&
+              item.data().unplaced_cells(0).text() == "stray text",
+          "a cell name anchoring nowhere keeps its text as an unplaced cell");
   require(grparse::docling_integrity_errors(document).empty(),
           "table mapping stays well formed");
 }
@@ -2191,6 +2193,298 @@ void verify_embedded_workbook_keeps_every_sheet() {
           "the workbook's groups and tables stay well formed");
 }
 
+// Typed wire values keep their types in the Document. A table cell whose
+// name anchors nowhere is an unplaced TableCell under its own name, a
+// placed cell keeps its name too, a header paragraph names its page style,
+// a slide group carries its layout number and master page, and a form
+// field's parameters keep their stored types (a tiny double does not round
+// to zero, a list stays one list). Nothing rides custom_fields or the
+// text-only parameters map.
+void verify_typed_values_have_typed_homes() {
+  grparse::DoclingMapper mapper;
+  {
+    officev1::StreamPagesResponse event;
+    officev1::TableData* table = event.mutable_table();
+    table->set_rows(1);
+    table->set_columns(1);
+    officev1::TableCellData* cell = table->add_cells();
+    cell->set_row(0);
+    cell->set_column(0);
+    cell->set_name("A1");
+    cell->set_text("placed");
+    officev1::TableCellData* stray = table->add_cells();
+    stray->set_row(-1);
+    stray->set_column(-1);
+    stray->set_name("?");
+    stray->set_text("stray");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::HeaderFooter* header = event.mutable_header_footer();
+    header->set_page_style("Landscape");
+    *header->add_paragraphs()->add_runs() = make_run("Letterhead");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::Slide* slide = event.mutable_slide();
+    slide->set_index(0);
+    slide->set_name("Slide 1");
+    // Layout 0 is a real autolayout number, so it must read as present.
+    slide->set_layout(0);
+    slide->set_master_page_name("Master A");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::FormField* field = event.mutable_form_field();
+    field->set_index(0);
+    field->set_kind(officev1::FORM_FIELD_KIND_TEXT);
+    field->set_name("typed");
+    field->set_selected_index(-1);
+    field->set_char_start(-1);
+    const auto add = [&](const std::string& name) {
+      officev1::FormFieldParameter* parameter = field->add_parameters();
+      parameter->set_name(name);
+      return parameter;
+    };
+    add("flag")->set_bool_value(true);
+    add("count")->set_int_value(-7);
+    add("tiny")->set_double_value(1e-7);
+    add("huge")->set_double_value(1e21);
+    add("label")->set_string_value("text");
+    officev1::FormFieldParameter* list = add("entries");
+    list->add_string_list("alpha");
+    list->add_string_list("beta");
+    add("none");
+    mapper.consume(event);
+  }
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+
+  require(document.tables_size() == 1, "typed: one table");
+  const docv1::TableItem& table = document.tables(0);
+  require(table.meta().custom_fields().empty(), "typed: no table cell rides a value map");
+  require(table.data().table_cells_size() == 1 &&
+              table.data().table_cells(0).source_name() == "A1",
+          "typed: a placed cell keeps its own name");
+  require(table.data().unplaced_cells_size() == 1 &&
+              table.data().unplaced_cells(0).source_name() == "?" &&
+              table.data().unplaced_cells(0).text() == "stray",
+          "typed: a cell anchoring nowhere is an unplaced cell");
+
+  const docv1::TextItemBase* header = nullptr;
+  for (const docv1::BaseTextItem& item : document.texts()) {
+    if (item.has_text() && item.text().base().label() == docv1::DOC_ITEM_LABEL_PAGE_HEADER) {
+      header = &item.text().base();
+    }
+  }
+  require(header != nullptr, "typed: the header paragraph is a text item");
+  require(header->meta().custom_fields().empty(),
+          "typed: a header paragraph's page style rides no value map");
+  require(header->has_page_style_name() && header->page_style_name() == "Landscape",
+          "typed: a header paragraph names its page style");
+
+  const docv1::GroupItem* slide = nullptr;
+  for (const docv1::GroupItem& group : document.groups()) {
+    if (group.label() == docv1::GROUP_LABEL_SLIDE) slide = &group;
+  }
+  require(slide != nullptr, "typed: the slide is a group");
+  require(slide->meta().custom_fields().empty(),
+          "typed: a slide's layout and master page ride no value map");
+  require(slide->has_slide() && slide->slide().has_layout_id() &&
+              slide->slide().layout_id() == 0 &&
+              slide->slide().master_page_name() == "Master A",
+          "typed: a slide carries its layout number and master page");
+
+  require(document.field_items_size() == 1, "typed: one field item");
+  const docv1::FieldItem& field = document.field_items(0);
+  require(field.parameters().empty(), "typed: the text-only parameters map stays empty");
+  std::map<std::string, const docv1::FieldParameter*> by_name;
+  for (const docv1::FieldParameter& parameter : field.typed_parameters()) {
+    by_name[parameter.name()] = &parameter;
+  }
+  require_equal(by_name.size(), std::size_t{7}, "typed: every parameter is kept");
+  require(field.typed_parameters(0).name() == "flag" &&
+              field.typed_parameters(5).name() == "entries",
+          "typed: the parameters keep their source order");
+  require(by_name["flag"]->has_bool_value() && by_name["flag"]->bool_value(),
+          "typed: a bool stays a bool");
+  require(by_name["count"]->has_int_value() && by_name["count"]->int_value() == -7,
+          "typed: an integer stays an integer");
+  require(by_name["tiny"]->has_double_value() && by_name["tiny"]->double_value() == 1e-7 &&
+              by_name["huge"]->double_value() == 1e21,
+          "typed: a double keeps its exact value");
+  require(by_name["label"]->has_string_value() && by_name["label"]->string_value() == "text",
+          "typed: a string stays a string");
+  require(by_name["entries"]->has_string_list() &&
+              by_name["entries"]->string_list().values_size() == 2 &&
+              by_name["entries"]->string_list().values(1) == "beta",
+          "typed: a list stays one list");
+  require(by_name["none"]->has_string_list() &&
+              by_name["none"]->string_list().values_size() == 0,
+          "typed: an empty list is still a list");
+  require(grparse::docling_integrity_errors(document).empty(),
+          "typed: the typed homes stay well formed");
+}
+
+// Wire fields the worker extracts reach the Document in typed fields: a
+// hyperlink's target frame and name, a tracked change's comment and the
+// change it was stacked on, a defined name's NamedRangeFlag bits and a
+// database range's auto filter.
+void verify_wire_fields_reach_the_document() {
+  grparse::DoclingMapper mapper;
+  {
+    officev1::StreamPagesResponse event;
+    officev1::Paragraph* paragraph = event.mutable_paragraph();
+    paragraph->set_list_level(-1);
+    paragraph->set_char_offset(0);
+    *paragraph->add_runs() = make_run("Go ", 0);
+    officev1::TextRun* link = paragraph->add_runs();
+    *link = make_run("home", 3);
+    link->set_hyperlink_url("https://example.test/");
+    link->set_hyperlink_target("_blank");
+    link->set_hyperlink_name("Home");
+    // The same address again, opening in another frame under another name:
+    // a different link, so a different span.
+    officev1::TextRun* twin = paragraph->add_runs();
+    *twin = make_run("again", 7);
+    twin->set_hyperlink_url("https://example.test/");
+    twin->set_hyperlink_target("_self");
+    twin->set_hyperlink_name("Again");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::TrackedChange* change = event.mutable_tracked_change();
+    change->set_index(0);
+    change->set_kind(officev1::TRACKED_CHANGE_KIND_FORMAT);
+    change->set_kind_name("Format");
+    change->set_author("Bob");
+    change->set_comment("bolded it");
+    change->set_char_start(3);
+    change->set_char_end(7);
+    officev1::TrackedChangeSuccessor* successor = change->mutable_successor();
+    successor->set_kind(officev1::TRACKED_CHANGE_KIND_INSERT);
+    successor->set_kind_name("Insert");
+    successor->set_author("Alice");
+    successor->set_epoch_ms(-86400000);
+    successor->set_comment("added it");
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::TrackedChange* change = event.mutable_tracked_change();
+    change->set_index(1);
+    change->set_kind_name("Insert");
+    change->set_char_start(0);
+    change->set_char_end(2);
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::SheetNamedRange* range = event.mutable_sheet_named_range();
+    range->set_name("Everything");
+    range->set_content("$Data.$A$1:$B$3");
+    // FILTER_CRITERIA, PRINT_AREA, COLUMN_HEADER, ROW_HEADER, HIDDEN.
+    range->set_type_flags(1 | 2 | 4 | 8 | 16);
+    range->set_sheet_index(-1);
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::SheetNamedRange* range = event.mutable_sheet_named_range();
+    range->set_name("Titles");
+    range->set_content("$Data.$1:$1");
+    // ROW_HEADER alone: each bit lands on its own field.
+    range->set_type_flags(8);
+    range->set_sheet_index(-1);
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::SheetNamedRange* range = event.mutable_sheet_named_range();
+    range->set_name("Plain");
+    range->set_content("$Data.$A$1");
+    range->set_type_flags(0);
+    range->set_sheet_index(-1);
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::SheetDatabaseRange* range = event.mutable_sheet_database_range();
+    range->set_name("Orders");
+    range->set_sheet_index(-1);
+    range->set_auto_filter(true);
+    mapper.consume(event);
+  }
+  {
+    officev1::StreamPagesResponse event;
+    officev1::SheetDatabaseRange* range = event.mutable_sheet_database_range();
+    range->set_name("Archive");
+    range->set_sheet_index(-1);
+    mapper.consume(event);
+  }
+  mapper.consume(status_event());
+  const docv1::Document& document = mapper.document();
+
+  require(document.texts_size() == 1, "wire: one paragraph");
+  const docv1::InlineSpan* link = nullptr;
+  const docv1::InlineSpan* twin = nullptr;
+  int link_spans = 0;
+  for (const docv1::InlineSpan& span : document.texts(0).text().base().spans()) {
+    if (!span.has_hyperlink()) continue;
+    link_spans++;
+    (link == nullptr ? link : twin) = &span;
+  }
+  require(link != nullptr, "wire: the link is an inline span");
+  require(link->hyperlink_target_frame() == "_blank" && link->hyperlink_name() == "Home",
+          "wire: a hyperlink keeps its target frame and name");
+  require_equal(link_spans, 2,
+                "wire: links to one address that differ in frame and name stay separate spans");
+  require(twin != nullptr && link->range().start() == 3 && link->range().end() == 7 &&
+              twin->range().start() == 7 && twin->range().end() == 12 &&
+              twin->hyperlink_target_frame() == "_self" && twin->hyperlink_name() == "Again",
+          "wire: each of the two links keeps its own range, frame and name");
+
+  require(document.changes_size() == 2, "wire: two change records");
+  const docv1::ChangeRecord& change = document.changes(0);
+  require(change.has_comment() && change.comment() == "bolded it",
+          "wire: a tracked change keeps its comment");
+  require(change.has_successor() && change.successor().kind() == "insert" &&
+              change.successor().author() == "Alice" &&
+              change.successor().has_timestamp() &&
+              change.successor().timestamp().seconds() == -86400 &&
+              change.successor().comment() == "added it",
+          "wire: a tracked change keeps the change it was stacked on");
+  require(!document.changes(1).has_comment() && !document.changes(1).has_successor(),
+          "wire: a change with no comment and no successor claims neither");
+
+  std::map<std::string, const docv1::NamedRange*> ranges;
+  for (const docv1::NamedRange& range : document.named_ranges()) {
+    ranges[range.name()] = &range;
+  }
+  const docv1::NamedRange* all = ranges["Everything"];
+  require(all != nullptr && all->filter_criteria() && all->print_area() &&
+              all->repeat_columns() && all->repeat_rows() && all->hidden(),
+          "wire: a defined name keeps its flag bits");
+  const docv1::NamedRange* titles = ranges["Titles"];
+  require(titles != nullptr && titles->repeat_rows() && !titles->filter_criteria() &&
+              !titles->print_area() && !titles->repeat_columns() && !titles->hidden(),
+          "wire: one flag bit sets its own field and no other");
+  const docv1::NamedRange* plain = ranges["Plain"];
+  require(plain != nullptr && !plain->filter_criteria() && !plain->print_area() &&
+              !plain->repeat_columns() && !plain->repeat_rows() && !plain->hidden(),
+          "wire: a name without flags sets none");
+  require(ranges["Orders"] != nullptr && ranges["Orders"]->auto_filter(),
+          "wire: a database range keeps its auto filter");
+  require(ranges["Archive"] != nullptr && !ranges["Archive"]->auto_filter(),
+          "wire: a database range without an auto filter claims none");
+  require(grparse::docling_integrity_errors(document).empty(),
+          "wire: the copied fields stay well formed");
+}
+
 }  // namespace
 
 int main() {
@@ -2236,5 +2530,7 @@ int main() {
       verify_header_footer_objects_are_furniture,
       verify_a_stored_epoch_is_kept_and_an_unset_one_stays_unset,
       verify_embedded_workbook_keeps_every_sheet,
+      verify_typed_values_have_typed_homes,
+      verify_wire_fields_reach_the_document,
   });
 }

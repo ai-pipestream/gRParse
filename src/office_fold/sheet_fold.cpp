@@ -212,6 +212,19 @@ void SheetFold::on_named_range(const officev1::SheetNamedRange& range) {
   docv1::NamedRange* out = arena_.document().add_named_ranges();
   out->set_name(range.name());
   out->set_kind("named");
+  // The office core's NamedRangeFlag bits (com.sun.star.sheet), one typed
+  // field each: what the workbook uses the name for.
+  constexpr int32_t kFilterCriteria = 1;
+  constexpr int32_t kPrintArea = 2;
+  constexpr int32_t kColumnHeader = 4;
+  constexpr int32_t kRowHeader = 8;
+  constexpr int32_t kHidden = 16;
+  const int32_t flags = range.type_flags();
+  out->set_filter_criteria((flags & kFilterCriteria) != 0);
+  out->set_print_area((flags & kPrintArea) != 0);
+  out->set_repeat_columns((flags & kColumnHeader) != 0);
+  out->set_repeat_rows((flags & kRowHeader) != 0);
+  out->set_hidden((flags & kHidden) != 0);
   // A name pointing at cells resolves to a span; a name holding an
   // expression has no rectangle and keeps only its name. Workbook-scoped
   // names arrive before any sheet header, so the sheet is named later.
@@ -237,6 +250,7 @@ void SheetFold::on_database_range(const officev1::SheetDatabaseRange& range) {
   }
   out->set_has_headers(range.contains_header());
   out->set_has_totals(range.totals_row());
+  out->set_auto_filter(range.auto_filter());
 }
 
 void SheetFold::on_cell_comment(const officev1::SheetCellComment& comment) {

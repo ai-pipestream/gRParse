@@ -545,13 +545,17 @@ void DocumentArena::fold_table(const officev1::TableData& table,
       column = -1;
     }
     if (row < 0 || column < 0) {
-      (*item->mutable_meta()->mutable_custom_fields())["cell:" + cell.name()] =
-          str_value(cell.text());
+      // Kept as a cell under its own name, outside the grid, so a table
+      // consumer still sees its text.
+      docv1::TableCell* unplaced = data->add_unplaced_cells();
+      if (!cell.name().empty()) unplaced->set_source_name(cell.name());
+      unplaced->set_text(cell.text());
       continue;
     }
     int row_span = std::max(1, cell.row_span());
     int col_span = std::max(1, cell.column_span());
     docv1::TableCell* out = data->add_table_cells();
+    if (!cell.name().empty()) out->set_source_name(cell.name());
     out->set_start_row_offset_idx(row);
     out->set_end_row_offset_idx(row + row_span);
     out->set_start_col_offset_idx(column);

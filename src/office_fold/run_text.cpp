@@ -25,6 +25,11 @@ struct RunKey {
   int escapement = 0;
   std::string language;
   std::string hyperlink;
+  // A link's target frame and name are part of the link: two links to one
+  // address that open in different frames, or carry different names, are
+  // two links and stay two spans.
+  std::string hyperlink_target;
+  std::string hyperlink_name;
   std::string field_code;
   std::string field_target;
 
@@ -48,6 +53,8 @@ RunKey run_key(const officev1::TextRun& run) {
   key.escapement = run.escapement();
   key.language = run.language();
   key.hyperlink = run.hyperlink_url();
+  key.hyperlink_target = run.hyperlink_target();
+  key.hyperlink_name = run.hyperlink_name();
   key.field_code = run.field_code();
   key.field_target = run.field_target();
   return key;
@@ -74,7 +81,15 @@ void describe_span(const RunKey& key, const std::string& highlight,
   if (key.size_pt > 0) span->set_font_size_pt(key.size_pt);
   if (!color.empty()) span->set_color(color);
   if (language_differs) span->set_language(key.language);
-  if (!key.hyperlink.empty()) span->set_hyperlink(key.hyperlink);
+  if (!key.hyperlink.empty()) {
+    span->set_hyperlink(key.hyperlink);
+    if (!key.hyperlink_target.empty()) {
+      span->set_hyperlink_target_frame(key.hyperlink_target);
+    }
+    if (!key.hyperlink_name.empty()) {
+      span->set_hyperlink_name(key.hyperlink_name);
+    }
+  }
   if (!key.field_code.empty()) span->set_field_code(key.field_code);
 }
 
