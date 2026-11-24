@@ -36,7 +36,7 @@ set(GRPARSE_TIER_LOOPBACK
   ort-session-ep-test service-health-test)
 set(GRPARSE_TIER_MODELS
   layout-engine-test table-structure-engine-test figure-classifier-test
-  chunk-hf-model-test tensorrt-model-test)
+  chunk-hf-model-test tensorrt-model-test ocr-shape-bound-test)
 set(GRPARSE_TIER_EMBEDDINGS embedding-model-test embedding-reference-test)
 set(GRPARSE_TIER_EMULATORS
   storage-connectors-e2e-test remote-sources-e2e-test chart-outputs-e2e-test)
@@ -47,7 +47,7 @@ set(GRPARSE_TIER_EMULATORS
 # GRPARSE_STACK_SUITES names it or says `all`.
 set(GRPARSE_TIER_STACK
   stack-e2e s3-corpus-eval ocr-presets-e2e embedding-rpc
-  compose-preflight observability-compose gpu-placement gpu-placement-cuda)
+  compose-preflight observability-compose gpu-placement gpu-placement-cuda gpu-ocr-shapes)
 foreach(suite IN LISTS GRPARSE_TIER_STACK)
   add_test(NAME ${suite}
     COMMAND sh ${CMAKE_SOURCE_DIR}/scripts/test/stack-suite.sh ${suite}

@@ -91,6 +91,7 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
   const OcrDetectOptions& options = ocr_detect_options();
   // The detector's shape range follows the configured side and padding.
   set_ocr_detector_side_limit(options.max_side_len, options.padding);
+  (void)ocr_shape_buckets();
 
   engine_ = std::make_unique<OcrLite>();
   engine_->setGpuIndex(gpu_index);

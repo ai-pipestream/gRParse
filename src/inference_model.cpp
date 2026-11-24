@@ -156,6 +156,10 @@ std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec) {
   }
 #endif
   static Ort::Env env(ORT_LOGGING_LEVEL_ERROR, "grparse-models");
+  if (spec.shapes.unit_batch && ort_ep_selection().ep == OrtEp::kOpenVino) {
+    return std::make_unique<OrtModel>(make_fixed_shape_session(
+        env, spec.path, spec.what, unit_batch_overrides(env, spec.path)));
+  }
   return std::make_unique<OrtModel>(
       make_session(env, spec.path, spec.what, spec.precision, spec.intra_op_threads));
 }

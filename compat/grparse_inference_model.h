@@ -83,6 +83,12 @@ struct ModelShapePolicy {
   // are all static needs none; a shape no profile covers fails the call.
   // Ignored by ONNX Runtime.
   std::vector<ShapeProfile> profiles;
+  // The model runs one item per call.  ONNX Runtime's OpenVINO provider then
+  // gets every input's free batch dimension fixed to 1 in the session
+  // (make_fixed_shape_session), because it compiles a network with a free
+  // dimension on the first run and runs it slower afterwards.  Other
+  // providers and native TensorRT ignore it.
+  bool unit_batch = false;
 };
 
 struct ModelSpec {
@@ -129,9 +135,8 @@ bool tensorrt_device_present(int cuda_device, std::string* detail);
 // for the ORT flavors' existing CPU retreat).
 std::unique_ptr<InferenceModel> wrap_ort_session(Ort::Session session);
 
-// The three RapidOCR nets (patches/rapidocr-model-backend.patch).
-enum class OcrNet { kDetection, kDirection, kRecognition };
-
+// The three RapidOCR nets (patches/rapidocr-model-backend.patch); OcrNet is
+// declared in grparse_ocr_shapes.h.  The name a placement line carries.
 std::string_view ocr_net_name(OcrNet net);
 
 // How a net's shapes are fixed under the process selection: on native

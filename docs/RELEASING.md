@@ -117,7 +117,10 @@ and `github` in each, and `gh` logged in.
    be 0 (placement is strict: a refusal fails startup, so a non-zero count on
    a live server means a pooled session was rebuilt and refused), and every
    `grparse_ort_sessions` series must have `actual="OpenVINO"` except the
-   table model's declared pin. Confirm the host has real VRAM headroom: a co-tenant
+   table model's declared pin. Run the `gpu-placement` and `gpu-ocr-shapes`
+   stack suites there too (README "Development"): the second asserts that a
+   document of a new size adds a bounded number of OCR input shapes and
+   cache files and that a repeat adds none. Confirm the host has real VRAM headroom: a co-tenant
    holding the card near-full turns kernel compiles into crashes (exit 139).
    The CUDA image has the same kind of receipt on a host with an NVIDIA GPU
    (krick's RTX 4080 is the fleet's): `scripts/test/gpu-placement-cuda-test.sh

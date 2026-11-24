@@ -1,0 +1,111 @@
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index 5807eef..6b0da86 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -92,6 +92,8 @@ std::vector<Angle> AngleNet::getAngleBatch(const std::vector<cv::Mat> &angleImgs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, dstWidth};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kDirection, inputShape[0], inputShape[2], inputShape[3]);
+     // gRParse: one typed run through grparse::InferenceModel
+     // (patches/rapidocr-model-backend.patch).
+     const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 83270c4..6fc423a 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -108,10 +108,12 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+     cv::Mat srcResize;
+     resize(src, srcResize, cv::Size(dstWidth, dstHeight));
+     // gRParse: on a provider that compiles per input shape, the line is padded
+-    // to a bucket width (edge pixels repeated, or zeros, the batched path's own
+-    // padding) and only the time steps over the real width are decoded.
++    // to a bucket width (zeros after normalization, the padding the model was
++    // trained with and the batched path uses, or edge pixels repeated) and
++    // only the time steps over the real width are decoded.
+     const int realWidth = srcResize.cols;
+-    if (grparse::ocr_shape_buckets() && grparse::ocr_pad_replicate()) {
++    const bool replicatePad = grparse::ocr_rec_pad() == grparse::OcrPad::kReplicate;
++    if (grparse::ocr_shape_buckets() && replicatePad) {
+         const int bucket = grparse::ocr_rec_bucket(realWidth);
+         if (bucket != realWidth) {
+             cv::copyMakeBorder(srcResize, srcResize, 0, 0, 0, bucket - realWidth, cv::BORDER_REPLICATE);
+@@ -119,7 +121,7 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+     }
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+     int tensorWidth = srcResize.cols;
+-    if (grparse::ocr_shape_buckets() && !grparse::ocr_pad_replicate()) {
++    if (grparse::ocr_shape_buckets() && !replicatePad) {
+         tensorWidth = grparse::ocr_rec_bucket(srcResize.cols);
+         if (tensorWidth != srcResize.cols) {
+             const size_t channels = srcResize.channels();
+@@ -147,6 +149,8 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+         tensorWidth = paddedWidth;
+     }
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kRecognition, inputShape[0], inputShape[2], inputShape[3]);
+     // gRParse: one typed run through grparse::InferenceModel
+     // (patches/rapidocr-model-backend.patch).
+     const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+@@ -206,6 +210,7 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     }
+     std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+                                       dstHeight, batchWidth};
++    grparse::note_ocr_input_shape(grparse::OcrNet::kRecognition, inputShape[0], inputShape[2], inputShape[3]);
+     // gRParse: one typed run through grparse::InferenceModel
+     // (patches/rapidocr-model-backend.patch).
+     const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index fc81051..b6ee4f4 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -113,24 +113,36 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+     cv::Mat srcResize;
+     resize(src, srcResize, cv::Size(s.dstWidth, s.dstHeight));
+     // gRParse: on a provider that compiles per input shape, pad the page to a
+-    // fixed bucket with white (page background) and crop the map back below,
+-    // so the network is compiled for a handful of shapes instead of each page.
++    // size from a short list and crop the map back below, so the network is
++    // compiled for a handful of shapes instead of one per page and picture
++    // size.  The padding is the image tiled, its edge pixels repeated, or
++    // white (grparse::ocr_det_pad).
+     if (grparse::ocr_shape_buckets()) {
+-        // gRParse: one (width, height) bucket for the pair, so native
+-        // OpenVINO can letterbox (patches/rapidocr-model-backend.patch).
++        // gRParse: one (width, height) size for the pair, from the short list
++        // on a provider that compiles per shape, so native OpenVINO can
++        // letterbox (patches/rapidocr-model-backend.patch).
+         const auto [bucketW, bucketH] = grparse::ocr_det_bucket_shape(s.dstWidth, s.dstHeight);
+-        if (bucketW != s.dstWidth || bucketH != s.dstHeight) {
+-            if (grparse::ocr_pad_replicate()) {
+-                cv::copyMakeBorder(srcResize, srcResize, 0, bucketH - s.dstHeight, 0, bucketW - s.dstWidth,
+-                                   cv::BORDER_REPLICATE);
+-            } else {
+-                cv::copyMakeBorder(srcResize, srcResize, 0, bucketH - s.dstHeight, 0, bucketW - s.dstWidth,
+-                                   cv::BORDER_CONSTANT, cv::Scalar(255, 255, 255));
++        const int right = bucketW - s.dstWidth;
++        const int bottom = bucketH - s.dstHeight;
++        if (right > 0 || bottom > 0) {
++            switch (grparse::ocr_det_pad()) {
++                case grparse::OcrPad::kTile:
++                    cv::copyMakeBorder(srcResize, srcResize, 0, bottom, 0, right, cv::BORDER_WRAP);
++                    break;
++                case grparse::OcrPad::kReplicate:
++                    cv::copyMakeBorder(srcResize, srcResize, 0, bottom, 0, right, cv::BORDER_REPLICATE);
++                    break;
++                case grparse::OcrPad::kConstant:
++                    cv::copyMakeBorder(srcResize, srcResize, 0, bottom, 0, right, cv::BORDER_CONSTANT,
++                                       cv::Scalar(255, 255, 255));
++                    break;
+             }
+         }
+     }
+     std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+     std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
++    // gRParse: every run's input shape goes in the ledger (grparse_ocr_shapes.h).
++    grparse::note_ocr_input_shape(grparse::OcrNet::kDetection, inputShape[0], inputShape[2], inputShape[3]);
+     // gRParse: one typed run through grparse::InferenceModel
+     // (patches/rapidocr-model-backend.patch).
+     const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
