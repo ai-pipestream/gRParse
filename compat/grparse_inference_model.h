@@ -102,6 +102,14 @@ class InferenceModel {
   virtual ~InferenceModel() = default;
   // Inputs in the model's input order; outputs in its output order.
   virtual std::vector<Tensor> run(std::span<const TensorView> inputs) = 0;
+  // Runs a model whose one input is [count, 3, height, width] float on
+  // `count` images of height x width x 3 bytes each, one after another,
+  // pixel by pixel: input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c]
+  // in float, RapidOCR's normalization.  Here the host computes that tensor
+  // and calls run(); a backend whose device normalizes overrides it and
+  // must return the same floats in FP32.
+  virtual std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width,
+                                        const float mean[3], const float norm[3]);
   // Runs once every listed input set, so no first-use setup happens under
   // load.  A no-op for ONNX Runtime.
   virtual void prewarm(std::span<const std::vector<TensorSpec>> input_sets) = 0;

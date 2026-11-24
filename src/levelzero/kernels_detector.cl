@@ -106,6 +106,56 @@ __kernel void scale_merge(__global const real* x, __global const real* s, __glob
 CONV_TRANSPOSE2(conv_transpose2_8, 8)
 CONV_TRANSPOSE2(conv_transpose2_1, 1)
 
+// A 3-channel byte image, pixel by pixel, into the graph's first buffer,
+// normalized as RapidOCR's substractMeanNormalize does on the host:
+// pixel * norm - mean * norm in float, each product rounded before the
+// subtraction (no contraction), so the FP32 module stores the host's bits.
+typedef struct {
+  float mean[3], norm[3];
+} image_t;
+#pragma OPENCL FP_CONTRACT OFF
+__kernel void image_to_real(__global const uchar* in, __global real* out, int images, int pixels, image_t p) {
+  const size_t index = get_global_id(0);  // image * pixels + pixel
+  if (index >= (size_t)images * pixels) return;
+  const size_t image = index / pixels, pixel = index % pixels;
+  for (int c = 0; c < 3; ++c) {
+    const float scaled = (float)in[index * 3 + c] * p.norm[c], offset = p.mean[c] * p.norm[c];
+    RSTORE(out, (image * 3 + c) * pixels + pixel, scaled - offset);
+  }
+}
+#pragma OPENCL FP_CONTRACT DEFAULT
+
+// A dense convolution with few terms an output (ci * kh * kw up to 32, the
+// network's first layer over an image's three channels): a work item takes
+// one output pixel and 8 output channels and reads each term once.  A patch
+// matrix or a tiled GEMM spends more moving these few terms than the sums
+// cost.
+__kernel void conv_few_terms(__global const real* in, __global real* out, __global const float* w,
+                             __global const float* b, conv_t p) {
+  const int x = get_global_id(0), y = get_global_id(1);
+  const int tiles = (p.co + 7) / 8;
+  const int n = get_global_id(2) / tiles, o0 = (get_global_id(2) % tiles) * 8;
+  if (x >= p.ow || y >= p.oh) return;
+  const int terms = p.ci * p.kh * p.kw;
+  float acc[8];
+  for (int o = 0; o < 8; ++o) acc[o] = 0.0f;
+  for (int i = 0; i < p.ci; ++i) {
+    for (int ky = 0; ky < p.kh; ++ky) {
+      const int sy = y * p.sh - p.ph + ky;
+      for (int kx = 0; kx < p.kw; ++kx) {
+        const int sx = x * p.sw - p.pw + kx;
+        const int inside = sy >= 0 && sy < p.ih && sx >= 0 && sx < p.iw;
+        const float v = inside ? RLOAD(in, (((size_t)n * p.ci + i) * p.ih + sy) * p.iw + sx) : 0.0f;
+        const int k = (i * p.kh + ky) * p.kw + kx;
+        for (int o = 0; o < 8; ++o) acc[o] = fma(v, w[(size_t)min(o0 + o, p.co - 1) * terms + k], acc[o]);
+      }
+    }
+  }
+  for (int o = 0; o < 8 && o0 + o < p.co; ++o) {
+    RSTORE(out, (((size_t)n * p.co + o0 + o) * p.oh + y) * p.ow + x, activate(acc[o] + b[o0 + o], p.act, p.alpha, p.beta));
+  }
+}
+
 #ifdef GRAPH_FP16
 // A dense stride-1 convolution that keeps its input's size, on the matrix
 // engines, reading the input planes where they lie: no patch matrix is

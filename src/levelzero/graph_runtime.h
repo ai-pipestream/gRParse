@@ -13,6 +13,7 @@
 #include <filesystem>
 #include <memory>
 #include <mutex>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -21,9 +22,13 @@
 
 namespace grparse::levelzero::graph {
 
+// A graph output on the host: floats, held as bytes so a caller that keeps
+// its tensors as bytes takes them without a copy.
 struct HostTensor {
   std::vector<int64_t> shape;
-  std::vector<float> data;
+  std::vector<std::byte> bytes;
+  const float* floats() const { return reinterpret_cast<const float*>(bytes.data()); }
+  size_t count() const { return bytes.size() / sizeof(float); }
 };
 
 struct GraphOptions {
@@ -53,6 +58,15 @@ class GraphModel {
   // InferenceDeviceError; a shape the graph cannot take, std::invalid_argument.
   std::vector<HostTensor> run(const float* input, const std::vector<int64_t>& shape);
 
+  // Runs the graph on images the device normalizes: `pixels` is `count`
+  // images of height x width x 3 bytes, one after another, pixel by pixel,
+  // and the graph's input is [count, 3, height, width] with
+  // input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c] in float, the
+  // expression RapidOCR computes on the host.  The bytes are a quarter of
+  // the float tensor and no host pass touches the pixels.
+  std::vector<HostTensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
+                                    const float norm[3]);
+
   // The same, with each node's GPU time: per IR node, microseconds summed
   // over its launches.  For benchmarks.
   std::vector<HostTensor> run_profiled(const float* input, const std::vector<int64_t>& shape,
@@ -68,18 +82,25 @@ class GraphModel {
   // list and executed again on every later call of that shape: kernel
   // arguments and arena addresses are fixed when a launch is appended, so a
   // repeated shape costs no host work beyond the input and output copies.
+  // How an image call scales its bytes; part of what a plan is recorded for.
+  struct ImageScale {
+    float mean[3], norm[3];
+    bool operator==(const ImageScale&) const = default;
+  };
   struct Plan {
     std::vector<int64_t> shape;
+    std::optional<ImageScale> image;  // set: the input is bytes, normalized by the plan's first launch
     ze_command_list_handle_t list = nullptr;
     std::vector<std::vector<int64_t>> output_shapes;
     std::vector<size_t> output_floats;  // each output's start in io_out_
     uint64_t used = 0;
   };
 
-  Plan& plan_for(const std::vector<int64_t>& shape);
+  Plan& plan_for(const std::vector<int64_t>& shape, const std::optional<ImageScale>& image = std::nullopt);
   void record(const std::vector<int64_t>& shape, Plan* plan);
   void drop_plans();
-  std::vector<HostTensor> execute(const Plan& plan, const float* input);
+  // `input` is the plan's floats, or its image's bytes.
+  std::vector<HostTensor> execute(const Plan& plan, const void* input);
   void build_fp16_weights();
   void build_plane_weights();
 
