@@ -63,7 +63,7 @@ struct IrNode {
   // convolution, [Ci][Co][kh][kw] for a transposed one, [K][N] for MatMulConst.
   size_t weights = 0, bias = 0;
   bool has_bias = false;
-  int k = 0, n = 0;                  // MatMulConst
+  int k = 0, n = 0;                  // MatMulConst [K][N]; a convolution's k is its terms per output
   Activation activation = Activation::kNone;
   float alpha = 0.0F, beta = 0.0F;   // HardSigmoid, Clip bounds, LayerNorm epsilon (alpha)
   BinaryOp binary = BinaryOp::kAdd;

@@ -37,8 +37,41 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
       DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
     list(APPEND embedded_kernels "${embedded}")
   endforeach()
+  # The graph runtime's kernels: kernels_real.h, graph_kernels.cl, then each
+  # kernels_*.cl in name order, joined into one source and compiled for
+  # float activations and again with -DGRAPH_FP16.
+  file(GLOB graph_kernel_parts CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/kernels_*.cl")
+  list(SORT graph_kernel_parts)
+  set(graph_kernel_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/kernels_real.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/graph_kernels.cl" ${graph_kernel_parts})
+  set(graph_source "${CMAKE_CURRENT_BINARY_DIR}/levelzero/graph_all.cl")
+  add_custom_command(OUTPUT "${graph_source}"
+    COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/levelzero"
+    COMMAND ${CMAKE_COMMAND} -E cat ${graph_kernel_sources} > "${graph_source}"
+    DEPENDS ${graph_kernel_sources}
+    COMMENT "Joining the graph runtime's kernel files")
+  foreach(flavor IN ITEMS "graph_kernels|kGraphKernelsSpirv|" "graph_kernels_fp16|kGraphKernelsFp16Spirv| -DGRAPH_FP16")
+    string(REPLACE "|" ";" flavor "${flavor}")
+    list(GET flavor 0 name)
+    list(GET flavor 1 symbol)
+    list(GET flavor 2 defines)
+    set(spirv "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}.spv")
+    set(embedded "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}_spirv.cpp")
+    add_custom_command(OUTPUT "${spirv}"
+      COMMAND "${GRPARSE_OCLOC}" compile -file "${graph_source}" -device bmg -spv_only
+        -options "-cl-std=CL3.0${defines}" -output ${name} -output_no_suffix
+        -out_dir "${CMAKE_CURRENT_BINARY_DIR}/levelzero" -q
+      DEPENDS "${graph_source}"
+      COMMENT "Compiling the graph kernels to SPIR-V (${name})")
+    add_custom_command(OUTPUT "${embedded}"
+      COMMAND ${CMAKE_COMMAND} -DINPUT=${spirv} -DOUTPUT=${embedded} -DSYMBOL=${symbol}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
+      DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
+    list(APPEND embedded_kernels "${embedded}")
+  endforeach()
   target_sources(grparse_core PRIVATE src/levelzero/device.cpp src/levelzero/encoder_plan.cpp
-    src/levelzero/table_encoder.cpp src/levelzero/table_gpu.cpp ${embedded_kernels})
+    src/levelzero/table_encoder.cpp src/levelzero/table_gpu.cpp src/levelzero/graph_ir.cpp
+    src/levelzero/graph_runtime.cpp ${embedded_kernels})
   target_compile_definitions(grparse_core PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")

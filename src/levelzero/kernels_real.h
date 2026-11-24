@@ -1,8 +1,10 @@
-// The element type of activation buffers, prepended to every kernel file.
-// Activations are float, or half when built with -DGRAPH_FP16; arithmetic is
-// always in float, rounded once at the store.
-#ifdef GRAPH_FP16
+// Prepended to every kernel file of the Level Zero graph runtime at build.
+// Activations on the device are `real`: float in the FP32 module, half in
+// the FP16 one (-DGRAPH_FP16).  Arithmetic is always float: load with RLOAD,
+// compute, round once at RSTORE.  Constants a kernel takes as parameters
+// (convolution weights, biases, LayerNorm scales) are float in both.
 #pragma OPENCL EXTENSION cl_khr_fp16 : enable
+#ifdef GRAPH_FP16
 typedef half real;
 #define RLOAD(p, i) vload_half((i), (p))
 #define RSTORE(p, i, v) vstore_half((v), (i), (p))
