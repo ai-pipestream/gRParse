@@ -14,6 +14,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/base64.h"
+#include "grparse/image_ref.h"
 #include "grparse/document_geometry.h"
 #include "grparse/in_memory_document.h"
 #include "grparse/page_previews.h"
@@ -22,9 +23,6 @@ namespace docv1 = ai::pipestream::document::v1;
 
 namespace grparse::render {
 namespace {
-
-constexpr std::string_view kDataUriPrefix = "data:";
-constexpr std::string_view kBase64Marker = ";base64,";
 
 std::string extension_for(std::string_view mimetype) {
   if (mimetype == "image/png") return "png";
@@ -67,22 +65,13 @@ std::optional<std::string> encode_png(const cv::Mat& image) {
 
 }  // namespace
 
-std::optional<EncodedImage> decode_image_data_uri(const std::string& uri) {
-  if (!uri.starts_with(kDataUriPrefix)) return std::nullopt;
-  const size_t marker = uri.find(kBase64Marker);
-  if (marker == std::string::npos) return std::nullopt;
-  EncodedImage image;
-  try {
-    image.bytes = decode_base64(uri.substr(marker + kBase64Marker.size()));
-  } catch (const std::invalid_argument&) {
-    return std::nullopt;
-  }
-  if (image.bytes.empty()) return std::nullopt;
-  std::string mimetype = uri.substr(kDataUriPrefix.size(), marker - kDataUriPrefix.size());
-  std::ranges::transform(mimetype, mimetype.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  image.extension = extension_for(mimetype);
-  return image;
+std::optional<EncodedImage> held_encoded_image(const docv1::ImageRef& image) {
+  HeldImage held = held_image(image);
+  if (held.hold != ImageHold::kBytes) return std::nullopt;
+  EncodedImage encoded;
+  encoded.extension = extension_for(held.mimetype);
+  encoded.bytes = std::move(held.bytes);
+  return encoded;
 }
 
 std::optional<EncodedImage> archive_image(EncodedImage image) {
@@ -108,7 +97,7 @@ std::optional<std::string> crop_picture_png(const docv1::Document& document,
       !item.has_image()) {
     return std::nullopt;
   }
-  const auto encoded = decode_image_data_uri(item.image().uri());
+  const auto encoded = held_encoded_image(item.image());
   if (!encoded.has_value()) return std::nullopt;
   const cv::Mat raster = decode(encoded->bytes, cv::IMREAD_UNCHANGED);
   if (raster.empty()) return std::nullopt;

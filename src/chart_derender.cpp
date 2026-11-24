@@ -18,7 +18,7 @@
 #include "ai/pipestream/enrich/v1/enrich_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "collectors/collector_support.h"
-#include "grparse/base64.h"
+#include "grparse/image_ref.h"
 #include "grparse/data_totals.h"
 #include "grparse/prometheus_metrics.h"
 
@@ -122,20 +122,24 @@ enum class InlinePixels {
   kUndecodable,
 };
 
-// Splits "data:<mimetype>;base64,<payload>" into decoded bytes.
-InlinePixels decode_data_uri(const std::string& uri, std::string* mimetype, std::string* bytes) {
-  constexpr std::string_view kScheme = "data:";
-  constexpr std::string_view kBase64 = ";base64,";
-  if (!uri.starts_with(kScheme)) return InlinePixels::kNone;
-  const size_t marker = uri.find(kBase64);
-  if (marker == std::string::npos) return InlinePixels::kUndecodable;
-  *mimetype = uri.substr(kScheme.size(), marker - kScheme.size());
-  try {
-    *bytes = decode_base64(uri.substr(marker + kBase64.size()));
-  } catch (const std::invalid_argument&) {
-    return InlinePixels::kUndecodable;
+// The picture's own pixels: ImageRef.data, or a data: URI from a producer
+// that still spells them that way. The media type is the one the document
+// declares for them.
+InlinePixels held_pixels(const docv1::ImageRef& image, std::string* mimetype,
+                         std::string* bytes) {
+  HeldImage held = held_image(image);
+  switch (held.hold) {
+    case ImageHold::kNothing:
+    case ImageHold::kReference:
+      return InlinePixels::kNone;
+    case ImageHold::kUndecodable:
+      return InlinePixels::kUndecodable;
+    case ImageHold::kBytes:
+      break;
   }
-  return bytes->empty() ? InlinePixels::kUndecodable : InlinePixels::kDecoded;
+  *mimetype = std::move(held.mimetype);
+  *bytes = std::move(held.bytes);
+  return InlinePixels::kDecoded;
 }
 
 // The candidate for the picture at `index`, when its pixels decode. A
@@ -145,14 +149,12 @@ bool decoded_candidate(const docv1::PictureItem& picture, int index, ChartCandid
                        std::vector<std::string>* undecodable) {
   candidate->self_ref = picture.self_ref().empty() ? "#/pictures/" + std::to_string(index)
                                                    : picture.self_ref();
-  const InlinePixels pixels =
-      decode_data_uri(picture.image().uri(), &candidate->mimetype, &candidate->bytes);
+  const InlinePixels pixels = held_pixels(picture.image(), &candidate->mimetype, &candidate->bytes);
   if (pixels == InlinePixels::kUndecodable && undecodable != nullptr) {
     undecodable->push_back(candidate->self_ref);
   }
   if (pixels != InlinePixels::kDecoded) return false;
   candidate->picture_index = index;
-  if (candidate->mimetype.empty()) candidate->mimetype = picture.image().mimetype();
   return true;
 }
 
@@ -263,6 +265,7 @@ docv1::Document chart_derender_request_document(
     picture->set_self_ref(candidate.self_ref);
     // The pixels travel as ItemImage; the reference keeps its size only.
     picture->mutable_image()->clear_uri();
+    picture->mutable_image()->clear_data();
     request.mutable_body()->add_children()->set_ref(candidate.self_ref);
   }
   return request;
@@ -593,7 +596,10 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     // prefer crops, and inline data URIs remain readable).
     docv1::Document request_doc = *document;
     for (docv1::PictureItem& picture : *request_doc.mutable_pictures()) {
-      if (picture.has_image()) picture.mutable_image()->clear_uri();
+      if (picture.has_image()) {
+        picture.mutable_image()->clear_uri();
+        picture.mutable_image()->clear_data();
+      }
     }
     document_chunk = request_doc.SerializeAsString();
   } else {

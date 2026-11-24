@@ -187,6 +187,15 @@ void verify_image_destinations_are_encoded() {
   require_equal(render_markdown(document, embedded),
                 std::string("![](data:image/png;base64,x%22%3E%3Cscript%3E1%3C/script%3E%29%3Cb%3E%28)"),
                 "an embedded image uri cannot end the image destination");
+
+  // Bytes held in ImageRef.data have no uri of their own: the embedded form
+  // is a data: URI built from them.
+  docv1::Document held = base_document("held.md");
+  auto* picture = add_picture(&held, "#/body", "");
+  picture->mutable_image()->set_mimetype("image/png");
+  picture->mutable_image()->set_data("abc");
+  require_equal(render_markdown(held, embedded), std::string("![](data:image/png;base64,YWJj)"),
+                "an image held as bytes is embedded as a data: URI");
 }
 
 void verify_group_text_keeps_inline_boundary_space() {

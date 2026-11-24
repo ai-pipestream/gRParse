@@ -1,6 +1,6 @@
 // Picture image bytes for the exports that carry images (the DocLang XML in
-// embedded mode, the DocLang archive): the bytes behind an ImageRef's data
-// URI, and docling's fallback of cropping a picture out of its page image.
+// embedded mode, the DocLang archive): the bytes an ImageRef holds, and
+// docling's fallback of cropping a picture out of its page image.
 // Everything happens in memory; nothing here touches a filesystem. Internal
 // to src/render.
 #ifndef GRPARSE_RENDER_PICTURE_IMAGE_H
@@ -19,9 +19,12 @@ struct EncodedImage {
   std::string extension;  // "png", "jpg", "webp", ...
 };
 
-// The bytes behind a "data:<mimetype>;base64,<payload>" URI. Absent for any
-// other URI, an empty payload, or a payload that is not base64.
-std::optional<EncodedImage> decode_image_data_uri(const std::string& uri);
+// The encoded image an ImageRef holds (grparse::held_image: its data field,
+// or a base64 data: URI), with the extension its declared media type
+// implies. Absent for a reference, an empty ref and a payload that does not
+// decode.
+std::optional<EncodedImage> held_encoded_image(
+    const ai::pipestream::document::v1::ImageRef& image);
 
 // The image as an archive member: PNG, JPEG and WebP bytes go through
 // unchanged (the formats the DocLang archive's content-types part declares);
@@ -30,7 +33,7 @@ std::optional<EncodedImage> decode_image_data_uri(const std::string& uri);
 std::optional<EncodedImage> archive_image(EncodedImage image);
 
 // docling's DocItem.get_image fallback: the picture's first provenance box
-// cropped out of its page's data-URI image, as PNG. The box is scaled from
+// cropped out of the image its page holds, as PNG. The box is scaled from
 // page units to image pixels by the page size, rounded to whole pixels and,
 // unlike docling's crop (which pads outside the raster), clamped to the
 // image. Absent when the provenance, page size or page image is missing, the

@@ -8,7 +8,7 @@ FROM dhi.io/node:26-debian13-dev@sha256:c2938e3b86c1e127e0dc585f69c998a8463049dc
 WORKDIR /app
 COPY examples/web-demo/package.json ./
 RUN npm install --omit=dev
-COPY examples/web-demo/server.js examples/web-demo/peers.js ./
+COPY examples/web-demo/server.js examples/web-demo/peers.js examples/web-demo/image-ref.js ./
 COPY examples/web-demo/public ./public
 COPY document.proto parse_types.proto parse.proto parse_stream.proto /protos/
 COPY collectors/ebcdic.proto collectors/lolhtml_types.proto collectors/lolhtml_service.proto \

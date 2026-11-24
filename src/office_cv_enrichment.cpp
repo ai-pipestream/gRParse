@@ -14,7 +14,7 @@
 #include <opencv2/imgcodecs.hpp>
 
 #include "grparse/barcode_decoder.h"
-#include "grparse/base64.h"
+#include "grparse/image_ref.h"
 #include "grparse/document_geometry.h"
 #include "grparse/document_reading_order.h"
 #include "grparse/in_memory_document.h"
@@ -25,7 +25,6 @@ namespace docv1 = ai::pipestream::document::v1;
 namespace grparse {
 namespace {
 
-constexpr const char kPngDataUriPrefix[] = "data:image/png;base64,";
 constexpr size_t kMaxDecodeWorkers = 8;
 
 // What became of one page's render on its way back to pixels. `unreadable`
@@ -39,17 +38,20 @@ struct PageRender {
 
 // The mapped page image back as pixels.
 PageRender decode_page_image(const docv1::PageItem& page) {
-  const std::string& uri = page.image().uri();
-  // The office fold stores a render as a data URI or stores none.
-  if (uri.empty()) return {};
-  const size_t prefix = sizeof(kPngDataUriPrefix) - 1;
-  if (!uri.starts_with(kPngDataUriPrefix)) return {{}, "is not an inline PNG"};
-  std::string bytes;
-  try {
-    bytes = decode_base64(uri.substr(prefix));
-  } catch (const std::invalid_argument&) {
-    return {{}, "is not valid base64"};
+  // A render is the page image's own bytes (ImageRef.data, or a data: URI
+  // from a producer that still spells them that way) or there is none.
+  HeldImage held = held_image(page.image());
+  switch (held.hold) {
+    case ImageHold::kNothing:
+      return {};
+    case ImageHold::kReference:
+      return {{}, "is a reference, not an image held in the document"};
+    case ImageHold::kUndecodable:
+      return {{}, "is not valid base64"};
+    case ImageHold::kBytes:
+      break;
   }
+  const std::string& bytes = held.bytes;
   // The collector's PNG is held to the raster input's pixel cap before
   // any decoder allocates for it.
   if (bytes.size() > static_cast<size_t>(std::numeric_limits<int>::max()) ||

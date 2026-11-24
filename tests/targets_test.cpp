@@ -473,6 +473,36 @@ void verify_an_image_the_bundle_cannot_write_is_reported() {
 // own signature, else from the media type the document declares; when
 // neither names a type the bundle knows, the member says so instead of
 // calling itself a PNG.
+// An image whose bytes are in ImageRef.data is a member like one spelled as
+// a data: URI, and is not reported as left out.
+void verify_an_image_in_the_data_field_is_a_member() {
+  docv1::Document document = sample_document("held");
+  document.clear_pictures();
+  document.clear_pages();
+  add_picture(&document, "image/png", "");
+  document.mutable_pictures(0)->mutable_image()->set_data(fake_image(21));
+  // Bytes with no declared type: the signature names the member.
+  add_picture(&document, "", "");
+  document.mutable_pictures(1)->mutable_image()->set_data(fake_image(22));
+  docv1::PageItem& page = (*document.mutable_pages())[1];
+  page.set_page_no(1);
+  page.mutable_image()->set_mimetype("image/png");
+  page.mutable_image()->set_data(fake_image(23));
+
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(sample_conversion(document), &result);
+  require(has_member(files, "pictures/pic_0001.png") &&
+              member(files, "pictures/pic_0001.png").bytes == fake_image(21),
+          "a picture held as bytes is written byte for byte");
+  require(has_member(files, "pictures/pic_0002.png") &&
+              member(files, "pictures/pic_0002.png").bytes == fake_image(22),
+          "its type comes from the bytes when the ref declares none");
+  require(has_member(files, "pages/page_0001.png") &&
+              member(files, "pages/page_0001.png").bytes == fake_image(23),
+          "a page image held as bytes is written too");
+  require_equal(result.image_issues_size(), 0, "nothing is reported as left out");
+}
+
 void verify_an_image_member_is_never_named_for_a_type_it_is_not() {
   docv1::Document document = sample_document("types");
   document.clear_pictures();
@@ -1143,6 +1173,7 @@ int main() {
       verify_the_bundle_carries_the_conversions_status_and_outputs,
       verify_an_image_the_bundle_cannot_write_is_reported,
       verify_an_image_member_is_never_named_for_a_type_it_is_not,
+      verify_an_image_in_the_data_field_is_a_member,
       verify_sigv4_matches_the_published_vector,
       verify_sigv4_signs_the_session_token,
       verify_region_comes_from_the_endpoint,

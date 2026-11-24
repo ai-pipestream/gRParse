@@ -310,6 +310,21 @@ void verify_candidates_need_a_chart_verdict_pixels_and_no_typed_table() {
           "the request carries the candidate without its pixels and lists it under the body");
   require(grparse::chart_derender_candidates(request).empty(),
           "a stripped picture is not a candidate again: the pixels travel separately");
+
+  // The same picture with its pixels in ImageRef.data, where a producer that
+  // holds the bytes puts them.
+  docv1::Document held = sample_document();
+  held.mutable_pictures(0)->mutable_image()->clear_uri();
+  held.mutable_pictures(0)->mutable_image()->set_data(kPng);
+  const std::vector<grparse::ChartCandidate> from_data = grparse::chart_derender_candidates(held);
+  require(from_data.size() == 1 && from_data[0].self_ref == "#/pictures/0",
+          "a picture whose pixels are in the data field is a candidate");
+  require(from_data[0].mimetype == "image/png" && from_data[0].bytes == kPng,
+          "with the bytes as they are and the ref's own media type");
+  const docv1::Document held_request = grparse::chart_derender_request_document(held, from_data);
+  require(held_request.pictures_size() == 1 && !held_request.pictures(0).image().has_data() &&
+              held_request.pictures(0).image().uri().empty(),
+          "the request leaves the pixels out wherever the picture kept them");
   docv1::Document malformed = document;
   malformed.mutable_pictures(0)->mutable_image()->set_uri("data:image/png;base64,@@@");
   require(grparse::chart_derender_candidates(malformed).empty(),
