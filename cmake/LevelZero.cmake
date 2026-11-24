@@ -73,7 +73,7 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
   # The device and the graph runtime sit in the model-interface library,
   # under make_rapidocr_model (src/inference_model.cpp); table structure in
   # the core library uses the same device.
-  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_ir.cpp
+  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_ir.cpp src/levelzero/graph_fuse.cpp
     src/levelzero/graph_runtime.cpp ${embedded_graph_kernels})
   target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
