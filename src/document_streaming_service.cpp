@@ -22,6 +22,7 @@
 #include <utility>
 #include <vector>
 
+#include "conversion_outputs.h"
 #include "grparse/call_executor.h"
 #include "grparse/collector_cancel.h"
 #include "grparse/collector_coordinator.h"
@@ -39,6 +40,7 @@
 #include "grparse/stream_delta.h"
 #include "parse_support.h"
 #include "source_parse.h"
+#include "storage/connectors.h"
 #include "structure_validation.h"
 #include "targets/sha256.h"
 #include "targets/target_step.h"
@@ -1663,6 +1665,20 @@ class DocumentStreamReactor final
 // The surface StreamDocument's rejections name.
 constexpr const char* kSourceStreamSurface = "StreamDocument";
 
+// RESOURCE_EXHAUSTED when one of a source's envelopes is past the message
+// limit, naming `what` it carries and the `remedy` open to the caller.
+grpc::Status refuse_oversized_envelope(
+    const pipestream::parse::v1::StreamDocumentResponse& envelope, const std::string& what,
+    int source_index, const std::string& remedy) {
+  const uint64_t bytes = envelope.ByteSizeLong();
+  if (bytes <= static_cast<uint64_t>(kMaxMessageBytes)) return grpc::Status::OK;
+  return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED,
+                      std::string(kSourceStreamSurface) + ": the " + what + " of sources[" +
+                          std::to_string(source_index) + "] is " + std::to_string(bytes) +
+                          " bytes, over the " + std::to_string(kMaxMessageBytes) +
+                          " byte message limit; " + remedy);
+}
+
 // The stable class of a source's failure on the envelope feed.
 pipestream::parse::v1::StreamErrorCode stream_error_code(grpc::StatusCode code) {
   switch (code) {
@@ -1684,29 +1700,36 @@ pipestream::parse::v1::StreamErrorCode stream_error_code(grpc::StatusCode code) 
   }
 }
 
-// StreamDocument's reactor. Each source of the request is parsed in turn by
-// parse_source, the fetch (behind the remote fetch slots and the in-flight
-// budget), plan, collector legs, merge and repair ConvertSource runs, on an
-// executor worker; the reaction threads only write. The feed is:
+// StreamDocument's reactor. Each source of the request is converted in turn
+// the way ConvertSource converts it: parse_source (the fetch behind the
+// remote fetch slots and the in-flight budget, plan, collector legs, merge
+// and repair), then fill_conversion_outputs (exports, chunks, structure
+// findings, confidence, offset table), on an executor worker; the reaction
+// threads only write. The feed is:
 //
 //   status QUEUED                      once the call is admitted
 //   status STARTED                     when a worker picks it up
 //   per source, in request order:
 //     status PROCESSING                source_index set
-//     final_document, source_result    the merged Document, then success
+//     status EXPORTING                 the source parsed; its outputs render
+//     final_document, source_outputs,  the merged Document, what the unary
+//       source_result                  response carries beside it, success
 //   or error, source_result            a failed source; the next one runs
 //   status COMPLETED                   at least one source converted
 //   or status FAILED                   none did
 //
-// and the call then finishes OK. A request refused before any work (no
-// source, a target to deliver to, invalid options, no room in the budget
-// or the executor) finishes with that status and no envelope; a client
-// that goes away ends the call CANCELLED.
+// and the call then finishes OK. A source's final_document and
+// source_outputs are queued together or not at all: outputs that fail to
+// render, or either message past the write limit, fail the source. A
+// request refused before any work (no source, a target to deliver to,
+// invalid options, no room in the budget or the executor) finishes with
+// that status and no envelope; a client that goes away ends the call
+// CANCELLED.
 //
 // The worker waits for each source's envelopes to be written before it
-// parses the next, so at most one source's Document is held beyond the one
-// being parsed, and a remote source's fetched copy stays charged until its
-// Document is on the wire.
+// parses the next, so at most one source's Document and outputs are held
+// beyond the one being parsed, and a remote source's fetched copy stays
+// charged until they are on the wire.
 class SourceStreamReactor final
     : public grpc::ServerWriteReactor<pipestream::parse::v1::StreamDocumentResponse> {
  public:
@@ -1812,20 +1835,34 @@ class SourceStreamReactor final
         status = status_from_exception(std::current_exception());
       }
       auto final_document = std::make_unique<Envelope>();
+      auto source_outputs = std::make_unique<Envelope>();
       if (status.ok()) {
-        *final_document->mutable_final_document() = std::move(parsed.result.document);
-        // The write limit is the transport's; a Document past it is this
-        // source's failure, not the stream's.
-        if (final_document->ByteSizeLong() > static_cast<uint64_t>(kMaxMessageBytes)) {
-          status = grpc::Status(
-              grpc::StatusCode::RESOURCE_EXHAUSTED,
-              std::string(kSourceStreamSurface) + ": the Document of sources[" +
-                  std::to_string(index) + "] is " +
-                  std::to_string(final_document->ByteSizeLong()) + " bytes, over the " +
-                  std::to_string(kMaxMessageBytes) +
-                  " byte message limit; StreamProcessDocument delivers the same conversion "
-                  "page by page");
+        {
+          std::lock_guard<std::mutex> lock(mutex_);
+          queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_EXPORTING, source_index);
+          pump_locked();
         }
+        *final_document->mutable_final_document() = std::move(parsed.result.document);
+        // What ConvertSource answers with beside the Document, from the
+        // function it fills its own response with.
+        auto* outputs = source_outputs->mutable_source_outputs();
+        try {
+          status = fill_conversion_outputs(convert.options(), final_document->final_document(),
+                                           &parsed, outputs->mutable_exports(), outputs);
+        } catch (...) {
+          status = status_from_exception(std::current_exception());
+        }
+      }
+      // The write limit is the transport's; a Document or outputs past it
+      // are this source's failure, not the stream's.
+      if (status.ok()) {
+        status = refuse_oversized_envelope(
+            *final_document, "Document", index,
+            "StreamProcessDocument delivers the same conversion page by page");
+      }
+      if (status.ok()) {
+        status = refuse_oversized_envelope(*source_outputs, "source_outputs", index,
+                                           "request fewer to_formats");
       }
       if (stopped()) {
         record_source_completion(parsed, grpc::Status(grpc::StatusCode::CANCELLED, ""), started);
@@ -1854,6 +1891,8 @@ class SourceStreamReactor final
         if (!failures.empty()) result.set_error_message(failures);
         final_document->set_source_index(source_index);
         queue_locked(std::move(final_document));
+        source_outputs->set_source_index(source_index);
+        queue_locked(std::move(source_outputs));
       } else {
         ++failed_;
         result.set_error_message(status.error_message());
@@ -1872,8 +1911,8 @@ class SourceStreamReactor final
       *closing->mutable_source_result() = std::move(result);
       queue_locked(std::move(closing));
       pump_locked();
-      // Backpressure: this source's Document, and the fetched copy charged
-      // for it, are held until the client has read them.
+      // Backpressure: this source's Document and outputs, and the fetched
+      // copy charged for it, are held until the client has read them.
       wait_drained(lock);
     }
     bool cancelled = false;
@@ -1948,6 +1987,10 @@ class SourceStreamReactor final
         break;
       case pipestream::parse::v1::StreamStatus::PHASE_PROCESSING:
         status->set_message("converting sources[" + std::to_string(*source_index) + "]");
+        break;
+      case pipestream::parse::v1::StreamStatus::PHASE_EXPORTING:
+        status->set_message("rendering the outputs of sources[" +
+                            std::to_string(*source_index) + "]");
         break;
       case pipestream::parse::v1::StreamStatus::PHASE_COMPLETED:
         status->set_message("every source processed");
@@ -2028,9 +2071,12 @@ DocumentStreamingService::StreamDocument(
     return new SourceStreamReactor(grpc::Status(
         grpc::StatusCode::INVALID_ARGUMENT, "StreamDocument needs at least one source"));
   }
+  // The stream has no envelope to report a delivery in, so a target that
+  // asks for one is turned down, typed, rather than accepted and skipped.
   if (targets::needs_delivery(convert.target())) {
-    return new SourceStreamReactor(grpc::Status(
-        grpc::StatusCode::INVALID_ARGUMENT,
+    return new SourceStreamReactor(option_rejected(
+        "target", pipestream::parse::v1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED,
+        storage::target_kind(convert.target()),
         "StreamDocument does not deliver to a target; its documents return on the stream only"));
   }
   if (grpc::Status options = validate_options(convert.options(), kSourceStreamSurface);

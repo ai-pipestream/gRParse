@@ -254,6 +254,53 @@ void verify_model_placements_are_reported() {
   grparse::set_ort_ep_selection(selection);
 }
 
+// Health tells an engine the operator switched off from one startup was
+// allowed to build and did not: only the second is a missing part. An engine
+// that works on layout's regions follows GRPARSE_LAYOUT=off.
+void verify_engine_inventory_tells_switched_off_from_not_built() {
+  using grparse::EngineState;
+  for (const char* name : {"GRPARSE_LAYOUT", "GRPARSE_TABLE_STRUCTURE", "GRPARSE_FIGURE_CLASSES"}) {
+    ::unsetenv(name);
+  }
+  grparse::EmbeddingConfig embeddings;
+  const auto all = grparse::read_engine_inventory(
+      {.layout = true, .table_structure = true, .figure_classifier = true, .embeddings = false},
+      embeddings);
+  require(all.ocr == EngineState::kLoaded && all.layout == EngineState::kLoaded &&
+              all.table_structure == EngineState::kLoaded &&
+              all.figure_classifier == EngineState::kLoaded,
+          "built engines are loaded");
+  require(all.embeddings == EngineState::kDisabled,
+          "embeddings with no backend selected are disabled");
+  embeddings.backend = grparse::EmbeddingBackend::cpu;
+  require(grparse::read_engine_inventory({.embeddings = true}, embeddings).embeddings ==
+              EngineState::kLoaded,
+          "a built embedding engine is loaded");
+
+  // auto, and startup built none: the model files were not there.
+  const auto none = grparse::read_engine_inventory({}, embeddings);
+  require(none.ocr == EngineState::kLoaded, "OCR is loaded whenever startup got this far");
+  require(none.layout == EngineState::kNotLoaded &&
+              none.table_structure == EngineState::kNotLoaded &&
+              none.figure_classifier == EngineState::kNotLoaded,
+          "an engine its setting allowed and startup did not build is not loaded");
+
+  ::setenv("GRPARSE_TABLE_STRUCTURE", "off", 1);
+  const auto table_off = grparse::read_engine_inventory({.layout = true}, embeddings);
+  require(table_off.table_structure == EngineState::kDisabled &&
+              table_off.figure_classifier == EngineState::kNotLoaded,
+          "an engine's own off setting disables that engine only");
+  ::unsetenv("GRPARSE_TABLE_STRUCTURE");
+
+  ::setenv("GRPARSE_LAYOUT", "off", 1);
+  const auto layout_off = grparse::read_engine_inventory({}, embeddings);
+  require(layout_off.layout == EngineState::kDisabled &&
+              layout_off.table_structure == EngineState::kDisabled &&
+              layout_off.figure_classifier == EngineState::kDisabled,
+          "GRPARSE_LAYOUT=off disables the engines that work on layout's regions");
+  ::unsetenv("GRPARSE_LAYOUT");
+}
+
 }  // namespace
 
 int main() {
@@ -265,5 +312,6 @@ int main() {
       verify_collector_keepalive_settings,
       verify_openvino_device_setting,
       verify_model_placements_are_reported,
+      verify_engine_inventory_tells_switched_off_from_not_built,
   });
 }

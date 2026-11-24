@@ -36,6 +36,12 @@ std::optional<std::string> remote_pdf_backend_target();
 // configured with the 520 MiB message size ceiling.
 std::shared_ptr<grpc::Channel> pdf_backend_channel(const std::string& target);
 
+// What Health reads: the connectivity state of the channel pdf_backend_channel
+// holds for `target`, or nullopt while no PDF has needed that target yet. It
+// is read with GetState(false), so asking neither creates the channel nor
+// makes it connect.
+std::optional<grpc_connectivity_state> pdf_backend_channel_state(const std::string& target);
+
 // The keepalive timings every PdfBackendService channel made after this call
 // is created with (the collector channels' options; the pool size does not
 // apply, each target has one channel). main sets it once at startup, before

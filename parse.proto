@@ -96,9 +96,115 @@ service ParseService {
 
 message HealthRequest {}
 
+// The service's own answer to "should work be routed here". grpc.health.v1
+// reports the same thing on the same port: NOT_SERVING for
+// SERVING_STATE_NOT_SERVING, SERVING for the other two.
+enum ServingState {
+  // A server that predates this field; read `status` instead.
+  SERVING_STATE_UNSPECIFIED = 0;
+  // Startup has not finished: the engines the settings ask for are not all
+  // built yet, so no request should be sent.
+  SERVING_STATE_NOT_SERVING = 1;
+  // Startup finished and no component below is in a state that costs a
+  // request something the deployment was set up to deliver.
+  SERVING_STATE_SERVING = 2;
+  // Startup finished and requests are answered, but with a part missing. At
+  // least one component is COMPONENT_STATE_NOT_LOADED (an engine its
+  // setting allowed and startup did not build), COMPONENT_STATE_UNREACHABLE
+  // (a configured peer whose last connection attempt failed), or is a PDF
+  // backend that is COMPONENT_STATE_NOT_CONFIGURED (every PDF on the
+  // in-process path then fails FAILED_PRECONDITION). `components` says
+  // which. An engine switched off by its setting and a collector whose
+  // target is unset are the operator's choice and do not count.
+  SERVING_STATE_SERVING_DEGRADED = 3;
+}
+
+// What a component is to this process.
+enum ComponentKind {
+  COMPONENT_KIND_UNSPECIFIED = 0;
+  // A model the process runs itself, built once at startup: OCR, layout,
+  // table structure, the figure classifier, chunk embeddings.
+  COMPONENT_KIND_ENGINE = 1;
+  // A PdfBackendService target named by GRPARSE_PDF_BACKEND, the only way
+  // this service reads a PDF. One component per target of a consensus list;
+  // a single NOT_CONFIGURED one when the variable is unset.
+  COMPONENT_KIND_PDF_BACKEND = 2;
+  // A collector dialed at its GRPARSE_<NAME>_TARGET; `collector` says which.
+  COMPONENT_KIND_COLLECTOR = 3;
+  // A sister service dialed for a leg that is not a collector: the chart
+  // derender leg (GRPARSE_ENRICH_TARGET) and the LightOnOCR leg
+  // (GRPARSE_LIGHTON_TARGET).
+  COMPONENT_KIND_PEER = 4;
+}
+
+// The state of one component. The first three are an engine's, the rest a
+// dialed target's.
+enum ComponentState {
+  COMPONENT_STATE_UNSPECIFIED = 0;
+  // Engine: built at startup and in use.
+  COMPONENT_STATE_LOADED = 1;
+  // Engine: switched off by its setting. The work it does is not done, by
+  // the operator's choice.
+  COMPONENT_STATE_DISABLED = 2;
+  // Engine: its setting allowed it and startup did not build it (its model
+  // file or the engine it depends on was absent). The work it does is not
+  // done, and nothing but this field and the startup log says so.
+  COMPONENT_STATE_NOT_LOADED = 3;
+  // Target: its variable is unset. A request that needs it fails.
+  COMPONENT_STATE_NOT_CONFIGURED = 4;
+  // Target: named, and no channel to it is READY or failing: either no
+  // request has needed it since startup, or its connections are idle or
+  // still connecting. Says nothing about whether the peer is up.
+  COMPONENT_STATE_CONFIGURED = 5;
+  // Target: named, and at least one channel to it is READY.
+  COMPONENT_STATE_CONNECTED = 6;
+  // Target: named, no channel to it is READY and at least one is in
+  // TRANSIENT_FAILURE: the last connection attempt failed and gRPC is
+  // backing off. A request that needs it is failing now.
+  COMPONENT_STATE_UNREACHABLE = 7;
+}
+
+// grpc_connectivity_state, as gRPC reports it for one client channel.
+enum ChannelConnectivity {
+  CHANNEL_CONNECTIVITY_UNSPECIFIED = 0;
+  CHANNEL_CONNECTIVITY_IDLE = 1;
+  CHANNEL_CONNECTIVITY_CONNECTING = 2;
+  CHANNEL_CONNECTIVITY_READY = 3;
+  CHANNEL_CONNECTIVITY_TRANSIENT_FAILURE = 4;
+  CHANNEL_CONNECTIVITY_SHUTDOWN = 5;
+}
+
+// One thing a request may depend on, and what this process knows about it.
+// Nothing here is probed for the answer: an engine's state was settled at
+// startup, and a target's is read from the channels requests already use.
+message ComponentHealth {
+  // A stable short name: "ocr", "layout", "table-structure",
+  // "figure-classifier", "embeddings", "pdf-backend", "enrich",
+  // "lighton-ocr", or the collector's name as the startup log prints it
+  // ("libreoffice", "lol-html", "vlm-convert", ...).
+  string name = 1;
+  ComponentKind kind = 2;
+  ComponentState state = 3;
+  // Set for COMPONENT_KIND_COLLECTOR only.
+  optional Collector collector = 4;
+  // The dial target as configured; set when the component is a target that
+  // is named.
+  optional string target = 5;
+  // One entry per channel this process holds to the target, in pool order.
+  // Empty until a request first needs the target: channels are created on
+  // first use, and Health neither creates nor connects one.
+  repeated ChannelConnectivity channels = 6;
+}
+
 message HealthResponse {
+  // The text form of `state`, kept for clients that read it: "starting"
+  // (NOT_SERVING), "ready" (SERVING) or "degraded" (SERVING_DEGRADED).
   optional string status = 1;
   optional string version = 2; // converter version, e.g. "1.12.0"
+  ServingState state = 3;
+  // Every engine, PDF backend, collector and peer this build knows, each
+  // exactly once, whether or not it is in use.
+  repeated ComponentHealth components = 4;
 }
 
 // --- Service info ---

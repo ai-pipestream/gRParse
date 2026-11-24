@@ -288,6 +288,56 @@ void verify_a_key_value_region_names_its_cells_and_links() {
                 "each cell names its role, its id, and the cells it links to");
 }
 
+// A form field region is a transparent container, like a group: its field
+// items' key and value texts render in place, each under its own label
+// token, so the export carries what the form says.
+void verify_a_field_region_renders_its_keys_and_values() {
+  docv1::Document document = base_document("form.pdf");
+  auto* region = document.add_field_regions();
+  region->set_self_ref("#/field_regions/0");
+  region->mutable_parent()->set_ref("#/body");
+  region->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  region->set_label(docv1::DOC_ITEM_LABEL_FIELD_REGION);
+  document.mutable_body()->add_children()->set_ref("#/field_regions/0");
+  auto* field = document.add_field_items();
+  field->set_self_ref("#/field_items/0");
+  field->mutable_parent()->set_ref("#/field_regions/0");
+  field->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  field->set_label(docv1::DOC_ITEM_LABEL_FIELD_ITEM);
+  region->add_children()->set_ref("#/field_items/0");
+
+  auto* key = document.add_texts()->mutable_text()->mutable_base();
+  key->set_self_ref("#/texts/0");
+  key->mutable_parent()->set_ref("#/field_items/0");
+  key->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  key->set_label(docv1::DOC_ITEM_LABEL_FIELD_KEY);
+  key->set_text("Customer name");
+  auto* value = document.add_texts()->mutable_field_value()->mutable_base();
+  value->set_self_ref("#/texts/1");
+  value->mutable_parent()->set_ref("#/field_items/0");
+  value->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  value->set_label(docv1::DOC_ITEM_LABEL_FIELD_VALUE);
+  value->set_text("Jordan Example");
+  auto* ticked = document.add_texts()->mutable_text()->mutable_base();
+  ticked->set_self_ref("#/texts/2");
+  ticked->mutable_parent()->set_ref("#/field_items/0");
+  ticked->set_content_layer(docv1::CONTENT_LAYER_BODY);
+  ticked->set_label(docv1::DOC_ITEM_LABEL_CHECKBOX_SELECTED);
+  ticked->set_text("Yes");
+  for (const char* ref : {"#/texts/0", "#/texts/1", "#/texts/2"}) {
+    document.mutable_field_items(0)->add_children()->set_ref(ref);
+  }
+
+  require_equal(only_part(document),
+                "<text>Customer name</text>\n<text>Jordan Example</text>\n"
+                "<checkbox_selected>Yes</checkbox_selected>",
+                "a field region's keys and values render, a ticked box under its own token");
+
+  document.mutable_field_regions(0)->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  require_equal(render_doctags(document), "<doctag>\n</doctag>",
+                "a field region outside the body layer renders nothing");
+}
+
 }  // namespace
 
 int main() {
@@ -311,5 +361,6 @@ int main() {
       verify_a_float_footnote_nests_inside_its_owner,
       verify_location_tokens_need_a_page_with_a_size,
       verify_a_key_value_region_names_its_cells_and_links,
+      verify_a_field_region_renders_its_keys_and_values,
   });
 }

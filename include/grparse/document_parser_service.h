@@ -35,6 +35,7 @@
 namespace grparse {
 
 class ParseCall;
+class ServiceHealth;
 struct SourceParse;
 class TaskRegistry;
 struct TaskRegistryOptions;
@@ -234,6 +235,16 @@ class CollectorEndpoints {
   // an all-null enrichment disables the hybrid leg.
   const OfficeCvEnrichment& cv_enrichment() const { return cv_enrichment_; }
 
+  // What Health reads: the connectivity state of every channel that already
+  // exists to a target, in pool order, and nothing while no call has needed
+  // that target yet. Each state is read with GetState(false), so asking
+  // never creates a channel and never makes one connect. COLLECTOR_VLM names
+  // the vlm convert leg's channel.
+  std::vector<grpc_connectivity_state> channel_states(
+      ai::pipestream::parse::v1::Collector id) const;
+  std::vector<grpc_connectivity_state> enrich_channel_states() const;
+  std::vector<grpc_connectivity_state> lighton_channel_states() const;
+
  private:
   // One target's channels and the index the next call is handed.
   struct ChannelPool {
@@ -244,10 +255,12 @@ class CollectorEndpoints {
   // against `target` on first use. Called with mutex_ held.
   std::shared_ptr<grpc::Channel> next_channel(ChannelPool& pool, const std::string& target,
                                               size_t size);
+  // The states of `pool`'s channels. Called with mutex_ held.
+  std::vector<grpc_connectivity_state> states_of(const ChannelPool& pool) const;
 
   CollectorTargets targets_;
   OfficeCvEnrichment cv_enrichment_;
-  std::mutex mutex_;
+  mutable std::mutex mutex_;
   std::map<ai::pipestream::parse::v1::Collector, ChannelPool> channels_;
   ChannelPool enrich_channel_;
   ChannelPool vlm_channel_;
@@ -258,7 +271,8 @@ class CollectorEndpoints {
 // for as long as the document takes, so they never run on the reaction thread:
 // each hands its work to the executor and finishes the call from there, which
 // is what keeps a slow parse from pinning an event-manager thread. The trivial
-// surfaces (Health, GetServiceInfo) finish inline because they do no work.
+// surfaces (Health, GetServiceInfo) finish inline because they only read
+// state the process already holds.
 //
 // `repair` is the post-merge repair pass every parsing surface runs on the
 // merged Document before rendering (see document_repair.h); nullopt skips
@@ -296,6 +310,13 @@ class DocumentParserService final
     fetch_slots_ = std::move(slots);
   }
   const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
+
+  // What the Health RPC reports (see service_health.h): the engines startup
+  // built, the targets it was given, and whether startup has finished. Set
+  // before serving. Until one is set Health answers
+  // SERVING_STATE_NOT_SERVING with no components: nothing has told this
+  // service what it was started with, so it claims nothing.
+  void set_health(std::shared_ptr<const ServiceHealth> health) { health_ = std::move(health); }
 
   grpc::ServerUnaryReactor* ConvertSource(
       grpc::CallbackServerContext* context,
@@ -380,6 +401,10 @@ class DocumentParserService final
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::WatchChunkHybridSourceRequest* request) override;
 
+  // The state of this process as ServiceHealth describes it, read at the
+  // time of the call. Finishes inline: it reads what startup recorded and
+  // the connectivity state of channels that already exist, and dials
+  // nothing.
   grpc::ServerUnaryReactor* Health(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::HealthRequest* request,
@@ -451,6 +476,8 @@ class DocumentParserService final
   uint64_t response_byte_cap_ = static_cast<uint64_t>(kMaxMessageBytes);
   std::shared_ptr<RemoteFetchSlots> fetch_slots_ =
       std::make_shared<RemoteFetchSlots>(kDefaultRemoteFetchConcurrency);
+  // Null until set_health; see there.
+  std::shared_ptr<const ServiceHealth> health_;
   // Outlives the executor below: a task's worker records into it to the
   // end.
   std::unique_ptr<TaskRegistry> tasks_;
@@ -508,11 +535,12 @@ class DocumentStreamingService final : public ai::pipestream::parse::v1::ParseSt
   const std::shared_ptr<RemoteFetchSlots>& remote_fetch_slots() const { return fetch_slots_; }
 
   // The source-based entry to the envelope feed: each source of the
-  // ConvertDocumentRequest is fetched and parsed exactly as ConvertSource
-  // parses it, one after another on this service's executor, and the stream
-  // carries status envelopes around each source's final_document and
-  // source_result. Every envelope echoes request_id and carries the next
-  // sequence_number, from 1.
+  // ConvertDocumentRequest is fetched, parsed and exported exactly as
+  // ConvertSource converts it, one after another on this service's
+  // executor, and the stream carries status envelopes around each source's
+  // final_document, source_outputs (the exports, chunks, findings,
+  // confidence and offsets of the unary response) and source_result. Every
+  // envelope echoes request_id and carries the next sequence_number, from 1.
   grpc::ServerWriteReactor<ai::pipestream::parse::v1::StreamDocumentResponse>* StreamDocument(
       grpc::CallbackServerContext* context,
       const ai::pipestream::parse::v1::StreamDocumentRequest* request) override;

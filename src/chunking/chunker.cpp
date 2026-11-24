@@ -384,6 +384,28 @@ class Chunker {
     return nullptr;
   }
 
+  // A form's field region or one of its field items: containers that hold
+  // no text of their own. A region's children are field items, and a field
+  // item's children are the key and value text items (pdf_form_widgets.cpp,
+  // the office form fold).
+  struct FieldContainer {
+    const google::protobuf::RepeatedPtrField<docv1::RefItem>* children;
+    docv1::ContentLayer layer;
+  };
+
+  std::optional<FieldContainer> field_container_at(const std::string& ref) const {
+    const ArenaRef parsed = parse_ref(ref);
+    if (parsed.kind == ArenaRef::kFieldRegion && parsed.index < document_.field_regions_size()) {
+      const auto& region = document_.field_regions(parsed.index);
+      return FieldContainer{&region.children(), region.content_layer()};
+    }
+    if (parsed.kind == ArenaRef::kFieldItem && parsed.index < document_.field_items_size()) {
+      const auto& item = document_.field_items(parsed.index);
+      return FieldContainer{&item.children(), item.content_layer()};
+    }
+    return std::nullopt;
+  }
+
   // Only the body layer chunks. An unspecified layer is the producer default
   // and counts as body; every other layer is one the producer chose
   // deliberately, so its subtree is left out entirely.
@@ -403,6 +425,7 @@ class Chunker {
     }
     if (const auto* table = table_at(ref)) return table->content_layer();
     if (const auto* picture = picture_at(ref)) return picture->content_layer();
+    if (const auto field = field_container_at(ref)) return field->layer;
     return docv1::CONTENT_LAYER_UNSPECIFIED;
   }
 
@@ -604,8 +627,17 @@ class Chunker {
       emit_picture(ref, *picture);
       return;
     }
-    // Key-value and form areas have no text/1 serialization; they contribute
-    // no chunk rather than a guessed one.
+    if (const auto field = field_container_at(ref)) {
+      // A field region and its field items are structure, like a group: the
+      // form's content is the key and value text items under them, and each
+      // of those chunks as the text item it is. Stopping here left every
+      // field name and value of a filled-in form out of the chunks.
+      for (const auto& child : *field->children) walk(child.ref(), depth + 1);
+      return;
+    }
+    // Key-value and form areas hold graph cells, not text items, and have no
+    // text/1 serialization; they contribute no chunk rather than a guessed
+    // one.
   }
 
   void emit_text(const std::string& ref, const docv1::BaseTextItem& item) {
