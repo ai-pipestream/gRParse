@@ -115,6 +115,8 @@ class ServerFixture {
 class FakeAsrService final : public asrv1::AsrService::Service {
  public:
   asrv1::TranscribeOptions last_options;
+  // What the decoder met, sent on the trailer as grpc-asr sends it.
+  std::vector<asrv1::DecodeWarning> decode_warnings;
 
   grpc::Status Transcribe(
       grpc::ServerContext*,
@@ -145,6 +147,9 @@ class FakeAsrService final : public asrv1::AsrService::Service {
     stream->Write(event);
     event.Clear();
     event.mutable_complete()->set_language("en");
+    for (const asrv1::DecodeWarning& warning : decode_warnings) {
+      *event.mutable_complete()->add_decode_warnings() = warning;
+    }
     stream->Write(event);
     return grpc::Status::OK;
   }
@@ -191,6 +196,57 @@ void verify_asr_collects_document() {
               outcome.document.texts(0).text().base().text() == "from asr",
           "the collector's own Document arrives unchanged");
   require(outcome.warnings.empty(), "asr has no trailer warnings to surface");
+}
+
+// grpc-asr ends a transcript OK when the decoder skipped over errors or
+// decoded less audio than the media says it holds, and says so only on its
+// trailer. Each finding has to reach the document as a typed warning, or a
+// transcript of two thirds of a recording reads as a whole one.
+void verify_asr_surfaces_decode_warnings() {
+  FakeAsrService service;
+  asrv1::DecodeWarning errors;
+  errors.set_code(asrv1::DECODE_WARNING_CODE_DECODER_ERRORS);
+  errors.set_message("[mp3 @ 0x1] Header missing");
+  errors.set_error_count(3);
+  service.decode_warnings.push_back(errors);
+  asrv1::DecodeWarning cut;
+  cut.set_code(asrv1::DECODE_WARNING_CODE_SHORTER_THAN_DECLARED);
+  cut.set_message("decoded 41.000 s of 60.000 s");
+  cut.set_declared_duration_ms(60000);
+  cut.set_decoded_duration_ms(41000);
+  service.decode_warnings.push_back(cut);
+  asrv1::DecodeWarning unknown;
+  unknown.set_code(static_cast<asrv1::DecodeWarningCode>(99));
+  unknown.set_message("a finding this build does not know");
+  service.decode_warnings.push_back(unknown);
+  ServerFixture server(&service);
+  const auto outcome = grparse::collect_asr_document(server.channel(), "small", "clip.mp3",
+                                                     std::string(1024U, 'x'));
+  require(outcome.success, "a transcript with decode warnings still succeeds: " + outcome.error);
+  std::string seen;
+  for (const grparse::Warning& warning : outcome.warnings) seen += "[" + warning.message + "]";
+  require(outcome.warnings.size() == 3, "each decode warning is one warning, got " + seen);
+
+  const grparse::Warning& first = outcome.warnings[0];
+  require(first.code == docv1::WARNING_CODE_SOURCE_STRUCTURE_MALFORMED,
+          "decoder errors are a malformed source the decoder recovered from: " + seen);
+  require(first.count == uint64_t{3}, "the warning stands for the decoder's three error lines");
+  require(first.message.find("Header missing") != std::string::npos,
+          "the decoder's own line stays in the words: " + first.message);
+
+  const grparse::Warning& second = outcome.warnings[1];
+  require(second.code == docv1::WARNING_CODE_SOURCE_INPUT_INCOMPLETE,
+          "less audio than the media states is an incomplete source: " + seen);
+  require(second.duration_kept_ms == uint64_t{41000} &&
+              second.duration_total_ms == uint64_t{60000},
+          "the decoded and the stated length are typed, not only in the words");
+
+  // A code this build does not know is still a finding: it keeps the
+  // peer's words and no typed meaning it does not have.
+  const grparse::Warning& third = outcome.warnings[2];
+  require(third.code == docv1::WARNING_CODE_UNSPECIFIED &&
+              third.message.find("a finding this build does not know") != std::string::npos,
+          "an unknown decode warning code passes its words on: " + seen);
 }
 
 void verify_asr_forwards_pipeline_options() {
@@ -4444,6 +4500,7 @@ int main() {
       verify_asr_request_model_needs_no_deployment_model,
       verify_asr_option_failure_status_survives,
       verify_asr_collects_document,
+      verify_asr_surfaces_decode_warnings,
       verify_asr_forwards_pipeline_options,
       verify_transport_class_collapses_to_unavailable,
       verify_email_collects_document_and_warnings,

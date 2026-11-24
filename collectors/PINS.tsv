@@ -1,5 +1,5 @@
 # file	repo	path	commit
-collectors/asr_service.proto	grpc-asr	proto/ai/pipestream/asr/v1/asr_service.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
+collectors/asr_service.proto	grpc-asr	proto/ai/pipestream/asr/v1/asr_service.proto	390851c65bc4915c6ae960ad4eafbf5e96e04de9
 collectors/calamine_service.proto	grpc-calamine	proto/calamine/v1/calamine_service.proto	8313b3181cb406e636b23c741dc8ae4ee655d8bb
 collectors/calamine_types.proto	grpc-calamine	proto/calamine/v1/types.proto	8313b3181cb406e636b23c741dc8ae4ee655d8bb
 collectors/ebcdic.proto	grpc-ebcdic	proto/ai/pipestream/ebcdic/v1/ebcdic.proto	0e4e2cfa3b6ec2fed6cc8a2e23414ccb2b0ac7f2
