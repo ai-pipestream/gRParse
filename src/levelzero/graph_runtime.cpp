@@ -84,7 +84,7 @@ struct GraphModel::Kernels {
       pack_patches, pack_tokens;
   // kernels_detector.cl
   ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1, conv_planes_xmx,
-      shift_copy;
+      shift_copy, conv_few_terms;
   // kernels_mobile.cl
   ze_kernel_handle_t channel_scale, binary_same;
 };
@@ -121,6 +121,7 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
       k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
       fp16_ ? k("conv_planes_xmx", 64, 1) : nullptr, fp16_ ? k("shift_copy", 256, 1) : nullptr,
+      k("conv_few_terms", 16, 4),
       k("channel_scale", 16, 16), k("binary_same", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
@@ -538,7 +539,10 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             const size_t planes = fp16_ && node.op == IrOp::kConv && c.oh == c.ih && c.ow == c.iw && (c.ih * c.iw) % 32 == 0
                                       ? planes_offsets_[index]
                                       : SIZE_MAX;
-            const size_t xmx = fp16_ && node.op == IrOp::kConv && planes == SIZE_MAX ? xmx_offsets_[index] : SIZE_MAX;
+            // A dense convolution with few terms an output reads them directly, in either precision.
+            const bool few = node.op == IrOp::kConv && c.groups == 1 && planes == SIZE_MAX && c.kh * c.kw > 1 &&
+                             c.ci * c.kh * c.kw <= 32;
+            const size_t xmx = fp16_ && node.op == IrOp::kConv && planes == SIZE_MAX && !few ? xmx_offsets_[index] : SIZE_MAX;
             // Its odd tap offsets read a copy of the input moved down one element, free again after the node.
             const bool shifted = planes != SIZE_MAX && (c.kw > 1 || (c.kh > 1 && c.iw % 2 == 1));
             size_t shifted_offset = 0;
@@ -572,6 +576,10 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
               if (pool) {
                 args(kernels_->pool2d, {P(src), P(dst), P(c), P(max_pool), P(include_pad)});
                 launch(kernels_->pool2d, spatial);
+              } else if (few) {
+                args(kernels_->conv_few_terms, {P(src), P(dst), P(wp), P(bp), P(c)});
+                launch(kernels_->conv_few_terms, {groups_for(size_t(c.ow), 16), groups_for(size_t(c.oh), 4),
+                                                  uint32_t(c.n * ((c.co + 7) / 8))});
               } else if (planes != SIZE_MAX) {
                 const uint16_t* wt = planes_ + planes;
                 const int cip = (c.ci + 31) / 32 * 32, cop = (c.co + 15) / 16 * 16;
