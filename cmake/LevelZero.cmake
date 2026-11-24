@@ -44,8 +44,9 @@ if(BUILD_TESTING)
   set_tests_properties(onnx-initializers-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
   add_dependencies(grparse-tests onnx-initializers-test)
   if(GRPARSE_TABLE_LEVEL_ZERO)
-    # Needs the models and an Intel GPU; skips (77) without either, so the
-    # image build, which has no GPU, stays green.
+    # The GPU path against the CPU path on real table crops.  Needs the
+    # models and an Intel GPU; skips (77) without either, so the image build,
+    # which has no GPU, stays green.
     add_executable(level-zero-table-decoder-test tests/level_zero_table_decoder_test.cpp)
     target_include_directories(level-zero-table-decoder-test PRIVATE
       "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
@@ -53,7 +54,8 @@ if(BUILD_TESTING)
     add_test(NAME level-zero-table-decoder-test COMMAND level-zero-table-decoder-test)
     set_tests_properties(level-zero-table-decoder-test PROPERTIES
       LABELS "grparse;models" TIMEOUT ${GRPARSE_TEST_TIMEOUT} SKIP_RETURN_CODE 77
-      ENVIRONMENT "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models")
+      ENVIRONMENT
+        "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     add_dependencies(grparse-tests level-zero-table-decoder-test)
   endif()
 endif()

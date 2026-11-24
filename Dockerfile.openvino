@@ -238,8 +238,9 @@ COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-clien
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
 COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
 COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
-# The Level Zero table decoder against its double-precision reference, run on
-# a host with an Intel GPU: GRPARSE_TEST_MODELS_DIR=/models grparse-table-decoder-check
+# The table structure GPU path (Level Zero decoder) against the CPU path on
+# real crops, run on a host with an Intel GPU, with GRPARSE_TEST_MODELS_DIR
+# and GRPARSE_TEST_DATA_DIR naming models/ and tests/data/.
 COPY --from=build /out/grparse-table-decoder-check /usr/local/bin/grparse-table-decoder-check
 USER 65532:65532
 EXPOSE 50051
