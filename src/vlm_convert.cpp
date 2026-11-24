@@ -478,8 +478,11 @@ VlmConvertReport convert_vlm_pages(const std::shared_ptr<grpc::Channel>& channel
           if (!raw->error().empty()) detail += ": " + raw->error();
           else if (!raw->text().empty()) detail += " (unmapped text)";
           if (raw->text().empty()) {
-            // A failed model call: the peer's own words are all there is.
-            answers.warnings.push_back(Warning(std::move(detail)).on_page(page_no));
+            // A failed model call: there is no model output for the page,
+            // and the peer's own words are all there is to pass on.
+            answers.warnings.push_back(
+                Warning(docv1::WARNING_CODE_PAGE_MODEL_CALL_FAILED, std::move(detail))
+                    .on_page(page_no));
           } else {
             // The model answered and the peer could not map it. Its output
             // is still the model's reading of the page, so it is kept

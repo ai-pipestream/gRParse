@@ -937,6 +937,9 @@ void verify_raw_page_text_is_kept_and_typed() {
   require(report.warnings.size() == 2 && report.warnings[1].page_no == 3 &&
               report.warnings[1].message == "vlm convert: page 3 raw: endpoint HTTP 503",
           "the failed call keeps the peer's words and its page");
+  require(report.warnings[1].code == docv1::WARNING_CODE_PAGE_MODEL_CALL_FAILED,
+          "the failed call is typed as a failed model call, not left to its words: " +
+              docv1::WarningCode_Name(report.warnings[1].code));
   require(convert.document.generation_traces_size() == 1 &&
               convert.document.generation_traces(0).page_no() == 2 &&
               convert.document.generation_traces(0).text() == raw_text &&
