@@ -421,6 +421,12 @@ class PageScheduler::Impl final {
 
   size_t page_window() const { return options_.page_window; }
   bool captures_page_images() const { return options_.capture_page_images; }
+  ModelPasses model_passes() const {
+    const bool layout = region_detector_ != nullptr;
+    return {.layout = layout,
+            .table_structure = layout && table_structurer_ != nullptr,
+            .figure_classification = layout && figure_classifier_ != nullptr};
+  }
 
  private:
   // The page-image decision for one document: its own tuning when it says,
@@ -1152,5 +1158,6 @@ PageScheduler::Metrics PageScheduler::metrics() const { return impl_->metrics();
 
 size_t PageScheduler::page_window() const { return impl_->page_window(); }
 bool PageScheduler::captures_page_images() const { return impl_->captures_page_images(); }
+PageScheduler::ModelPasses PageScheduler::model_passes() const { return impl_->model_passes(); }
 
 }  // namespace grparse

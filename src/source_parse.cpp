@@ -50,6 +50,7 @@
 #include "grparse/schema_version.h"
 #include "grparse/service_version.h"
 #include "grparse/vlm_convert.h"
+#include "model_pass_report.h"
 #include "parse_support.h"
 #include "structure_validation.h"
 #include "vlm_custom_options.h"
@@ -1560,7 +1561,7 @@ class CvCollector {
       if (std::optional<CollectorOutcome> failure = collect_pages(hashed, &pages)) {
         return std::move(*failure);
       }
-      return assemble(pages);
+      return assemble(pages, hashed);
     } catch (...) {
       return outcome_from_exception(std::current_exception());
     }
@@ -1659,19 +1660,30 @@ class CvCollector {
   }
 
   // Folds the collected pages into one document fragment and keeps the
-  // offset rows its text stream produced.
-  CollectorOutcome assemble(const PageSet& collected) const {
+  // offset rows its text stream produced. `tuning` is the one the pages ran
+  // under: its request switches decide which missing pass the document is
+  // told about.
+  CollectorOutcome assemble(const PageSet& collected,
+                            const PageScheduler::OcrTuning& tuning) const {
     CollectorOutcome outcome;
     std::string plain_text;
     AssemblyCursor assembly_cursor;
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::TextOffset> offsets;
     std::vector<const OcrPage*> assembled_pages;
     assembled_pages.reserve(collected.pages.size());
+    PassDemand pass_demand;
     for (const auto& [page_number, page] : collected.pages) {
       append_page_to_document(*page, page_number, &assembly_cursor,
                               &outcome.document, &plain_text, &offsets,
                               &outcome.warnings);
       assembled_pages.push_back(page.get());
+      pass_demand.note(*page);
+    }
+    // A pass this deployment runs without is said once for the document,
+    // after every page is in, never page by page.
+    for (Warning& warning :
+         disabled_pass_warnings(scheduler_.model_passes(), tuning, pass_demand)) {
+      outcome.warnings.push_back(std::move(warning));
     }
     // A PDF read through several backends claims its vote: one aggregate
     // "protomolt" claim for the document, no-op when nothing voted.
@@ -2612,6 +2624,24 @@ grpc::Status parse_source(const ParseCall& call,
                           surface + ": pipeline NATIVE needs the pdf collector "
                                     "(GRPARSE_PDF_TARGET) for PDF input and does not "
                                     "apply to raster input");
+    }
+    // do_table_structure and do_picture_classification name passes of the
+    // CV path. Set to true on a document that path may read (planned
+    // outright, or behind the pdf routing leg), they are a request this
+    // deployment cannot honour when the pass is off, and the caller hears
+    // that instead of an OK document without it. NATIVE never reaches the
+    // models, so there is nothing to refuse there.
+    const bool cv_may_read =
+        !inputs.native_pipeline &&
+        (routed.pdf_routing ||
+         std::ranges::find(routed.ids, pipestream::parse::v1::COLLECTOR_GRPARSE_CV) !=
+             routed.ids.end());
+    if (cv_may_read) {
+      if (grpc::Status refused =
+              refuse_disabled_passes(request.options(), scheduler.model_passes(), surface);
+          !refused.ok()) {
+        return refused;
+      }
     }
     parsed->collectors_ran = true;
     CoordinatorResult result = run_collectors(

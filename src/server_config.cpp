@@ -112,6 +112,45 @@ std::string configured_mode(const char* name, const char* fallback,
   throw std::invalid_argument(std::string(name) + " must be " + spell_out(allowed));
 }
 
+// How GRPARSE_LAYOUT, GRPARSE_TABLE_STRUCTURE or GRPARSE_FIGURE_CLASSES
+// reads. Unset is on: a pass is something a deployment runs unless it says
+// otherwise. The two ways of being on are kept apart because a pass asked
+// for by name cannot follow GRPARSE_LAYOUT=off quietly, while one nobody
+// named does.
+enum class PassSetting { kOff, kOnByDefault, kOnByName };
+
+// on or off, nothing else. auto was the default before #410 and meant "on
+// when the model file is there": a model volume missing one file then
+// served every document without the pass, behind one line of startup log.
+// It is refused by name instead of read as either word, so a deployment
+// that still sets it decides which of the two it meant.
+PassSetting pass_setting(const char* name) {
+  const char* configured = std::getenv(name);
+  if (configured == nullptr || *configured == '\0') return PassSetting::kOnByDefault;
+  const std::string_view mode = configured;
+  if (mode == "on") return PassSetting::kOnByName;
+  if (mode == "off") return PassSetting::kOff;
+  throw std::invalid_argument(
+      std::string(name) + " must be on or off" +
+      (mode == "auto" ? ": auto is no longer accepted, since it ran without the pass when the "
+                        "model file was missing. on (the default) requires the file and off "
+                        "runs without the pass"
+                      : ""));
+}
+
+// A pass that is on needs its model file, and startup stops here when the
+// file is not there, naming the setting, the path it looked at, and the one
+// way to run without the pass. The engine constructors refuse a missing
+// file too, but name neither the setting nor the way out.
+void require_pass_model(const char* setting, std::string_view model_name,
+                        const std::filesystem::path& model) {
+  if (std::filesystem::exists(model)) return;
+  throw std::invalid_argument(std::format(
+      "{0}=on (the default) needs the {1} model at {2}, which is not there; fetch it "
+      "(models/README.md), or set {0}=off to run without that pass",
+      setting, model_name, model.string()));
+}
+
 std::string collector_env(const char* name) {
   const char* configured = std::getenv(name);
   return configured == nullptr ? std::string() : std::string(configured);
@@ -579,7 +618,7 @@ void report_retired_settings() {
 EngineInventory read_engine_inventory(const BuiltEngines& built,
                                       const EmbeddingConfig& embeddings) {
   const auto switched_off = [](const char* setting) {
-    return configured_mode(setting, "auto", {"auto", "on", "off"}) == "off";
+    return pass_setting(setting) == PassSetting::kOff;
   };
   const bool layout_off = switched_off("GRPARSE_LAYOUT");
   const auto state = [](bool was_built, bool off) {
@@ -745,20 +784,18 @@ std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& mo
 }
 
 std::unique_ptr<LayoutEngine> build_layout_engine(const std::filesystem::path& models_dir) {
-  const std::string mode = configured_mode("GRPARSE_LAYOUT", "auto", {"auto", "on", "off"});
+  const PassSetting setting = pass_setting("GRPARSE_LAYOUT");
   const grparse::LayoutModel selection = grparse::configured_layout_model();
   const std::filesystem::path model = models_dir / grparse::layout_model_file(selection);
-  if (mode == "off") {
+  if (setting == PassSetting::kOff) {
     std::println("gRParse layout: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
   }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse layout: disabled (no {}; see models/README.md)", model.string());
-    return nullptr;
-  }
-  // "on" with a missing file reaches the engine constructor, which throws with
-  // the model path and the selection - the fail-loud startup that setting asks
-  // for.  One session serves every inference worker.
+  require_pass_model("GRPARSE_LAYOUT",
+                     std::format("layout (GRPARSE_LAYOUT_MODEL={})",
+                                 grparse::layout_model_name(selection)),
+                     model);
+  // One session serves every inference worker.
   auto engine = std::make_unique<grparse::LayoutEngine>(model, selection);
   std::println("gRParse layout: enabled ({}, {} labels, one shared session, {})",
                grparse::layout_model_name(selection), engine->labels().size(), model.string());
@@ -767,28 +804,23 @@ std::unique_ptr<LayoutEngine> build_layout_engine(const std::filesystem::path& m
 
 std::unique_ptr<TableStructureEnginePool> build_table_structure_pool(
     const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
-  const std::string mode =
-      configured_mode("GRPARSE_TABLE_STRUCTURE", "auto", {"auto", "on", "off"});
+  const PassSetting setting = pass_setting("GRPARSE_TABLE_STRUCTURE");
   const std::filesystem::path model = models_dir / "slanet_plus.onnx";
-  if (mode == "off") {
+  if (setting == PassSetting::kOff) {
     std::println("gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)");
     return nullptr;
   }
   if (!layout_active) {
-    if (mode == "on") {
+    if (setting == PassSetting::kOnByName) {
       throw std::invalid_argument(
           "GRPARSE_TABLE_STRUCTURE=on needs layout enabled to find table regions");
     }
-    if (std::filesystem::exists(model)) {
-      std::println("gRParse table structure: disabled (layout is disabled)");
-    }
+    // Said whether or not the model file is there: the pass is off either
+    // way, and the log is where an operator reads which passes run.
+    std::println("gRParse table structure: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
   }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse table structure: disabled (no {}; see models/README.md)",
-                 model.string());
-    return nullptr;
-  }
+  require_pass_model("GRPARSE_TABLE_STRUCTURE", "table structure", model);
   auto pool = std::make_unique<grparse::TableStructureEnginePool>(model, worker_count);
   std::println("gRParse table structure: enabled ({} sessions, {})", pool->size(),
                model.string());
@@ -797,28 +829,21 @@ std::unique_ptr<TableStructureEnginePool> build_table_structure_pool(
 
 std::unique_ptr<FigureClassifierPool> build_figure_classifier_pool(
     const std::filesystem::path& models_dir, size_t worker_count, bool layout_active) {
-  const std::string mode =
-      configured_mode("GRPARSE_FIGURE_CLASSES", "auto", {"auto", "on", "off"});
+  const PassSetting setting = pass_setting("GRPARSE_FIGURE_CLASSES");
   const std::filesystem::path model = models_dir / "figure_classifier.onnx";
-  if (mode == "off") {
+  if (setting == PassSetting::kOff) {
     std::println("gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)");
     return nullptr;
   }
   if (!layout_active) {
-    if (mode == "on") {
+    if (setting == PassSetting::kOnByName) {
       throw std::invalid_argument(
           "GRPARSE_FIGURE_CLASSES=on needs layout enabled to find figure regions");
     }
-    if (std::filesystem::exists(model)) {
-      std::println("gRParse figure classes: disabled (layout is disabled)");
-    }
+    std::println("gRParse figure classes: disabled (GRPARSE_LAYOUT=off)");
     return nullptr;
   }
-  if (mode == "auto" && !std::filesystem::exists(model)) {
-    std::println("gRParse figure classes: disabled (no {}; see models/README.md)",
-                 model.string());
-    return nullptr;
-  }
+  require_pass_model("GRPARSE_FIGURE_CLASSES", "figure classifier", model);
   auto pool = std::make_unique<grparse::FigureClassifierPool>(model, worker_count);
   std::println("gRParse figure classes: enabled ({} sessions, {})", pool->size(),
                model.string());

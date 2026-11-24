@@ -877,9 +877,14 @@ void verify_parity_options_and_confidence(TestServer* server) {
   options->set_do_pdf_heading_hierarchy(true);
   options->mutable_pdf_heading_hierarchy_options()->set_max_level(3);
   options->set_ocr_engine(pipestream::parse::v1::OCR_ENGINE_RAPIDOCR);
-  options->set_do_table_structure(true);
+  // This server's scheduler runs no layout, table-structure or figure
+  // model, so the two pass switches are populated with the value it can
+  // honour. true is turned down here, and accepted where the passes run:
+  // verify_an_explicit_request_for_a_disabled_pass_is_rejected and
+  // verify_a_disabled_model_pass_is_warned_once_per_document.
+  options->set_do_table_structure(false);
   options->set_table_mode(pipestream::parse::v1::TABLE_FORMER_MODE_ACCURATE);
-  options->set_do_picture_classification(true);
+  options->set_do_picture_classification(false);
   options->add_ocr_lang("en");
   options->set_pdf_backend(pipestream::parse::v1::PDF_BACKEND_DOCLING_PARSE);
   options->set_table_cell_matching(true);
@@ -7721,6 +7726,289 @@ void verify_disabled_embeddings_on_every_chunk_rpc(TestServer* server) {
   require(server->recognizer_calls() == parses, "no refused task parsed anything");
 }
 
+// ---------------------------------------------------------------------------
+// A model pass the deployment runs without (#410). Two pages that each hold
+// a paragraph, a table and a picture, so a warning raised per page would
+// arrive twice. Pixel (0, 0) of each raster is its page number.
+
+constexpr int kPassPages = 2;
+
+class PassSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return kPassPages; }
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(kSyntheticHeight, kSyntheticWidth, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+};
+
+class PassRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    const std::string page = std::to_string(image.at<unsigned char>(0, 0));
+    const auto line = [](std::string text, int left, int top, int right, int bottom) {
+      return grparse::OcrLine{
+          std::move(text), {{left, top}, {right, top}, {right, bottom}, {left, bottom}}, 0.9F};
+    };
+    return {kSyntheticWidth, kSyntheticHeight,
+            {line("Findings on page " + page, 40, 100, 400, 120),
+             line("Metric " + page, 40, 300, 240, 320), line("Value " + page, 320, 300, 520, 320),
+             line("Total " + page, 40, 360, 240, 380), line("Sum " + page, 320, 360, 520, 380)}};
+  }
+};
+
+class PassDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
+    std::vector<grparse::LayoutRegion> regions = {{"text", 0.9F, 36, 96, 564, 124}};
+    if (floats.load()) {
+      regions.push_back({"table", 0.9F, 36, 296, 564, 384});
+      regions.push_back({"picture", 0.9F, 36, 500, 300, 700});
+    }
+    return regions;
+  }
+  // False leaves the pages with their paragraph alone: nothing for the
+  // table or the figure pass to have worked on.
+  std::atomic<bool> floats{true};
+};
+
+class PassStructurer final : public grparse::TableStructurer {
+ public:
+  grparse::TableStructure recognize(const cv::Mat&) override {
+    grparse::TableStructure structure;
+    structure.rows = 1;
+    structure.cols = 1;
+    structure.cells = {grparse::StructuredCell{0, 0, 1, 1, false, 0, 0, 2, 2}};
+    return structure;
+  }
+};
+
+class PassClassifier final : public grparse::FigureClassifierBase {
+ public:
+  std::vector<grparse::FigureClass> classify(const cv::Mat&) override {
+    return {{"bar_chart", 0.9F}, {"other", 0.1F}};
+  }
+};
+
+// TestServer's shape with only the model passes the caller names installed,
+// which is how GRPARSE_LAYOUT, GRPARSE_TABLE_STRUCTURE and
+// GRPARSE_FIGURE_CLASSES=off leave a deployment's scheduler.
+class PassServer final {
+ public:
+  PassServer(bool layout, bool table_structure, bool figure_classes)
+      : scheduler_(recognizer_, {2, 3, 2, 3, 2, 2, 2},
+                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                     return std::make_shared<PassSource>();
+                   },
+                   layout ? &detector_ : nullptr, table_structure ? &structurer_ : nullptr,
+                   figure_classes ? &classifier_ : nullptr),
+        parser_service_(scheduler_,
+                        std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})),
+        streaming_service_(scheduler_,
+                           std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(&parser_service_);
+    builder.RegisterService(&streaming_service_);
+    server_ = builder.BuildAndStart();
+    if (!server_ || port_ == 0) throw std::runtime_error("pass server failed to start");
+  }
+
+  ~PassServer() {
+    server_->Shutdown(std::chrono::system_clock::now() + 2s);
+    server_->Wait();
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseStreamingService::Stub> stub() const {
+    return pipestream::parse::v1::ParseStreamingService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  std::unique_ptr<pipestream::parse::v1::ParseService::Stub> unary_stub() const {
+    return pipestream::parse::v1::ParseService::NewStub(
+        grpc::CreateChannel("127.0.0.1:" + std::to_string(port_), grpc::InsecureChannelCredentials()));
+  }
+
+  void set_floats(bool floats) { detector_.floats.store(floats); }
+
+ private:
+  PassRecognizer recognizer_;
+  PassDetector detector_;
+  PassStructurer structurer_;
+  PassClassifier classifier_;
+  grparse::PageScheduler scheduler_;
+  grparse::DocumentParserService parser_service_;
+  grparse::DocumentStreamingService streaming_service_;
+  std::unique_ptr<grpc::Server> server_;
+  int port_ = 0;
+};
+
+// The pass-disabled codes among `warnings`, in the order they arrived, after
+// checking each is a whole-document warning from the CV path with words for
+// a person beside the code.
+template <typename Warnings>
+std::vector<docv1::WarningCode> disabled_pass_codes(const Warnings& warnings,
+                                                    const std::string& label) {
+  std::vector<docv1::WarningCode> codes;
+  for (const docv1::CollectorWarning& warning : warnings) {
+    if (warning.code() != docv1::WARNING_CODE_LAYOUT_PASS_DISABLED &&
+        warning.code() != docv1::WARNING_CODE_TABLE_STRUCTURE_PASS_DISABLED &&
+        warning.code() != docv1::WARNING_CODE_FIGURE_CLASSIFICATION_PASS_DISABLED) {
+      continue;
+    }
+    require(warning.source().collector() == "grparse-cv",
+            label + ": the CV path is the source; got " + warning.source().collector());
+    require(!warning.has_page_no() && !warning.has_item_ref(),
+            label + ": the warning is about the document, not one page or item: " +
+                warning.ShortDebugString());
+    require(warning.message().contains("this deployment runs without"),
+            label + ": the message says the deployment has no such model: " + warning.message());
+    codes.push_back(warning.code());
+  }
+  return codes;
+}
+
+std::string code_names(const std::vector<docv1::WarningCode>& codes) {
+  std::string names = "[";
+  for (const docv1::WarningCode code : codes) {
+    names += (names.size() > 1 ? ", " : "") + docv1::WarningCode_Name(code);
+  }
+  return names + "]";
+}
+
+// The unary ConvertSource and the page stream of one document must raise
+// exactly `expected`, each once.
+void require_disabled_pass_codes(const PassServer& server,
+                                 const pipestream::parse::v1::ConvertSourceRequest& request,
+                                 const std::vector<docv1::WarningCode>& expected,
+                                 const std::string& label) {
+  auto unary = server.unary_stub();
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = unary->ConvertSource(&context, request, &response);
+  require(status.ok(), label + ": unary conversion failed: " + status.error_message());
+  const docv1::Document& document = response.response().document().doc();
+  require(document.pages_size() == kPassPages, label + ": both pages were read");
+  const auto unary_codes = disabled_pass_codes(document.warnings(), label + " unary");
+  require(unary_codes == expected, label + ": Document.warnings carries " + code_names(expected) +
+                                       ", each once; got " + code_names(unary_codes));
+}
+
+void require_streamed_disabled_pass_codes(const PassServer& server,
+                                          const std::vector<docv1::WarningCode>& expected,
+                                          const std::string& label) {
+  auto client = server.stub();
+  const StreamRun run = run_chunks(client.get(), {chunk(true)});
+  require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete(),
+          label + ": the stream closes with the complete event");
+  const auto& complete = run.events.back().complete();
+  const auto codes = disabled_pass_codes(complete.typed_warnings(), label + " stream");
+  require(codes == expected, label + ": the complete event carries " + code_names(expected) +
+                                 ", each once; got " + code_names(codes));
+  require(complete.typed_warnings_size() == complete.warnings_size(),
+          label + ": every typed warning keeps its text twin");
+}
+
+// A pass that is off by deployment is said on every document it would have
+// worked on, once per document and typed, on the unary and the streamed
+// surface alike. Without layout nothing is told apart, which is one
+// warning, not three: there are no tables or pictures for the other two
+// passes to miss. With layout on, a document is told about the table or
+// figure pass only when it holds a table or a picture and the request did
+// not switch that pass off itself.
+void verify_a_disabled_model_pass_is_warned_once_per_document() {
+  const docv1::WarningCode layout = docv1::WARNING_CODE_LAYOUT_PASS_DISABLED;
+  const docv1::WarningCode tables = docv1::WARNING_CODE_TABLE_STRUCTURE_PASS_DISABLED;
+  const docv1::WarningCode figures = docv1::WARNING_CODE_FIGURE_CLASSIFICATION_PASS_DISABLED;
+  {
+    PassServer server(/*layout=*/false, /*table_structure=*/false, /*figure_classes=*/false);
+    require_disabled_pass_codes(server, unary_request(), {layout}, "no layout");
+    require_streamed_disabled_pass_codes(server, {layout}, "no layout");
+  }
+  {
+    PassServer server(/*layout=*/true, /*table_structure=*/false, /*figure_classes=*/false);
+    require_disabled_pass_codes(server, unary_request(), {tables, figures}, "layout only");
+    require_streamed_disabled_pass_codes(server, {tables, figures}, "layout only");
+
+    // The request's own false is the caller's choice, not the deployment's.
+    auto declined = unary_request();
+    declined.mutable_request()->mutable_options()->set_do_table_structure(false);
+    require_disabled_pass_codes(server, declined, {figures}, "tables declined");
+    declined.mutable_request()->mutable_options()->set_do_picture_classification(false);
+    require_disabled_pass_codes(server, declined, {}, "both declined");
+
+    // No table and no picture: neither pass had anything to work on.
+    server.set_floats(false);
+    require_disabled_pass_codes(server, unary_request(), {}, "paragraphs only");
+    require_streamed_disabled_pass_codes(server, {}, "paragraphs only");
+  }
+  {
+    PassServer server(/*layout=*/true, /*table_structure=*/true, /*figure_classes=*/false);
+    require_disabled_pass_codes(server, unary_request(), {figures}, "no figure classifier");
+  }
+  {
+    PassServer server(/*layout=*/true, /*table_structure=*/true, /*figure_classes=*/true);
+    auto asked = unary_request();
+    asked.mutable_request()->mutable_options()->set_do_table_structure(true);
+    asked.mutable_request()->mutable_options()->set_do_picture_classification(true);
+    require_disabled_pass_codes(server, asked, {}, "every pass on");
+    require_streamed_disabled_pass_codes(server, {}, "every pass on");
+  }
+}
+
+// A request that asks by name for a pass the deployment runs without is
+// turned down, typed, instead of answered OK without it: do_table_structure
+// and do_picture_classification set to true used to get the same document
+// as a request that set neither.
+void verify_an_explicit_request_for_a_disabled_pass_is_rejected() {
+  namespace parsev1 = pipestream::parse::v1;
+  const auto rejected = [](const PassServer& server, const parsev1::ConvertSourceRequest& request,
+                           const std::string& option, const std::string& label) {
+    auto client = server.unary_stub();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    parsev1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            label + ": " + option + ": true must be rejected when the pass is off; got " +
+                (status.ok() ? std::string("OK") : status.error_message()));
+    require(status.error_message().contains(option),
+            label + ": the message names the option: " + status.error_message());
+    google::rpc::Status rich;
+    parsev1::OptionRejection rejection;
+    require(rich.ParseFromString(status.error_details()) && rich.details_size() == 1 &&
+                rich.details(0).UnpackTo(&rejection),
+            label + ": the refusal carries an OptionRejection");
+    require(rejection.option_path() == option &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+                rejection.rejected_value_raw() == "true",
+            label + ": the OptionRejection names the option and its value; got " +
+                rejection.ShortDebugString());
+  };
+  const auto asking = [](bool tables, bool figures) {
+    auto request = unary_request();
+    if (tables) request.mutable_request()->mutable_options()->set_do_table_structure(true);
+    if (figures) request.mutable_request()->mutable_options()->set_do_picture_classification(true);
+    return request;
+  };
+  {
+    PassServer server(/*layout=*/true, /*table_structure=*/false, /*figure_classes=*/false);
+    rejected(server, asking(true, false), "do_table_structure", "layout only");
+    rejected(server, asking(false, true), "do_picture_classification", "layout only");
+  }
+  {
+    // Without layout there are no regions for either pass to run on.
+    PassServer server(/*layout=*/false, /*table_structure=*/false, /*figure_classes=*/false);
+    rejected(server, asking(true, false), "do_table_structure", "no layout");
+    rejected(server, asking(false, true), "do_picture_classification", "no layout");
+  }
+  {
+    PassServer server(/*layout=*/true, /*table_structure=*/true, /*figure_classes=*/false);
+    rejected(server, asking(true, true), "do_picture_classification", "no figure classifier");
+  }
+}
+
 }  // namespace
 
 // The digests the reactor feeds chunk by chunk equal the whole-upload
@@ -8101,6 +8389,8 @@ int main() {
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_on_every_chunk_rpc(&server);
+        verify_a_disabled_model_pass_is_warned_once_per_document();
+        verify_an_explicit_request_for_a_disabled_pass_is_rejected();
       },
   });
 }

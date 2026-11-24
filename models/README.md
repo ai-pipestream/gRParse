@@ -24,8 +24,13 @@ scripts/fetch-models-test.sh                   # offline self-test of the script
 ```
 
 `--verify` touches nothing: it exits 0 when every present file matches the
-manifest and the four OCR files (the only ones the server refuses to start
-without) are present; an optional file that is absent is listed as such.
+manifest and the four OCR files are present; any other file that is absent
+is listed as such. The server needs more than the script insists on: with
+its default settings it also refuses to start without the selected layout
+model, `slanet_plus.onnx` and `figure_classifier.onnx`, and each of those
+three is only optional to a deployment that switches its pass off
+(`GRPARSE_LAYOUT=off`, `GRPARSE_TABLE_STRUCTURE=off`,
+`GRPARSE_FIGURE_CLASSES=off`).
 The figure classifier patch step needs python with the `onnx` module; the
 script uses `uv run --with onnx --with onnxruntime --with numpy python`
 when `uv` is installed and plain `python3` otherwise (failing with the
@@ -63,12 +68,15 @@ the four matched: the recognizer's output indexes this dictionary.
 - `ch_PP-OCRv3_rec_infer.onnx` (recognition)
 - `ppocr_keys_v1.txt` (dictionary)
 
-## Layout (optional; enables region labels)
+## Layout (required unless `GRPARSE_LAYOUT=off`; region labels)
 
 `GRPARSE_LAYOUT_MODEL` selects which detector runs: `heron` (the default) or
 `picodet`. Only the selected model's file has to be present; when it is absent
-the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
-`GRPARSE_LAYOUT=on`, naming the selection and the path it looked at.
+the server fails startup under `GRPARSE_LAYOUT=on` (the default), naming the
+setting, the selection and the path it looked at. `GRPARSE_LAYOUT=off` is the
+only way to run without layout; every document the CV path then reads carries
+a typed `WARNING_CODE_LAYOUT_PASS_DISABLED` warning. `auto` is no longer
+accepted.
 
 - `layout_heron.onnx` — 17-label document layout detector, RT-DETR-v2
   architecture, published as ONNX at
@@ -131,13 +139,16 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   NMS at IoU 0.5. Constants mirror RapidLayout's `pp` handler, which is the
   reference `layout-engine-test` goldens were generated with.
 
-  When neither layout file is present the server runs without layout labels.
   The selected model loads into a single session on the configured execution
   provider (CUDA, OpenVINO, or CPU) and every inference worker shares it;
   unlike the OCR sessions it is not pooled per worker, because the weights are
   large and `Ort::Session::Run` is thread-safe.
 
-## Table structure (optional; enables cell spans and header rows)
+## Table structure (required unless `GRPARSE_TABLE_STRUCTURE=off`; cell spans and header rows)
+
+With the pass off, table cells come from line geometry alone, and a document
+that holds a table says so in a typed
+`WARNING_CODE_TABLE_STRUCTURE_PASS_DISABLED` warning.
 
 - `slanet_plus.onnx` — SLANet-plus table structure recognition from
   PaddleOCR's PP-StructureV3 line, ONNX export published by
@@ -180,7 +191,11 @@ the server disables layout under `GRPARSE_LAYOUT=auto` and fails startup under
   3.8e-6 measured). The CPU and OpenVINO images load
   `slanet_plus.onnx` itself and ignore these files.
 
-## Figure classifier (optional; enables picture class annotations)
+## Figure classifier (required unless `GRPARSE_FIGURE_CLASSES=off`; picture class annotations)
+
+With the pass off, pictures carry no class, and a document that holds a
+picture says so in a typed
+`WARNING_CODE_FIGURE_CLASSIFICATION_PASS_DISABLED` warning.
 
 - `figure_classifier.onnx` — document figure classifier v2.5 (EfficientNet-B0,
   MIT license), published as ONNX at

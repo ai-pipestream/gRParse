@@ -39,6 +39,7 @@
 #include "grparse/pdf_form_widgets.h"
 #include "grparse/prometheus_metrics.h"
 #include "grparse/stream_delta.h"
+#include "model_pass_report.h"
 #include "parse_support.h"
 #include "source_parse.h"
 #include "storage/connectors.h"
@@ -753,6 +754,7 @@ class DocumentStreamReactor final
       std::lock_guard<std::mutex> lock(mutex_);
       cv_started_ = std::chrono::steady_clock::now();
       cv_active_ = true;
+      cv_tuning_ = tuning;
     }
     try {
       const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
@@ -1250,6 +1252,7 @@ class DocumentStreamReactor final
       event->message.set_total_pages(total_pages_);
       append_page_data(*page_it->second, next_page_, &assembly_cursor_, event->message.mutable_page(),
                        &assembly_warnings_);
+      pass_demand_.note(*page_it->second);
       page_scores_.push_back(page_confidence(*page_it->second, next_page_));
       fold_locked(event->message.page());
       fold_has_cv_ = true;
@@ -1277,6 +1280,14 @@ class DocumentStreamReactor final
     if (status.ok() && (next_page_ != total_pages_ + 1 || !completed_pages_.empty())) {
       status = grpc::Status(grpc::StatusCode::INTERNAL,
                             "scheduler completed before every page was assembled");
+    }
+    if (status.ok()) {
+      // A pass this deployment runs without is said once for the document,
+      // on the complete event, now that every page has shown what it held.
+      for (Warning& warning :
+           disabled_pass_warnings(scheduler_.model_passes(), cv_tuning_, pass_demand_)) {
+        assembly_warnings_.push_back(std::move(warning));
+      }
     }
     record_collector_done_cv_locked(status);
     if (status.ok()) {
@@ -1757,6 +1768,11 @@ class DocumentStreamReactor final
   // note_cv_route), held for the complete event.
   std::vector<Warning> route_warnings_;
   std::optional<pipestream::document::v1::DocumentMeta> inspector_source_meta_;
+  // What the CV pages held for the table and figure passes, and the tuning
+  // they ran under: together they decide which pass the deployment runs
+  // without is named on the complete event (model_pass_report.h).
+  PassDemand pass_demand_;
+  PageScheduler::OcrTuning cv_tuning_;
   grpc::Status finish_status_;
   std::vector<pipestream::parse::v1::Collector> requested_collectors_;
   // Recognition fields resolved from the first chunk that set each one;
