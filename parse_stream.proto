@@ -566,6 +566,10 @@ message StreamSourceOutputs {
   // everything the chunker serializes, and when no chunks were asked for.
   // What an export left out rides inside `exports`, as on the unary surface.
   optional RenderOmissions chunk_omissions = 6;
+  // The options the request set that were accepted and not applied as named
+  // (see ConvertDocumentResponse.option_notices). The same list for every
+  // source of the request.
+  repeated OptionNotice option_notices = 7;
 }
 
 // StreamErrorCode is the stable machine class of a StreamError.

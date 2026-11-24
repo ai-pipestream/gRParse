@@ -10,6 +10,7 @@ install(TARGETS grparse-embed-text RUNTIME DESTINATION bin)
 target_sources(grparse_core PRIVATE
   src/embedding.cpp
   src/embeddings/engine.cpp
+  src/embeddings/failure.cpp
   src/embeddings/cpu_backend.cpp)
 
 if(GRPARSE_EMBED_OPENVINO)

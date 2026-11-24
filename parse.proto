@@ -303,6 +303,8 @@ message StreamChunksSummary {
   // As ChunkDocumentResponse.chunk_omissions, for the chunk messages that
   // preceded this summary.
   optional RenderOmissions chunk_omissions = 5;
+  // As ChunkDocumentResponse.option_notices.
+  repeated OptionNotice option_notices = 6;
 }
 
 message ChunkHierarchicalSourceAsyncRequest {

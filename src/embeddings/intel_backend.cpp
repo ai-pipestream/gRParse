@@ -7,8 +7,25 @@
 
 namespace grparse::embedding::detail {
 namespace {
+// What a failed OpenVINO call throws: the status code under OpenVINO's own
+// name for it, and the runtime's last error message, which is where "no such
+// device", "cannot open the render node" and "out of memory" differ. The text
+// stays on the server: startup prints it and the engine logs it (failure.h),
+// and a caller is never sent it. ov_get_last_err_msg returns a copy the
+// caller frees, or null when the runtime recorded no message. The runtime
+// keeps one last message for the process and a rejected argument does not
+// replace it, so the status beside it is what says which failure this was.
 void check(ov_status_e status) {
-  if (status != OK) throw std::runtime_error("native OpenVINO embedding operation failed");
+  if (status == OK) return;
+  std::string message = "native OpenVINO embedding operation failed: status " +
+                        std::to_string(static_cast<int>(status)) + " (" +
+                        ov_get_error_info(status) + ")";
+  const std::unique_ptr<const char, void (*)(const char*)> last(ov_get_last_err_msg(), ov_free);
+  if (last != nullptr && *last != '\0') {
+    message += ": ";
+    message += last.get();
+  }
+  throw std::runtime_error(message);
 }
 
 template <typename T, void (*Free)(T*)>

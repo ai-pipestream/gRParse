@@ -28,6 +28,7 @@
 #include "grparse/document_render.h"
 #include "grparse/document_repair.h"
 #include "grparse/inflight_bytes.h"
+#include "grparse/ocr_preset_policy.h"
 #include "grparse/page_scheduler.h"
 #include "grparse/remote_fetch_slots.h"
 #include "option_rejection.h"
@@ -84,6 +85,10 @@ struct SourceParse {
   // The structural rule findings, when the request asked for a REPORT.
   google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::StructureFinding>
       structure_findings;
+  // The options the request set that were accepted and not applied as named
+  // (option_notices below). Known once the options validated, so every
+  // parse path carries them, whichever leg read the source.
+  google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::OptionNotice> option_notices;
   // A remote source's fetched copy, charged once the fetch returned; held
   // until the surface is done with this parse.
   InflightCharge fetched_charge;
@@ -130,6 +135,21 @@ ai::pipestream::enrich::v1::CodeFormulaPreset enrich_code_formula_preset(
 
 grpc::Status validate_options(const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface);
+
+// The options `options` sets that validate_options accepts and that no leg
+// applies as named, one typed notice each, in the order of their field
+// numbers in ConvertDocumentOptions: pdf_backend and table_mode (one
+// implementation serves every value), picture_description_local.prompt and
+// .generation_config (not forwarded to the enrich peer), ocr_preset when
+// `ocr_preset`, the preset it resolved to, names languages (they select no
+// model), and picture_classification_custom_config.threshold (read as the
+// picture-description confidence gate, never by the figure classifier).
+// Docling clients set several of these on every request, so they are served
+// and told, not turned away. A field explicitly set to its UNSPECIFIED
+// value, an empty prompt and an empty map ask for nothing and get no notice.
+google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::OptionNotice> option_notices(
+    const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
+    const OcrPreset& ocr_preset);
 
 // The bytes a request's sources decode to while the parse holds them: each
 // FileSource's base64 payload decoded (three bytes per four characters).

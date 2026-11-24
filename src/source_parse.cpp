@@ -269,7 +269,8 @@ grpc::Status validate_ocr_engine(const pipestream::parse::v1::ConvertDocumentOpt
 
 // One RapidTable model is installed; FAST and ACCURATE both use it. The
 // field is accepted so Docling clients that always set table_mode are not
-// turned away for a distinction this binary does not host.
+// turned away for a distinction this binary does not host, and the response
+// says the value selected nothing (option_notices).
 grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                  const std::string& surface) {
   if (!options.has_table_mode()) return grpc::Status::OK;
@@ -283,7 +284,8 @@ grpc::Status validate_table_mode(const pipestream::parse::v1::ConvertDocumentOpt
 // PDFs are read here by the PdfBackendService GRPARSE_PDF_BACKEND names, not
 // by Docling's Python backends. Named PdfBackend values are accepted so
 // clients that always set the field are not turned away; the deployment's
-// configured backend reads the document either way.
+// configured backend reads the document either way, and the response says
+// so (option_notices).
 grpc::Status validate_pdf_backend(const pipestream::parse::v1::ConvertDocumentOptions& options,
                                   const std::string& surface) {
   if (!options.has_pdf_backend()) return grpc::Status::OK;
@@ -446,7 +448,8 @@ std::expected<std::vector<ai::pipestream::enrich::v1::VlmHeader>, grpc::Status> 
 // api's prompt, params and headers in the enrich service's typed form).
 // Local and API are mutually exclusive. The local engine's prompt and
 // generation_config are accepted for Docling clients (ScalarValue maps) even
-// though the enrich dial does not forward them.
+// though the enrich dial does not forward them; the response names both as
+// not forwarded (option_notices).
 grpc::Status validate_picture_description_engines(
     const pipestream::parse::v1::ConvertDocumentOptions& options, const std::string& surface) {
   if (options.has_picture_description_local() && options.has_picture_description_api()) {
@@ -1170,6 +1173,60 @@ uint64_t decoded_source_bytes(
 
 // `surface` names the RPC in the rejections so a caller learns which of the
 // conversion surfaces turned its request down.
+google::protobuf::RepeatedPtrField<pipestream::parse::v1::OptionNotice> option_notices(
+    const pipestream::parse::v1::ConvertDocumentOptions& options, const OcrPreset& ocr_preset) {
+  namespace parsev1 = pipestream::parse::v1;
+  google::protobuf::RepeatedPtrField<parsev1::OptionNotice> notices;
+  const auto notice = [&notices](std::string path, parsev1::OptionNoticeReason reason,
+                                 std::string message) {
+    parsev1::OptionNotice* one = notices.Add();
+    one->set_option_path(std::move(path));
+    one->set_reason(reason);
+    one->set_message(std::move(message));
+  };
+  // In the order of the fields in ConvertDocumentOptions, which is the order
+  // the response promises.
+  if (options.has_pdf_backend() && options.pdf_backend() != parsev1::PDF_BACKEND_UNSPECIFIED) {
+    notice("pdf_backend", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "pdf_backend selects nothing: the PDF backend this deployment configures "
+           "(GRPARSE_PDF_BACKEND) reads every PDF");
+  }
+  if (options.has_table_mode() &&
+      options.table_mode() != parsev1::TABLE_FORMER_MODE_UNSPECIFIED) {
+    notice("table_mode", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "table_mode selects nothing: one table-structure model serves ACCURATE and FAST");
+  }
+  if (options.has_picture_description_local()) {
+    const auto& local = options.picture_description_local();
+    if (local.has_prompt() && !local.prompt().empty()) {
+      notice("picture_description_local.prompt",
+             parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED,
+             "picture_description_local.prompt is accepted and not forwarded: the enrich "
+             "service that describes pictures is not sent it");
+    }
+    if (!local.generation_config().empty()) {
+      notice("picture_description_local.generation_config",
+             parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED,
+             "picture_description_local.generation_config is accepted and not forwarded: the "
+             "enrich service that describes pictures is not sent it");
+    }
+  }
+  if (options.has_ocr_preset() && !options.ocr_preset().empty() && !ocr_preset.lang.empty()) {
+    notice("ocr_preset", parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+           "ocr_preset '" + ocr_preset.id +
+               "' names languages, which select nothing: the installed OCR models read "
+               "Chinese and English whatever a preset lists");
+  }
+  if (options.picture_classification_custom_config().contains("threshold")) {
+    notice("picture_classification_custom_config.threshold",
+           parsev1::OPTION_NOTICE_REASON_READ_BY_ANOTHER_STAGE,
+           "picture_classification_custom_config.threshold does not reach the figure "
+           "classifier: it is read only as the picture-description confidence gate, and only "
+           "when no picture_description option sets one");
+  }
+  return notices;
+}
+
 grpc::Status validate_options(const pipestream::parse::v1::ConvertDocumentOptions& options,
                               const std::string& surface) {
   const grpc::Status retired_status = retired_option_status(options, surface);
@@ -2383,10 +2440,11 @@ grpc::Status parse_source(const ParseCall& call,
     // A name and policy gate only: every kind this server runs is the one
     // RapidOCR set, which reads Chinese and English whatever the preset's
     // lang says, so the resolved preset selects nothing further
-    // (ocr_preset_policy.h).
-    if (auto ocr = ocr_policy.resolve(request.options(), surface); !ocr.has_value()) {
-      return ocr.error();
-    }
+    // (ocr_preset_policy.h); a preset that names languages is one of the
+    // options the response reports as not applied.
+    auto ocr = ocr_policy.resolve(request.options(), surface);
+    if (!ocr.has_value()) return ocr.error();
+    parsed->option_notices = option_notices(request.options(), *ocr);
   }
   auto picture_description =
       request_picture_description_call(request.options(), *chart_extraction, surface);

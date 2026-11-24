@@ -43,6 +43,10 @@ struct OcrPreset {
   std::string id;
   ai::pipestream::parse::v1::OcrEngineKind kind =
       ai::pipestream::parse::v1::OCR_ENGINE_KIND_AUTO;
+  // The languages a custom preset names (OcrPresetSpec.lang); empty for the
+  // built-in presets. They select nothing, so a request that resolves to a
+  // preset carrying any is told so (OptionNotice on "ocr_preset").
+  std::vector<std::string> lang = {};
 };
 
 struct OcrPresetPolicySettings {

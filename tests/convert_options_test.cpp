@@ -9,6 +9,7 @@
 #include <string_view>
 #include <system_error>
 #include <utility>
+#include <vector>
 
 #include <google/protobuf/descriptor.h>
 #include <google/protobuf/unknown_field_set.h>
@@ -18,6 +19,7 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "google/rpc/status.pb.h"
 #include "grparse/chart_extraction_policy.h"
+#include "grparse/ocr_preset_policy.h"
 #include "grparse/vlm_convert.h"
 #include "support/check.h"
 
@@ -236,6 +238,122 @@ void verify_unread_options_are_rejected_unless_default() {
     options.set_chunking_preset("hierarchical");
     const grpc::Status status = grparse::validate_options(options, kSurface);
     require(status.ok(), status.error_message());
+  }
+}
+
+// One notice as the tests compare it: the option and why it was not applied.
+struct Noticed {
+  std::string option_path;
+  parsev1::OptionNoticeReason reason;
+
+  bool operator==(const Noticed&) const = default;
+};
+
+std::string shown_notices(const std::vector<Noticed>& notices) {
+  std::string text;
+  for (const Noticed& notice : notices) {
+    text += " " + notice.option_path + "=" + parsev1::OptionNoticeReason_Name(notice.reason);
+  }
+  return text.empty() ? " (none)" : text;
+}
+
+// The notices `options` earns under `policy`, after checking that the
+// options still validate: a notice is for an option the server accepts.
+std::vector<Noticed> notices_for(
+    const parsev1::ConvertDocumentOptions& options,
+    const grparse::OcrPresetPolicy& policy = grparse::default_ocr_preset_policy()) {
+  const grpc::Status status = grparse::validate_options(options, kSurface);
+  require(status.ok(), "a noticed option is still accepted: " + status.error_message());
+  const auto preset = policy.resolve(options, kSurface);
+  require(preset.has_value(), "the OCR preset resolves");
+  std::vector<Noticed> notices;
+  for (const parsev1::OptionNotice& notice : grparse::option_notices(options, *preset)) {
+    require(!notice.message().empty(),
+            "the notice on " + notice.option_path() + " says what happened in words too");
+    notices.push_back({notice.option_path(), notice.reason()});
+  }
+  return notices;
+}
+
+void require_notices(const std::vector<Noticed>& actual, const std::vector<Noticed>& expected,
+                     const std::string& what) {
+  require(actual == expected,
+          what + "\nexpected:" + shown_notices(expected) + "\nactual:  " + shown_notices(actual));
+}
+
+// An option that passes validation and changes nothing must be named on the
+// response, with a typed reason: Docling clients send these on every request,
+// so they are served, and told which of their options selected nothing.
+void verify_accepted_and_ignored_options_are_noticed() {
+  const auto single = parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION;
+  const auto not_forwarded = parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED;
+  const auto other_stage = parsev1::OPTION_NOTICE_REASON_READ_BY_ANOTHER_STAGE;
+  {
+    parsev1::ConvertDocumentOptions options;
+    // Set back to front: the notices come in field order, not call order.
+    (*options.mutable_picture_classification_custom_config())["threshold"].set_double_value(0.5);
+    auto* local = options.mutable_picture_description_local();
+    local->set_repo_id("HuggingFaceTB/SmolVLM-256M-Instruct");
+    local->set_prompt("Describe this image in a few sentences.");
+    (*local->mutable_generation_config())["max_new_tokens"].set_int_value(200);
+    options.set_table_mode(parsev1::TABLE_FORMER_MODE_ACCURATE);
+    options.set_pdf_backend(parsev1::PDF_BACKEND_DLPARSE_V4);
+    require_notices(notices_for(options),
+                    {{"pdf_backend", single},
+                     {"table_mode", single},
+                     {"picture_description_local.prompt", not_forwarded},
+                     {"picture_description_local.generation_config", not_forwarded},
+                     {"picture_classification_custom_config.threshold", other_stage}},
+                    "every accepted-and-ignored option is noticed, in field order");
+  }
+  {
+    // FAST is served by the same one model, so it is noticed like ACCURATE.
+    parsev1::ConvertDocumentOptions options;
+    options.set_table_mode(parsev1::TABLE_FORMER_MODE_FAST);
+    require_notices(notices_for(options), {{"table_mode", single}}, "table_mode FAST");
+  }
+  {
+    // Options the server applies, or forwards, earn no notice; nor does a
+    // field set to the value that asks for nothing.
+    parsev1::ConvertDocumentOptions options;
+    options.set_do_ocr(true);
+    options.set_ocr_preset("rapidocr");
+    options.set_table_mode(parsev1::TABLE_FORMER_MODE_UNSPECIFIED);
+    options.set_pdf_backend(parsev1::PDF_BACKEND_UNSPECIFIED);
+    auto* local = options.mutable_picture_description_local();
+    local->set_repo_id("HuggingFaceTB/SmolVLM-256M-Instruct");
+    local->set_prompt("");
+    local->set_classification_min_confidence(0.4);
+    require_notices(notices_for(options), {}, "applied options are not noticed");
+    require_notices(notices_for(parsev1::ConvertDocumentOptions{}), {}, "no options, no notice");
+  }
+  {
+    // The api engine's prompt is forwarded to the enrich peer.
+    parsev1::ConvertDocumentOptions options;
+    options.mutable_picture_description_api()->set_url("http://vlm.test");
+    options.mutable_picture_description_api()->set_prompt("Describe this image.");
+    require_notices(notices_for(options), {}, "a forwarded prompt is not noticed");
+  }
+  {
+    // A custom preset's languages select no model: a request that names such
+    // a preset is told, and one that names a preset without any is not.
+    grparse::OcrPresetPolicySettings settings;
+    settings.custom_presets["english-only"].set_kind(parsev1::OCR_ENGINE_KIND_RAPIDOCR);
+    settings.custom_presets["english-only"].add_lang("en");
+    settings.custom_presets["plain"].set_kind(parsev1::OCR_ENGINE_KIND_RAPIDOCR);
+    const grparse::OcrPresetPolicy policy(settings);
+    parsev1::ConvertDocumentOptions options;
+    options.set_ocr_preset("english-only");
+    const auto preset = policy.resolve(options, kSurface);
+    require(preset.has_value() && preset->lang == std::vector<std::string>{"en"},
+            "the resolved preset carries the languages its spec names");
+    require_notices(notices_for(options, policy), {{"ocr_preset", single}},
+                    "a preset with languages");
+    options.set_ocr_preset("plain");
+    require_notices(notices_for(options, policy), {}, "a preset without languages");
+    // The request that names no preset set no option to notice, whatever the
+    // server's default resolves to.
+    require_notices(notices_for(parsev1::ConvertDocumentOptions{}, policy), {}, "no preset named");
   }
 }
 
@@ -1410,6 +1528,7 @@ int main() {
       verify_chart_and_caption_options,
       verify_hybrid_chunking_is_validated,
       verify_unread_options_are_rejected_unless_default,
+      verify_accepted_and_ignored_options_are_noticed,
       verify_collector_rules_are_typed,
       verify_retired_bags_stay_reserved,
       verify_is_pdf_prefers_the_signature,

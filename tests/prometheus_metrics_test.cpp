@@ -419,6 +419,67 @@ void verify_render_doctype_and_collector_families() {
                    "libreoffice warnings count");
 }
 
+// The embedding failure counter is one family with a series for every
+// backend and stage, so a dashboard sees a zero before the first failure and
+// a rate() never starts from a missing series.
+void verify_render_embedding_failure_family() {
+  grparse::PipelineTelemetry telemetry;
+  telemetry.embedding("openvino").failed(grparse::EmbeddingFailureStage::kInference) = 2;
+  telemetry.embedding("cpu").failed(grparse::EmbeddingFailureStage::kOutput) = 1;
+
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 0, 0, telemetry);
+
+  require_contains(text, "# HELP grparse_embedding_failures_total ",
+                   "embedding failures help line");
+  require_contains(text, "# TYPE grparse_embedding_failures_total counter\n",
+                   "embedding failures type line");
+  require_contains(
+      text, "grparse_embedding_failures_total{backend=\"openvino\",stage=\"inference\"} 2\n",
+      "openvino inference failures");
+  require_contains(text,
+                   "grparse_embedding_failures_total{backend=\"cpu\",stage=\"output\"} 1\n",
+                   "cpu output failures");
+  for (std::string_view backend : grparse::kMetricEmbeddingBackends) {
+    for (std::string_view stage : grparse::kEmbeddingFailureStages) {
+      require_contains(text,
+                       "grparse_embedding_failures_total{backend=\"" + std::string(backend) +
+                           "\",stage=\"" + std::string(stage) + "\"} ",
+                       "embedding failure series " + std::string(backend) + "/" +
+                           std::string(stage));
+    }
+  }
+}
+
+// A recorded failure is in the next snapshot under its own labels, a backend
+// the family does not name is not counted anywhere, and a reset clears it.
+void verify_live_embedding_failures_are_counted() {
+  grparse::reset_pipeline_telemetry();
+  grparse::record_embedding_failure("tensorrt", grparse::EmbeddingFailureStage::kTokenize);
+  grparse::record_embedding_failure("tensorrt", grparse::EmbeddingFailureStage::kTokenize);
+  grparse::record_embedding_failure("openvino", grparse::EmbeddingFailureStage::kInference);
+  grparse::record_embedding_failure("made-up", grparse::EmbeddingFailureStage::kInference);
+
+  const grparse::PipelineTelemetry telemetry = grparse::pipeline_telemetry();
+  require(telemetry.embedding("tensorrt").failed(grparse::EmbeddingFailureStage::kTokenize) == 2,
+          "two tensorrt tokenize failures");
+  require(telemetry.embedding("openvino").failed(grparse::EmbeddingFailureStage::kInference) == 1,
+          "one openvino inference failure");
+  uint64_t total = 0;
+  for (const auto& backend : telemetry.embeddings) {
+    for (const uint64_t count : backend.failures) total += count;
+  }
+  require(total == 3, "a backend outside the family is counted nowhere");
+
+  grparse::reset_pipeline_telemetry();
+  require(grparse::pipeline_telemetry()
+                  .embedding("tensorrt")
+                  .failed(grparse::EmbeddingFailureStage::kTokenize) == 0,
+          "a reset clears the embedding failures");
+}
+
 void verify_doctype_classification_and_collector_status_mapping() {
   using ai::pipestream::parse::v1::InputFormat;
   require(grparse::classify_doctype(InputFormat::INPUT_FORMAT_PDF, "report.pdf",
@@ -653,6 +714,8 @@ int main() {
       verify_render_ep_fallback_counter,
       verify_render_ort_session_placements,
       verify_render_doctype_and_collector_families,
+      verify_render_embedding_failure_family,
+      verify_live_embedding_failures_are_counted,
       verify_doctype_classification_and_collector_status_mapping,
       verify_live_pipeline_telemetry_and_run_collectors,
       verify_consensus_events_are_counted_and_rendered,

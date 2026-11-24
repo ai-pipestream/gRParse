@@ -4,10 +4,13 @@
 #include <cmath>
 #include <cstdint>
 #include <exception>
+#include <format>
 #include <limits>
 #include <new>
 #include <stdexcept>
 #include <utility>
+
+#include "embeddings/failure.h"
 
 namespace grparse {
 namespace {
@@ -136,6 +139,15 @@ grpc::Status ChunkEmbedder::embed(const parsev1::EmbeddingOptions& options,
   const auto model = model_proto(identity_);
   std::vector<parsev1::ChunkEmbedding> pending;
   std::size_t response_bytes = 0;
+  // Which side of the engine call a failure is on: the call itself, or the
+  // check of what it returned.
+  EmbeddingFailureStage stage = EmbeddingFailureStage::kInference;
+  // An engine reports its own failed batches before it returns them
+  // (EmbeddingEngine::embed); this reports what the embedder itself finds
+  // wrong, so each failure is logged and counted once.
+  const auto failed = [this, &stage](const std::string& detail, const char* client_message) {
+    return embedding::detail::report_failure(identity_.backend, stage, detail, client_message);
+  };
   try {
     for (std::size_t start = 0; start < chunks->size();) {
       if (is_cancelled()) return cancelled_status();
@@ -158,26 +170,38 @@ grpc::Status ChunkEmbedder::embed(const parsev1::EmbeddingOptions& options,
         return {grpc::StatusCode::RESOURCE_EXHAUSTED, "chunk embeddings exceed response byte limit"};
       }
       EmbeddingBatchResult batch;
+      stage = EmbeddingFailureStage::kInference;
       const auto embedded = engine_->embed(texts, is_cancelled, &batch);
+      stage = EmbeddingFailureStage::kOutput;
       if (is_cancelled()) return cancelled_status();
       if (!embedded.ok()) return embedded;
       if (batch.model != identity_ || batch.vectors.size() != texts.size()) {
-        return {grpc::StatusCode::INTERNAL, "embedding backend returned inconsistent model or batch size"};
+        return failed(std::format("the engine answered {} texts with {} vectors{}", texts.size(),
+                                  batch.vectors.size(),
+                                  batch.model != identity_
+                                      ? ", under a model identity that is not the loaded one"
+                                      : ""),
+                      "embedding backend returned inconsistent model or batch size");
       }
       for (std::size_t index = 0; index < texts.size(); ++index) {
         const auto& values = batch.vectors[index];
         if (values.size() != identity_.dimensions) {
-          return {grpc::StatusCode::INTERNAL, "embedding backend returned incorrect dimensions"};
+          return failed(std::format("vector {} of the batch has {} values where the model has {}",
+                                    index, values.size(), identity_.dimensions),
+                        "embedding backend returned incorrect dimensions");
         }
         double norm_squared = 0;
         for (float value : values) {
           if (!std::isfinite(value)) {
-            return {grpc::StatusCode::INTERNAL, "embedding backend returned non-finite values"};
+            return failed(std::format("vector {} of the batch holds a non-finite value", index),
+                          "embedding backend returned non-finite values");
           }
           norm_squared += static_cast<double>(value) * value;
         }
         if (std::abs(norm_squared - 1.0) > 1e-3) {
-          return {grpc::StatusCode::INTERNAL, "embedding backend returned non-normalized values"};
+          return failed(std::format("vector {} of the batch has squared norm {}, not 1", index,
+                                    norm_squared),
+                        "embedding backend returned non-normalized values");
         }
         parsev1::ChunkEmbedding embedding;
         *embedding.mutable_model() = model;
@@ -204,11 +228,13 @@ grpc::Status ChunkEmbedder::embed(const parsev1::EmbeddingOptions& options,
     chunks->swap(completed);
   } catch (const std::bad_alloc&) {
     return {grpc::StatusCode::RESOURCE_EXHAUSTED, "insufficient memory for chunk embeddings"};
-  } catch (const std::exception&) {
-    // Backend exception strings may contain input text or artifact paths.
-    return {grpc::StatusCode::INTERNAL, "chunk embedding inference failed"};
+  } catch (const std::exception& error) {
+    // Backend exception strings may contain input text or artifact paths,
+    // so they go to the server's log and never to the caller.
+    return failed(error.what(), "chunk embedding inference failed");
   } catch (...) {
-    return {grpc::StatusCode::INTERNAL, "chunk embedding inference failed"};
+    return failed("an exception that is not a std::exception",
+                  "chunk embedding inference failed");
   }
   return grpc::Status::OK;
 }

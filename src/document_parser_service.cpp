@@ -146,7 +146,9 @@ uint64_t chunk_charge(
 }
 
 // Everything a chunk response carries beside the chunks: the converted
-// document or the collector failures, the chunker's options, and the time.
+// document or the collector failures, the notices for convert options that
+// were not applied (taken out of `parsed`), the chunker's options, and the
+// time.
 template <typename ChunkRequest>
 void describe_chunks(const ChunkRequest& chunk_request,
                      std::chrono::steady_clock::time_point started, SourceParse* parsed,
@@ -157,6 +159,7 @@ void describe_chunks(const ChunkRequest& chunk_request,
   } else if (!parsed->result.failures.empty()) {
     attach_failures(parsed->result.failures, response);
   }
+  response->mutable_option_notices()->Swap(&parsed->option_notices);
   chunking::fill_chunking_info(chunk_request.chunking_options(),
                                response->mutable_chunking_info());
   response->set_processing_time(
@@ -1153,6 +1156,7 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         if (rest.has_chunk_omissions()) {
           summary->mutable_chunk_omissions()->Swap(rest.mutable_chunk_omissions());
         }
+        summary->mutable_option_notices()->Swap(rest.mutable_option_notices());
         return grpc::Status::OK;
       });
 }

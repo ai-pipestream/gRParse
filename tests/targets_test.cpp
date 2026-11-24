@@ -19,6 +19,9 @@
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/util/json_util.h>
+#include <google/protobuf/util/message_differencer.h>
+
 #include "../src/targets/bundle.h"
 #include "../src/targets/s3_client.h"
 #include "../src/targets/s3_uploader.h"
@@ -148,11 +151,12 @@ void verify_bundle_carries_the_canonical_file_set() {
   const docv1::Document document = sample_document("members");
   const auto files = sample_bundle(document);
   for (const auto& path : {"document.json", "document.pb", "exports/markdown.md",
-                           "exports/text.txt", "manifest.json", "pages/page_0001.png",
-                           "pages/page_0002.png", "pictures/pic_0001.png", "response.pb"}) {
+                           "exports/text.txt", "manifest.json", "manifest.pb",
+                           "pages/page_0001.png", "pages/page_0002.png",
+                           "pictures/pic_0001.png", "response.pb"}) {
     member(files, path);
   }
-  require(files.size() == 9, "the bundle carries exactly its own members, not more");
+  require(files.size() == 10, "the bundle carries exactly its own members, not more");
   require(std::ranges::is_sorted(files, {}, &targets::BundleFile::path),
           "bundle members must be sorted by path");
   require(member(files, "pages/page_0001.png").bytes == fake_image(1),
@@ -169,8 +173,77 @@ void verify_bundle_carries_the_canonical_file_set() {
           "an export the request never asked for must not appear");
 }
 
-// A very small scanner over the manifest: it is written by hand, in one fixed
-// shape, so reading it back needs no JSON parser.
+// Whether `path` is one of the manifest's own two forms, which no manifest
+// describes.
+bool is_manifest(const std::string& path) {
+  return path == "manifest.json" || path == "manifest.pb";
+}
+
+// The bundle's typed index, read back the way a program reads it.
+parsev1::BundleManifest bundled_manifest(const std::vector<targets::BundleFile>& files) {
+  parsev1::BundleManifest manifest;
+  require(manifest.ParseFromString(member(files, "manifest.pb").bytes),
+          "manifest.pb must parse as a BundleManifest");
+  return manifest;
+}
+
+// The index of a bundle is a typed message, manifest.pb: a reader gets every
+// member's path, digest and size from fields, with no JSON to parse.
+void verify_the_manifest_is_a_typed_message() {
+  const docv1::Document document = sample_document("typed manifest");
+  const auto files = sample_bundle(document);
+  const parsev1::BundleManifest manifest = bundled_manifest(files);
+
+  require(manifest.generator().starts_with("grparse/"),
+          "the manifest names its generator: " + manifest.generator());
+  require_equal(manifest.schema_version(), static_cast<uint32_t>(targets::kManifestSchemaVersion),
+                "the manifest names its schema version");
+  int described = 0;
+  for (const auto& file : files) {
+    if (is_manifest(file.path)) continue;
+    require(described < manifest.files_size(), "the manifest leaves out '" + file.path + "'");
+    const parsev1::BundleMember& listed = manifest.files(described++);
+    require_equal(listed.path(), file.path, "the manifest lists members in bundle order");
+    require_equal(listed.sha256(), targets::sha256_hex(file.bytes),
+                  "the manifest's digest for '" + file.path + "' must be the member's own");
+    require_equal(listed.size_bytes(), uint64_t{file.bytes.size()},
+                  "the manifest's size for '" + file.path + "' must be the member's own");
+  }
+  require_equal(manifest.files_size(), described,
+                "the manifest describes the other members and neither of its own forms");
+  require_equal(static_cast<size_t>(described) + 2, files.size(),
+                "the bundle holds the manifest's two forms beside what it describes");
+}
+
+// manifest.json is for people and is the typed manifest, rendered: read back
+// through protobuf's JSON mapping it is the message manifest.pb holds, so
+// the two can never state different things.  A member of no bytes still
+// states its size, as the JSON manifest always has.
+void verify_the_json_manifest_says_what_the_typed_manifest_says() {
+  const docv1::Document document = sample_document("two forms");
+  parsev1::ConvertDocumentResponse converted = sample_conversion(document);
+  converted.mutable_document()->mutable_exports()->set_html("");
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(converted, &result);
+  require(member(files, "exports/html.html").bytes.empty(),
+          "the requested export that rendered nothing is an empty member");
+
+  const std::string& json = member(files, "manifest.json").bytes;
+  parsev1::BundleManifest from_json;
+  const auto parsed = google::protobuf::util::JsonStringToMessage(json, &from_json);
+  require(parsed.ok(), "manifest.json must be the JSON form of a BundleManifest: " +
+                           std::string(parsed.message()));
+  require(google::protobuf::util::MessageDifferencer::Equals(from_json, bundled_manifest(files)),
+          "manifest.json and manifest.pb must state the same manifest");
+  require(json.contains("{\"path\":\"exports/html.html\",\"sha256\":\"" +
+                        targets::sha256_hex("") + "\",\"size_bytes\":0}"),
+          "an empty member keeps its size in manifest.json: " + json);
+}
+
+// A very small scanner over manifest.json.  It reads the one fixed shape the
+// JSON manifest has had since before it was rendered from a message (keys in
+// this order, no whitespace, sizes as bare numbers), so it also holds that
+// shape still for whoever reads the file without a schema.
 std::string field_after(std::string_view text, size_t* cursor, std::string_view key,
                         bool quoted) {
   const size_t start = text.find(key, *cursor);
@@ -192,12 +265,13 @@ void verify_manifest_describes_every_member() {
   require(manifest.contains("\"generator\":\"grparse/"),
           "the manifest names its generator: " + manifest);
   require(manifest.contains("\"schema_version\":1"), "the manifest names its schema version");
-  require(!manifest.contains("manifest.json"), "the manifest must not describe itself");
+  require(!manifest.contains("manifest.json") && !manifest.contains("manifest.pb"),
+          "the manifest must not describe either of its own forms");
 
   size_t cursor = 0;
   size_t described = 0;
   for (const auto& file : files) {
-    if (file.path == "manifest.json") continue;
+    if (is_manifest(file.path)) continue;
     const std::string path = field_after(manifest, &cursor, "\"path\":\"", true);
     const std::string digest = field_after(manifest, &cursor, "\"sha256\":\"", true);
     const std::string size = field_after(manifest, &cursor, "\"size_bytes\":", false);
@@ -208,7 +282,21 @@ void verify_manifest_describes_every_member() {
             "the manifest's size for '" + path + "' must be the member's own");
     ++described;
   }
-  require(described + 1 == files.size(), "the manifest describes every other member");
+  require(described + 2 == files.size(), "the manifest describes every other member");
+
+  // The whole text, byte for byte, as the hand-built manifest spelled it:
+  // whoever reads manifest.json without a schema sees no change.
+  std::string expected = "{\"files\":[";
+  for (const auto& file : files) {
+    if (is_manifest(file.path)) continue;
+    if (expected.back() == '}') expected += ',';
+    expected += "{\"path\":\"" + file.path + "\",\"sha256\":\"" +
+                targets::sha256_hex(file.bytes) + "\",\"size_bytes\":" +
+                std::to_string(file.bytes.size()) + "}";
+  }
+  expected += "],\"generator\":\"" + bundled_manifest(files).generator() +
+              "\",\"schema_version\":1}";
+  require_equal(manifest, expected, "manifest.json keeps its exact shape");
 }
 
 // A picture of the document carrying `uri`, with `mimetype` as the ImageRef's
@@ -263,6 +351,10 @@ void verify_the_bundle_carries_the_conversions_status_and_outputs() {
   auto* offset = converted.add_text_offsets();
   offset->set_self_ref("#/texts/0");
   offset->set_utf_end(7);
+  auto* notice = converted.add_option_notices();
+  notice->set_option_path("table_mode");
+  notice->set_reason(parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION);
+  notice->set_message("one table-structure model serves every table_mode");
   converted.set_processing_time(1.25);
   (*converted.mutable_timings())["total"] = 1.25;
   (*converted.mutable_profiling())["total"].set_count(1);
@@ -288,6 +380,12 @@ void verify_the_bundle_carries_the_conversions_status_and_outputs() {
           "the bundle carries the read quality");
   require_equal(response.text_offsets_size(), 1, "the bundle carries the offset table");
   require_equal(response.text_offsets(0).utf_end(), uint64_t{7}, "an offset row keeps its span");
+  require_equal(response.option_notices_size(), 1,
+                "the bundle carries the options the conversion did not apply");
+  require(response.option_notices(0).option_path() == "table_mode" &&
+              response.option_notices(0).reason() ==
+                  parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+          "a notice keeps its option and its typed reason");
 
   // What other members already hold is not repeated, and the clock stays
   // out: a timing in the bundle would make two runs over one document
@@ -1040,6 +1138,8 @@ int main() {
       verify_bundles_are_reproducible,
       verify_bundle_carries_the_canonical_file_set,
       verify_manifest_describes_every_member,
+      verify_the_manifest_is_a_typed_message,
+      verify_the_json_manifest_says_what_the_typed_manifest_says,
       verify_the_bundle_carries_the_conversions_status_and_outputs,
       verify_an_image_the_bundle_cannot_write_is_reported,
       verify_an_image_member_is_never_named_for_a_type_it_is_not,

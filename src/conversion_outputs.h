@@ -1,11 +1,11 @@
 #pragma once
 
 // What a conversion carries beside its Document: the exports and the chunks
-// the options asked for, the structure findings, the CV read quality and
-// the offset table. ConvertSource answers with them on
-// ConvertDocumentResponse and StreamDocument on StreamSourceOutputs; both
-// fill their message through fill_conversion_outputs, so the two surfaces
-// cannot drift apart.
+// the options asked for, the structure findings, the CV read quality, the
+// offset table and the notices for options that were not applied.
+// ConvertSource answers with them on ConvertDocumentResponse and
+// StreamDocument on StreamSourceOutputs; both fill their message through
+// fill_conversion_outputs, so the two surfaces cannot drift apart.
 //
 // Internal to src: the served surfaces stay in
 // include/grparse/document_parser_service.h.
@@ -55,13 +55,14 @@ grpc::Status render_chunks(
 
 // Writes what the conversion of `parsed` carries beside `document`, its
 // merged Document: onto `outputs` the CV read quality when a CV page was
-// read, the structure findings (taken out of `parsed`), the offset table,
-// the chunks and, when they are not the whole document, what they left
-// out; onto `exports` every requested format. `Outputs` is
-// ConvertDocumentResponse or StreamSourceOutputs, which name these fields
-// alike; the exports are passed apart because the unary response nests
-// them under its document. A chunker's failure is the returned status and
-// a renderer's is thrown, with `outputs` left partly written either way.
+// read, the structure findings and the option notices (both taken out of
+// `parsed`), the offset table, the chunks and, when they are not the whole
+// document, what they left out; onto `exports` every requested format.
+// `Outputs` is ConvertDocumentResponse or StreamSourceOutputs, which name
+// these fields alike; the exports are passed apart because the unary
+// response nests them under its document. A chunker's failure is the
+// returned status and a renderer's is thrown, with `outputs` left partly
+// written either way.
 template <typename Outputs>
 grpc::Status fill_conversion_outputs(
     const ai::pipestream::parse::v1::ConvertDocumentOptions& options,
@@ -69,6 +70,7 @@ grpc::Status fill_conversion_outputs(
     ai::pipestream::parse::v1::DocumentExports* exports, Outputs* outputs) {
   if (parsed->confidence.has_value()) *outputs->mutable_confidence() = *parsed->confidence;
   outputs->mutable_structure_findings()->Swap(&parsed->structure_findings);
+  outputs->mutable_option_notices()->Swap(&parsed->option_notices);
   *outputs->mutable_text_offsets() = chunking::offset_rows(parsed->offsets);
   // Every requested output format renders from the same merged document;
   // TEXT keeps its arena-order line export, the rest fold the body tree.

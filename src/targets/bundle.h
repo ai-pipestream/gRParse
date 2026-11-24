@@ -8,6 +8,7 @@
 #ifndef GRPARSE_TARGETS_BUNDLE_H
 #define GRPARSE_TARGETS_BUNDLE_H
 
+#include <cstdint>
 #include <string>
 #include <vector>
 
@@ -23,20 +24,24 @@ struct BundleFile {
   std::string bytes;
 };
 
-// The bundle's manifest schema.  Bumped whenever the manifest's own shape
-// changes, never for a change in which files a conversion happens to
-// produce.
-inline constexpr int kManifestSchemaVersion = 1;
+// The bundle's manifest schema (BundleManifest.schema_version).  Bumped
+// whenever the manifest's own shape changes, never for a change in which
+// files a conversion happens to produce.
+inline constexpr uint32_t kManifestSchemaVersion = 1;
 
 // The file set for `converted`, the response a conversion answers with:
 //
-//   manifest.json            every other file with its SHA-256 and byte size
+//   manifest.pb              a BundleManifest: every member below with its
+//                            SHA-256 and byte size, the generator and the
+//                            schema version, deterministically serialized
+//   manifest.json            the same message as JSON, for people
 //   document.pb              the Document, deterministically serialized
 //   document.json            the canonical JSON dialect of the same Document
 //   response.pb              a ConvertDocumentResponse: the conversion's
 //                            status, errors, chunks, structure findings,
-//                            read quality and offset table, the source's
-//                            filename, and the image issues below
+//                            read quality, offset table and option
+//                            notices, the source's filename, and the image
+//                            issues below
 //   exports/<name>.<ext>     one file per export the request asked for
 //   pages/page_NNNN.<ext>    each page image the document embeds
 //   pictures/pic_NNNN.<ext>  each picture image the document embeds
