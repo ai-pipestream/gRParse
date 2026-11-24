@@ -51,6 +51,23 @@ enum class CollectorCallStatus : size_t {
 inline constexpr std::array<std::string_view, 4> kCollectorCallStatuses = {
     "ok", "error", "timeout", "unavailable"};
 
+// The embedding backends a failure is counted under: the names
+// EmbeddingModelIdentity::backend takes.
+inline constexpr std::array<std::string_view, 3> kMetricEmbeddingBackends = {
+    "cpu", "openvino", "tensorrt"};
+
+// Where an embedding batch failed: turning its texts into tokens, the
+// backend's inference call, or the check and pooling of what the backend
+// returned.
+enum class EmbeddingFailureStage : size_t {
+  kTokenize = 0,
+  kInference = 1,
+  kOutput = 2,
+};
+
+inline constexpr std::array<std::string_view, 3> kEmbeddingFailureStages = {
+    "tokenize", "inference", "output"};
+
 // Finite upper bounds in seconds for document and collector latency histograms.
 // The final bucket in DurationHistogram::buckets is the +Inf overflow bucket.
 inline constexpr std::array<double, 12> kDurationBoundsSeconds = {
@@ -82,17 +99,29 @@ struct CollectorMetrics {
   uint64_t status(CollectorCallStatus s) const { return calls[static_cast<size_t>(s)]; }
 };
 
+struct EmbeddingMetrics {
+  std::array<uint64_t, kEmbeddingFailureStages.size()> failures{};
+
+  uint64_t& failed(EmbeddingFailureStage s) { return failures[static_cast<size_t>(s)]; }
+  uint64_t failed(EmbeddingFailureStage s) const { return failures[static_cast<size_t>(s)]; }
+};
+
 struct PipelineTelemetry {
   std::array<DoctypeMetrics, kMetricDoctypes.size()> doctypes{};
   std::array<CollectorMetrics, kMetricCollectors.size()> collectors{};
+  std::array<EmbeddingMetrics, kMetricEmbeddingBackends.size()> embeddings{};
 
   DoctypeMetrics& doctype(std::string_view name);
   const DoctypeMetrics& doctype(std::string_view name) const;
   CollectorMetrics& collector(std::string_view name);
   const CollectorMetrics& collector(std::string_view name) const;
+  // Throws std::out_of_range for a name outside kMetricEmbeddingBackends.
+  EmbeddingMetrics& embedding(std::string_view backend);
+  const EmbeddingMetrics& embedding(std::string_view backend) const;
 };
 
-// Snapshot or reset the process-wide per-doctype and per-collector counters.
+// Snapshot or reset the process-wide per-doctype, per-collector and
+// per-embedding-backend counters.
 PipelineTelemetry pipeline_telemetry();
 void reset_pipeline_telemetry();
 
@@ -106,6 +135,10 @@ void record_collector_call(ai::pipestream::parse::v1::Collector collector,
 void record_collector_warnings(std::string_view collector, uint64_t count = 1);
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector,
                                uint64_t count = 1);
+
+// Counts one failed embedding batch. A backend outside
+// kMetricEmbeddingBackends is not counted, as an unknown collector is not.
+void record_embedding_failure(std::string_view backend, EmbeddingFailureStage stage);
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code);
 std::string_view metric_collector_name(ai::pipestream::parse::v1::Collector collector);
@@ -147,6 +180,8 @@ std::string render_ort_session_placements(const std::vector<OrtPlacement>& place
 // grparse_document_duration_seconds; per-collector calls, latency, and
 // warnings export as grparse_collector_calls_total,
 // grparse_collector_duration_seconds, and grparse_collector_warnings_total.
+// Failed embedding batches export as
+// grparse_embedding_failures_total{backend,stage}.
 // This overload is pure in its inputs.
 std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
                                       const OcrEnginePool::Stats& ocr_pool,

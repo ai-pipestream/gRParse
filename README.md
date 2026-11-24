@@ -1131,6 +1131,11 @@ histogram, and per-stage busy time is exported as
 same busy fraction the stdout line prints. The listener is a minimal
 in-process HTTP endpoint (no framework); a configured port that cannot be
 bound fails startup loudly. The compose file wires it to `9464`.
+A failed embedding batch is counted as
+`grparse_embedding_failures_total{backend,stage}` (`stage` is `tokenize`,
+`inference` or `output`) and the runtime's own error text goes to stderr on
+one `gRParse embedding failure:` line; the RPC status stays generic, because
+that text can quote the input or a path on the server.
 
 For live local telemetry and corpus drift tracking, layer the opt-in
 `compose.stack.observability.yaml` overlay with the `observability` profile:

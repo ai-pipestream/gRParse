@@ -1,4 +1,5 @@
 #include "grparse/embedding.h"
+#include "failure.h"
 #include "tensor_backend.h"
 #include "../targets/sha256.h"
 #include "../chunking/token_counter.h"
@@ -6,6 +7,7 @@
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <format>
 #include <fstream>
 #include <limits>
 #include <mutex>
@@ -113,6 +115,9 @@ class LocalEmbeddingEngine final : public EmbeddingEngine {
       if (is_cancelled()) return cancellation();
     }
     if (is_cancelled()) return cancellation();
+    // How far the batch got, so a failure is reported under the stage that
+    // failed and not as "inference" whatever threw.
+    EmbeddingFailureStage stage = EmbeddingFailureStage::kTokenize;
     try {
       EmbeddingBatchResult pending{identity_, {}};
       if (texts.empty()) { *result = std::move(pending); return grpc::Status::OK; }
@@ -141,10 +146,17 @@ class LocalEmbeddingEngine final : public EmbeddingEngine {
         std::fill_n(tokens.mask.begin() + row * width, encoded[row].size(), 1);
       }
       if (is_cancelled()) return cancellation();
+      stage = EmbeddingFailureStage::kInference;
       auto hidden = backend_->infer(tokens);
+      stage = EmbeddingFailureStage::kOutput;
       if (is_cancelled()) return cancellation();
       if (hidden.size() != tokens.rows * width * kDimensions)
-        return {grpc::StatusCode::INTERNAL, "embedding hidden-state size mismatch"};
+        return embedding::detail::report_failure(
+            identity_.backend, stage,
+            std::format("the backend returned {} hidden-state values for {} rows of {} tokens, "
+                        "which need {}",
+                        hidden.size(), tokens.rows, width, tokens.rows * width * kDimensions),
+            "embedding hidden-state size mismatch");
       for (std::size_t row = 0; row < tokens.rows; ++row) {
         std::vector<float> vector(kDimensions);
         double norm = 0;
@@ -156,7 +168,11 @@ class LocalEmbeddingEngine final : public EmbeddingEngine {
           norm += static_cast<double>(vector[dim]) * vector[dim];
         }
         if (!std::isfinite(norm) || norm <= 0)
-          return {grpc::StatusCode::INTERNAL, "embedding model returned invalid vector"};
+          return embedding::detail::report_failure(
+              identity_.backend, stage,
+              std::format("row {} of {} pooled to a vector of squared norm {}", row, tokens.rows,
+                          norm),
+              "embedding model returned invalid vector");
         const double scale = std::sqrt(norm);
         for (float& value : vector) value = static_cast<float>(value / scale);
         pending.vectors.push_back(std::move(vector));
@@ -164,9 +180,12 @@ class LocalEmbeddingEngine final : public EmbeddingEngine {
       if (is_cancelled()) return cancellation();
       *result = std::move(pending);
       return grpc::Status::OK;
-    } catch (const std::exception&) {
-      // Vendor errors can include caller text or filesystem details.
-      return {grpc::StatusCode::INTERNAL, "local embedding inference failed"};
+    } catch (const std::exception& error) {
+      // Vendor errors can include caller text or filesystem details, so the
+      // caller is sent none of the text; the server's log gets all of it,
+      // and the failure is counted (failure.h).
+      return embedding::detail::report_failure(identity_.backend, stage, error.what(),
+                                               "local embedding inference failed");
     }
   }
 

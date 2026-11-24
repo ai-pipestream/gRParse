@@ -115,8 +115,27 @@ struct AtomicCollectorMetrics {
   }
 };
 
+struct AtomicEmbeddingMetrics {
+  std::array<std::atomic<uint64_t>, kEmbeddingFailureStages.size()> failures{};
+
+  EmbeddingMetrics snapshot() const {
+    EmbeddingMetrics out;
+    for (size_t i = 0; i < failures.size(); ++i) {
+      out.failures[i] = failures[i].load(std::memory_order_relaxed);
+    }
+    return out;
+  }
+
+  void reset() {
+    for (auto& count : failures) {
+      count.store(0, std::memory_order_relaxed);
+    }
+  }
+};
+
 std::array<AtomicDoctypeMetrics, kMetricDoctypes.size()> g_doctypes{};
 std::array<AtomicCollectorMetrics, kMetricCollectors.size()> g_collectors{};
+std::array<AtomicEmbeddingMetrics, kMetricEmbeddingBackends.size()> g_embeddings{};
 
 size_t doctype_index(std::string_view name) {
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -130,6 +149,13 @@ std::optional<size_t> collector_index(std::string_view name) {
   if (name == "confluence-storage") name = "confluence";
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     if (kMetricCollectors[i] == name) return i;
+  }
+  return std::nullopt;
+}
+
+std::optional<size_t> embedding_backend_index(std::string_view name) {
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    if (kMetricEmbeddingBackends[i] == name) return i;
   }
   return std::nullopt;
 }
@@ -300,6 +326,22 @@ const CollectorMetrics& PipelineTelemetry::collector(std::string_view name) cons
   return collectors[*index];
 }
 
+EmbeddingMetrics& PipelineTelemetry::embedding(std::string_view backend) {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown embedding backend metric label");
+  }
+  return embeddings[*index];
+}
+
+const EmbeddingMetrics& PipelineTelemetry::embedding(std::string_view backend) const {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) {
+    throw std::out_of_range("unknown embedding backend metric label");
+  }
+  return embeddings[*index];
+}
+
 PipelineTelemetry pipeline_telemetry() {
   PipelineTelemetry out;
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -307,6 +349,9 @@ PipelineTelemetry pipeline_telemetry() {
   }
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out.collectors[i] = g_collectors[i].snapshot();
+  }
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    out.embeddings[i] = g_embeddings[i].snapshot();
   }
   return out;
 }
@@ -317,6 +362,9 @@ void reset_pipeline_telemetry() {
   }
   for (auto& collector : g_collectors) {
     collector.reset();
+  }
+  for (auto& embedding : g_embeddings) {
+    embedding.reset();
   }
 }
 
@@ -353,6 +401,13 @@ void record_collector_warnings(std::string_view collector, uint64_t count) {
 
 void record_collector_warnings(ai::pipestream::parse::v1::Collector collector, uint64_t count) {
   record_collector_warnings(metric_collector_name(collector), count);
+}
+
+void record_embedding_failure(std::string_view backend, EmbeddingFailureStage stage) {
+  const auto index = embedding_backend_index(backend);
+  if (!index.has_value()) return;
+  g_embeddings[*index].failures[static_cast<size_t>(stage)].fetch_add(
+      1, std::memory_order_relaxed);
 }
 
 CollectorCallStatus collector_call_status_for(bool success, grpc::StatusCode code) {
@@ -770,6 +825,17 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out << "grparse_collector_warnings_total{collector=\"" << kMetricCollectors[i] << "\"} "
         << telemetry.collectors[i].warnings << '\n';
+  }
+
+  out << "# HELP grparse_embedding_failures_total Embedding batches that failed, by backend "
+         "and the stage that failed.\n"
+         "# TYPE grparse_embedding_failures_total counter\n";
+  for (size_t i = 0; i < kMetricEmbeddingBackends.size(); ++i) {
+    for (size_t s = 0; s < kEmbeddingFailureStages.size(); ++s) {
+      out << "grparse_embedding_failures_total{backend=\"" << kMetricEmbeddingBackends[i]
+          << "\",stage=\"" << kEmbeddingFailureStages[s] << "\"} "
+          << telemetry.embeddings[i].failures[s] << '\n';
+    }
   }
 
   return out.str();

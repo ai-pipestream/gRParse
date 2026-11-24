@@ -47,6 +47,10 @@ class EmbeddingEngine {
   // Tokenization, pooling and normalization must match across native backends.
   // Check cancellation before/after inference even if a device call cannot be
   // interrupted. Populate result only on success; do not expose text in errors.
+  // An engine that fails a batch INTERNAL says why on the server before it
+  // returns: a log line with the vendor's error and a count in
+  // grparse_embedding_failures_total (src/embeddings/failure.h). Its caller
+  // passes the status on and does neither again.
   virtual grpc::Status embed(const std::vector<std::string>& texts,
                              const EmbeddingCancelled& cancelled,
                              EmbeddingBatchResult* result) = 0;
