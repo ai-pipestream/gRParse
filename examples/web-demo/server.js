@@ -101,6 +101,7 @@ const streamClient = new parseV1.ParseStreamingService(TARGET, credentials, chan
 // ...) and those are used instead of the repo paths.
 const DEMO_PROTO_DIR = process.env.DEMO_PROTO_DIR || "";
 const peers = require("./peers");
+const { imageUri, withShowableImages } = require("./image-ref");
 const { KNOWN_UIS, resolveServiceProto, loadServiceCtor } = peers;
 
 // `node server.js --check-protos` loads the four gRParse contracts (already
@@ -324,7 +325,7 @@ function mapPicture(picture, pageHeight) {
     bbox: prov ? mapBoundingBox(prov.bbox, pageHeight) : null,
     classes: predictions.slice(0, 3).map((p) => ({ name: p.className, confidence: p.confidence })),
     barcodes,
-    imageUri: picture.image && picture.image.uri ? picture.image.uri : null,
+    imageUri: imageUri(picture.image),
   };
 }
 
@@ -337,11 +338,9 @@ function mapEvent(event) {
       pageNumber: page.pageNumber,
       totalPages: event.totalPages,
       size: page.pageMeta && page.pageMeta.size ? page.pageMeta.size : null,
-      // Present when the server runs with GRPARSE_PAGE_IMAGES=on: a data URI
-      // preview of the page raster the boxes were measured on.
-      image: page.pageMeta && page.pageMeta.image && page.pageMeta.image.uri
-        ? page.pageMeta.image.uri
-        : null,
+      // Present when the server runs with GRPARSE_PAGE_IMAGES=on: a preview
+      // of the page raster the boxes were measured on, as a data URI.
+      image: imageUri(page.pageMeta && page.pageMeta.image),
       texts: (page.texts || []).map((text) => mapText(text, pageHeight)).filter(Boolean),
       offsets: (page.textOffsets || []).map((offset) => ({
         ref: offset.selfRef,
@@ -378,7 +377,7 @@ function mapEvent(event) {
       // The collector's complete projected Document rides along so the page
       // can show page-less formats (epub, email, ...) as content instead of
       // an empty page rail: the union the collectors produced is the result.
-      document: doc,
+      document: withShowableImages(doc),
     };
   }
   return { type: "other" };
@@ -943,7 +942,7 @@ surface.post(
         send({
           type: "document",
           elapsedMs: Date.now() - startedAt,
-          document: doc,
+          document: withShowableImages(doc),
           // The wire calls the field `md`; the page-facing line spells it out.
           ...(typeof exports.md === "string" && exports.md !== "" ? { markdown: exports.md } : {}),
         });
