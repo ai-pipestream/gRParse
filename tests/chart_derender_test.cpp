@@ -1286,14 +1286,14 @@ void verify_the_trailer_is_reconciled_with_the_events() {
 }
 
 // grpc-enrich counts an item that failed outside the VLM call in the
-// trailer's `failed` only, and also names it in a skip event, whose reason
-// is a value newer than the vendored contract (it arrives as a bare
-// number). That stream adds up: the failure is reported once, the skip is
-// not a count the trailer contradicts, and the item was answered.
+// trailer's `failed` only, and also names it in a skip event with
+// SKIP_REASON_INTERNAL_ERROR. That stream adds up: the failure is reported
+// once, the skip is not a count the trailer contradicts, and the item was
+// answered. A reason newer than the vendored contract arrives as a bare
+// number and is passed on as one.
 void verify_a_failed_item_named_by_a_skip_is_one_failure() {
   enrichv1::EnrichDocumentResponse internal_error = skipped_event("#/pictures/0");
-  // SKIP_REASON_INTERNAL_ERROR on grpc-enrich main; unknown to this build.
-  internal_error.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(7));
+  internal_error.mutable_skipped()->set_reason(enrichv1::SKIP_REASON_INTERNAL_ERROR);
   internal_error.mutable_skipped()->set_detail(
       "unexpected failure enriching this item: IllegalStateException");
   {
@@ -1314,10 +1314,22 @@ void verify_a_failed_item_named_by_a_skip_is_one_failure() {
                 warnings_coded(report, docv1::WARNING_CODE_UNSPECIFIED).size() == 1,
             "beside it only the peer's own skip is passed on:" + all_messages(report));
     require(report.warnings[0].message.contains("#/pictures/0") &&
-                report.warnings[0].message.contains("7") &&
+                report.warnings[0].message.contains("SKIP_REASON_INTERNAL_ERROR") &&
                 report.warnings[0].message.contains("IllegalStateException"),
-            "a skip reason this build has no name for is passed on by its number: " +
+            "the peer's skip is passed on with its reason and detail: " +
                 report.warnings[0].message);
+  }
+  {
+    // A reason this build's contract has no name for.
+    enrichv1::EnrichDocumentResponse newer = skipped_event("#/pictures/0");
+    newer.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(99));
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(1, 0, 0), newer, complete_event(0, 1, 0)}, &document);
+    require(report.warnings.size() == 1 &&
+                report.warnings[0].message.contains("skip reason 99"),
+            "a skip reason this build has no name for is passed on by its number:" +
+                all_messages(report));
   }
   {
     // More skip events than the trailer's skipped and failed can account for.

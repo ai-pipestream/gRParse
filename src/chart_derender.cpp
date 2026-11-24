@@ -664,6 +664,26 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
     report.warnings.push_back(
         Warning(docv1::WARNING_CODE_ENRICHMENT_NOT_APPLIED, std::move(text)).on_item(self_ref));
   };
+  // A code or formula annotation the peer wrote from the item's text alone
+  // is a rewrite, not a reading of the page, and it has just replaced the
+  // item's text: said on the item, with its code. The crop step names an
+  // item it could not cut (code_formula_crops.h); this names every item the
+  // model did rewrite blind, including the ones no crop was ever due for (a
+  // source with no page render) and the ones whose crop was sent and not
+  // used.
+  const auto rewritten_from_text = [&report, &image_refs](
+                                       const enrichv1::ItemAnnotation& annotation,
+                                       const char* what) {
+    if (annotation.input() != enrichv1::ANNOTATION_INPUT_TEXT_ONLY) return;
+    report.warnings.push_back(
+        Warning(docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING,
+                std::string("document enrich: the ") + what + " at " + annotation.self_ref() +
+                    " was rewritten from its text alone, with no image of it" +
+                    (image_refs.contains(annotation.self_ref())
+                         ? "; its crop was sent and the enrich service did not use it"
+                         : "; no crop of it was sent"))
+            .on_item(annotation.self_ref()));
+  };
   // Counts a skip under the job it belongs to. A chart output names itself;
   // a text item is code or a formula by what the document holds there; a
   // picture skip with no chart output is a description's, except on the
@@ -757,6 +777,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
         ++code_events;
         if (fold_code_annotation(annotation, document)) {
           ++report.codes_enriched;
+          rewritten_from_text(annotation, "code");
         } else {
           not_applied(annotation.self_ref(),
                       "document enrich: " + annotation.self_ref() +
@@ -766,6 +787,7 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
         ++formula_events;
         if (fold_formula_annotation(annotation, document)) {
           ++report.formulas_enriched;
+          rewritten_from_text(annotation, "formula");
         } else {
           not_applied(annotation.self_ref(),
                       "document enrich: " + annotation.self_ref() +
@@ -861,6 +883,16 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                      std::to_string(report.items_failed) +
                      " item(s) failed outside the VLM call; they are not enriched");
       }
+    }
+    if (selected.has_value() && selected->unmatched_images() > 0) {
+      // Crops whose self_ref named nothing in the peer's reading of the
+      // document: the two sides disagree about the document, and the items
+      // those crops were for were read without them or skipped.
+      mismatch(static_cast<int>(selected->unmatched_images()),
+               "document enrich: " + std::to_string(selected->unmatched_images()) +
+                   " image crop(s) sent to the enrich service matched no picture, code or "
+                   "formula item of the document it read; their items were enriched "
+                   "without an image or skipped");
     }
     if (selected.has_value()) {
       // Charts are reconciled above, against the candidates this side sent.

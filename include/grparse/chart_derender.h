@@ -205,8 +205,10 @@ struct ChartDerenderReport {
   // the item, a trailer or selection count the events do not bear out is
   // WARNING_CODE_COLLECTOR_COUNT_MISMATCH, a stream without its trailer is
   // WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE, undecodable pixels are
-  // WARNING_CODE_ENRICHMENT_CROP_MISSING on the picture. The peer's own
-  // skip reasons and a failed call stay words.
+  // WARNING_CODE_ENRICHMENT_CROP_MISSING on the picture, and so is a code
+  // or formula item the peer rewrote from its text alone. Crops the peer
+  // matched to no item are a WARNING_CODE_COLLECTOR_COUNT_MISMATCH. The
+  // peer's own skip reasons and a failed call stay words.
   std::vector<Warning> warnings;
 };
 
