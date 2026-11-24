@@ -45,6 +45,7 @@ extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h"
+#include "google/rpc/status.pb.h"
 #include "grparse/base64.h"
 #include "grparse/confluence_storage.h"
 #include "grparse/document_assembly.h"
@@ -443,11 +444,11 @@ bool is_status(const pipestream::parse::v1::StreamDocumentResponse& envelope,
 }
 
 // StreamDocument over inline sources: the envelopes run QUEUED, STARTED,
-// then per source PROCESSING and the final_document with its
-// source_result, or an error with a failed source_result, and close with
-// COMPLETED. The final_document is the Document the unary ConvertSource
-// returns for the same bytes and options, and a failed source does not
-// stop the next one.
+// then per source PROCESSING and either EXPORTING, the final_document, its
+// source_outputs and a source_result, or an error with a failed
+// source_result, and close with COMPLETED. The final_document and the
+// exports are the ones the unary ConvertSource returns for the same bytes
+// and options, and a failed source does not stop the next one.
 void verify_stream_document_inline_sources(TestServer* server) {
   namespace parsev1 = pipestream::parse::v1;
   auto client = server->stub();
@@ -469,17 +470,22 @@ void verify_stream_document_inline_sources(TestServer* server) {
   require(run.status.ok(), "StreamDocument finishes OK: " + run.status.error_message());
   require_envelope_order(run, "req-377", "inline sources");
   const auto& envelopes = run.envelopes;
-  require(envelopes.size() == 12,
-          "QUEUED, STARTED, three sources of three envelopes, COMPLETED; got " +
+  require(envelopes.size() == 16,
+          "QUEUED, STARTED, five envelopes for each converted source and three for the "
+          "failed one, COMPLETED; got " +
               std::to_string(envelopes.size()));
   require(is_status(envelopes[0], parsev1::StreamStatus::PHASE_QUEUED) &&
               !envelopes[0].has_source_index() && envelopes[0].status().num_docs() == 3,
           "the stream opens QUEUED with the source count");
   require(is_status(envelopes[1], parsev1::StreamStatus::PHASE_STARTED), "then STARTED");
+  // Where each source's envelopes start: the failed one in the middle
+  // sends no EXPORTING and no source_outputs.
+  const size_t first[] = {2, 7, 10};
   for (uint32_t index = 0; index < 3; ++index) {
-    const auto& processing = envelopes[2 + index * 3];
-    const auto& outcome = envelopes[3 + index * 3];
-    const auto& result = envelopes[4 + index * 3];
+    const bool converted = index != 1;
+    const auto& processing = envelopes[first[index]];
+    const auto& outcome = envelopes[first[index] + (converted ? 2 : 1)];
+    const auto& result = envelopes[first[index] + (converted ? 4 : 2)];
     const std::string label = "sources[" + std::to_string(index) + "]";
     require(is_status(processing, parsev1::StreamStatus::PHASE_PROCESSING) &&
                 processing.source_index() == index &&
@@ -501,9 +507,19 @@ void verify_stream_document_inline_sources(TestServer* server) {
               "its source_result reports the failure");
       continue;
     }
+    const auto& exporting = envelopes[first[index] + 1];
+    const auto& outputs = envelopes[first[index] + 3];
+    require(is_status(exporting, parsev1::StreamStatus::PHASE_EXPORTING) &&
+                exporting.source_index() == index,
+            label + " reports EXPORTING before its results");
     require(outcome.has_final_document(), label + " streams its final_document");
     require(same_message(outcome.final_document(), unary.response().document().doc()),
             label + "'s final_document is the unary ConvertSource Document");
+    require(outputs.has_source_outputs() && outputs.source_index() == index &&
+                outputs.source_outputs().exports().text() == "one\ntwo\nthree" &&
+                same_message(outputs.source_outputs().exports(),
+                             unary.response().document().exports()),
+            label + "'s source_outputs carries the unary exports");
     require(result.source_result().success() && result.source_result().filename() == "image.png" &&
                 !result.source_result().has_error_message(),
             label + "'s source_result reports success");
@@ -543,6 +559,18 @@ void verify_stream_document_refuses_requests(TestServer* server) {
   require(target.status.error_code() == grpc::StatusCode::INVALID_ARGUMENT &&
               target.status.error_message().contains("target") && target.envelopes.empty(),
           "a delivery target is refused: " + target.status.error_message());
+  // The refusal is typed: a program reads which request field the stream
+  // cannot serve without parsing the message.
+  google::rpc::Status rich;
+  parsev1::OptionRejection rejection;
+  require(rich.ParseFromString(target.status.error_details()) && rich.details_size() == 1 &&
+              rich.details(0).UnpackTo(&rejection),
+          "the target refusal carries an OptionRejection");
+  require(rejection.option_path() == "target" &&
+              rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_IMPLEMENTED &&
+              rejection.rejected_value_raw() == "zip",
+          "the OptionRejection names the target and its kind; got " +
+              rejection.ShortDebugString());
 
   auto unsupported = stream_document_request(unary_request());
   unsupported.mutable_request()->mutable_options()->set_ocr_engine(
@@ -1512,40 +1540,45 @@ void verify_unary_storage_suffix_routes_in_process(TestServer* server) {
               response.response().document().exports().text());
 }
 
-// A rendering that reached a budget says so on the wire, typed, beside the
-// export or the chunks it describes: before, only the service's stderr did.
-// 65 x 64 is past the storage handler's grid ceiling, so the table keeps
-// its flat cells and every renderer places them itself. Its one cell spans
-// the whole table and is 17,000 bytes long: repeating it at 4,160 positions
-// is over the document's budget for repeated cell text, so each rendering
-// places it once.
-void verify_render_omissions_reach_the_caller(TestServer* server) {
+// A storage body no rendering carries whole. 65 x 64 is past the storage
+// handler's grid ceiling, so the table keeps its flat cells and every
+// renderer places them itself. Its one cell spans the whole table and is
+// 17,000 bytes long: repeating it at 4,160 positions is over the document's
+// budget for repeated cell text, so each rendering places it once.
+std::string wide_span_storage() {
   std::string storage = "<p>before</p><table><tbody><tr><td rowspan=\"65\" colspan=\"64\">" +
                         std::string(17000, 'x') + "</td></tr>";
   for (int row = 1; row < 65; ++row) storage += "<tr></tr>";
   storage += "</tbody></table>";
-  const auto source_of = [](const std::string& body) {
-    pipestream::parse::v1::Source source;
-    source.mutable_file()->set_filename("wide.confluence");
-    source.mutable_file()->set_base64_string(grparse::encode_base64(body.data(), body.size()));
-    return source;
-  };
-  const auto require_the_span = [](const pipestream::parse::v1::RenderOmissions& omissions,
-                                   const std::string& where) {
-    require(omissions.spans_not_repeated() == 1 && omissions.tables_cut() == 0 &&
-                omissions.tables_size() == 1 &&
-                omissions.tables(0).item_ref() == "#/tables/0" &&
-                omissions.tables(0).spans_not_repeated() == 1 &&
-                omissions.tables(0).declared_rows() == 65 &&
-                omissions.tables(0).declared_cols() == 64 &&
-                omissions.tables(0).kept_rows() == 65 && omissions.tables(0).kept_cols() == 64,
-            where + " names the table and the span it placed once: " +
-                omissions.ShortDebugString());
-  };
-  auto client = server->unary_stub();
+  return storage;
+}
 
+pipestream::parse::v1::Source storage_source(const std::string& body) {
+  pipestream::parse::v1::Source source;
+  source.mutable_file()->set_filename("wide.confluence");
+  source.mutable_file()->set_base64_string(grparse::encode_base64(body.data(), body.size()));
+  return source;
+}
+
+// The report every rendering of wide_span_storage owes: one span placed
+// once, in a table that was not cut, named by its self_ref.
+void require_the_span(const pipestream::parse::v1::RenderOmissions& omissions,
+                      const std::string& where) {
+  require(omissions.spans_not_repeated() == 1 && omissions.tables_cut() == 0 &&
+              omissions.tables_size() == 1 && omissions.tables(0).item_ref() == "#/tables/0" &&
+              omissions.tables(0).spans_not_repeated() == 1 &&
+              omissions.tables(0).declared_rows() == 65 &&
+              omissions.tables(0).declared_cols() == 64 &&
+              omissions.tables(0).kept_rows() == 65 && omissions.tables(0).kept_cols() == 64,
+          where + " names the table and the span it placed once: " +
+              omissions.ShortDebugString());
+}
+
+// The request both conversion surfaces answer for wide_span_storage: three
+// exports that lay the table out, one that does not, and the chunks.
+pipestream::parse::v1::ConvertSourceRequest wide_span_request() {
   pipestream::parse::v1::ConvertSourceRequest convert;
-  *convert.mutable_request()->add_sources() = source_of(storage);
+  *convert.mutable_request()->add_sources() = storage_source(wide_span_storage());
   auto* options = convert.mutable_request()->mutable_options();
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
@@ -1553,6 +1586,39 @@ void verify_render_omissions_reach_the_caller(TestServer* server) {
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_LATEX);
   options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
   options->set_md_compact_tables(true);
+  return convert;
+}
+
+// Each export that lays the table out reports it under its format, in
+// render order; the text export has nothing to report.
+void require_the_export_omissions(const pipestream::parse::v1::DocumentExports& exports,
+                                  const std::string& where) {
+  require(exports.omissions_size() == 3,
+          where + ": each export that lays the table out reports it, the text export has " +
+              "nothing to: " + std::to_string(exports.omissions_size()) + " entries");
+  const pipestream::parse::v1::OutputFormat formats[] = {
+      pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN,
+      pipestream::parse::v1::OUTPUT_FORMAT_HTML,
+      pipestream::parse::v1::OUTPUT_FORMAT_LATEX,
+  };
+  for (int index = 0; index < 3; ++index) {
+    const auto& entry = exports.omissions(index);
+    require(entry.format() == formats[index],
+            where + ": the entries follow the formats in render order: " +
+                pipestream::parse::v1::OutputFormat_Name(entry.format()));
+    require_the_span(entry.omissions(),
+                     where + "'s " + pipestream::parse::v1::OutputFormat_Name(entry.format()) +
+                         " export");
+  }
+}
+
+// A rendering that reached a budget says so on the wire, typed, beside the
+// export or the chunks it describes: before, only the service's stderr did.
+void verify_render_omissions_reach_the_caller(TestServer* server) {
+  const std::string storage = wide_span_storage();
+  auto client = server->unary_stub();
+
+  pipestream::parse::v1::ConvertSourceRequest convert = wide_span_request();
   {
     grpc::ClientContext context;
     context.set_deadline(std::chrono::system_clock::now() + 10s);
@@ -1565,30 +1631,14 @@ void verify_render_omissions_reach_the_caller(TestServer* server) {
     const auto& exports = response.response().document().exports();
     require(exports.has_text() && exports.has_md() && exports.has_html() && exports.has_latex(),
             "every requested export is rendered");
-    require(exports.omissions_size() == 3,
-            "each export that lays the table out reports it, the text export has nothing to: " +
-                std::to_string(exports.omissions_size()) + " entries");
-    const pipestream::parse::v1::OutputFormat formats[] = {
-        pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN,
-        pipestream::parse::v1::OUTPUT_FORMAT_HTML,
-        pipestream::parse::v1::OUTPUT_FORMAT_LATEX,
-    };
-    for (int index = 0; index < 3; ++index) {
-      const auto& entry = exports.omissions(index);
-      require(entry.format() == formats[index],
-              "the entries follow the formats in render order: " +
-                  pipestream::parse::v1::OutputFormat_Name(entry.format()));
-      require_the_span(entry.omissions(),
-                       "the " + pipestream::parse::v1::OutputFormat_Name(entry.format()) +
-                           " export");
-    }
+    require_the_export_omissions(exports, "ConvertSource");
     require(response.response().has_chunk_omissions(),
             "ConvertSource says what its chunks left out");
     require_the_span(response.response().chunk_omissions(), "ConvertSource's chunk list");
   }
 
   pipestream::parse::v1::ChunkHierarchicalSourceRequest chunk;
-  *chunk.mutable_request()->add_sources() = source_of(storage);
+  *chunk.mutable_request()->add_sources() = storage_source(storage);
   chunk.mutable_request()->set_include_converted_doc(true);
   chunk.mutable_request()->mutable_convert_options()->add_to_formats(
       pipestream::parse::v1::OUTPUT_FORMAT_HTML);
@@ -1609,7 +1659,7 @@ void verify_render_omissions_reach_the_caller(TestServer* server) {
   }
 
   pipestream::parse::v1::ChunkHybridSourceRequest hybrid;
-  *hybrid.mutable_request()->add_sources() = source_of(storage);
+  *hybrid.mutable_request()->add_sources() = storage_source(storage);
   hybrid.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
   {
     grpc::ClientContext context;
@@ -1642,7 +1692,7 @@ void verify_render_omissions_reach_the_caller(TestServer* server) {
   // A document every rendering carries whole reports nothing anywhere.
   convert.mutable_request()->clear_sources();
   *convert.mutable_request()->add_sources() =
-      source_of(std::string(kStorageBody, sizeof(kStorageBody) - 1));
+      storage_source(std::string(kStorageBody, sizeof(kStorageBody) - 1));
   grpc::ClientContext context;
   context.set_deadline(std::chrono::system_clock::now() + 10s);
   pipestream::parse::v1::ConvertSourceResponse whole;
@@ -1652,6 +1702,38 @@ void verify_render_omissions_reach_the_caller(TestServer* server) {
               whole.response().document().exports().omissions_size() == 0 &&
               !whole.response().has_chunk_omissions(),
           "complete renderings carry no omissions");
+}
+
+// StreamDocument answers the same request with the same reports, through
+// the code ConvertSource fills its response with: what the exports left out
+// rides inside source_outputs.exports, what the chunks left out beside them.
+void verify_stream_document_reports_render_omissions(TestServer* server) {
+  auto client = server->stub();
+  pipestream::parse::v1::ConvertSourceRequest convert = wide_span_request();
+  const auto outputs_of = [&client](const pipestream::parse::v1::ConvertSourceRequest& request,
+                                    const std::string& what) {
+    const EnvelopeRun run = run_stream_document(client.get(), stream_document_request(request));
+    require(run.status.ok(), what + " streams: " + run.status.error_message());
+    const auto outputs = std::ranges::find_if(
+        run.envelopes, [](const auto& envelope) { return envelope.has_source_outputs(); });
+    require(outputs != run.envelopes.end(), what + " sends its source_outputs");
+    return outputs->source_outputs();
+  };
+
+  const auto sent = outputs_of(convert, "the wide table");
+  require(sent.exports().has_md() && sent.chunks_size() > 0,
+          "the stream carries the exports and the chunks");
+  require_the_export_omissions(sent.exports(), "StreamDocument");
+  require(sent.has_chunk_omissions(), "StreamDocument says what its chunks left out");
+  require_the_span(sent.chunk_omissions(), "StreamDocument's chunk list");
+
+  convert.mutable_request()->clear_sources();
+  *convert.mutable_request()->add_sources() =
+      storage_source(std::string(kStorageBody, sizeof(kStorageBody) - 1));
+  const auto whole = outputs_of(convert, "the small body");
+  require(whole.chunks_size() > 0 && whole.exports().omissions_size() == 0 &&
+              !whole.has_chunk_omissions(),
+          "complete renderings carry no omissions on the stream either");
 }
 
 void verify_stream_storage_content_type_routes_in_process(TestServer* server) {
@@ -1880,6 +1962,109 @@ void verify_table_cell_limits_on_the_wire(TestServer* server) {
   require(enforced.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
               enforced.error_message().contains("table_cells_over_limit"),
           "ENFORCE with field 14 fails the stream: " + enforced.error_message());
+}
+
+// Element-wise same_message over two repeated fields.
+template <typename Message>
+bool same_messages(const google::protobuf::RepeatedPtrField<Message>& a,
+                   const google::protobuf::RepeatedPtrField<Message>& b) {
+  return std::ranges::equal(a, b, [](const Message& left, const Message& right) {
+    return same_message(left, right);
+  });
+}
+
+// StreamDocument delivers the conversion ConvertSource returns, not the
+// Document alone: after an EXPORTING status, each converted source sends its
+// final_document and then a source_outputs envelope with the exports, the
+// chunks, the structure findings, the confidence and the offset table of
+// the unary response for the same source and options. The two sources
+// cover both kinds of content: a storage page whose table breaks the cell
+// limit (findings, no CV page to grade) and a raster the CV path reads
+// (confidence, no finding).
+void verify_stream_document_sends_the_whole_conversion(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  parsev1::StreamDocumentRequest request;
+  auto* table = request.mutable_request()->add_sources()->mutable_file();
+  table->set_filename("table.confluence");
+  table->set_base64_string(grparse::encode_base64(kStorageTable, sizeof(kStorageTable) - 1));
+  *request.mutable_request()->add_sources() = unary_request().request().sources(0);
+  auto* options = request.mutable_request()->mutable_options();
+  options->add_to_formats(parsev1::OUTPUT_FORMAT_MARKDOWN);
+  options->add_to_formats(parsev1::OUTPUT_FORMAT_CHUNKS);
+  options->set_structure_validation(parsev1::STRUCTURE_VALIDATION_REPORT);
+  options->mutable_structure_table_cell_limits()->set_max_table_cells(3);
+
+  auto client = server->stub();
+  const EnvelopeRun run = run_stream_document(client.get(), request);
+  require(run.status.ok(), "the stream finishes OK: " + run.status.error_message());
+  require_envelope_order(run, std::nullopt, "whole conversion");
+  const auto& envelopes = run.envelopes;
+  const auto outputs_sent = std::ranges::count_if(
+      envelopes, [](const auto& envelope) { return envelope.has_source_outputs(); });
+  require(outputs_sent == 2,
+          "each of the two converted sources sends its source_outputs; got " +
+              std::to_string(outputs_sent));
+  require(envelopes.size() == 13,
+          "QUEUED, STARTED, two sources of five envelopes, COMPLETED; got " +
+              std::to_string(envelopes.size()));
+
+  for (uint32_t index = 0; index < 2; ++index) {
+    const std::string label = "sources[" + std::to_string(index) + "]";
+    parsev1::ConvertSourceRequest convert;
+    *convert.mutable_request()->add_sources() = request.request().sources(static_cast<int>(index));
+    *convert.mutable_request()->mutable_options() = request.request().options();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    parsev1::ConvertSourceResponse unary;
+    const grpc::Status converted = server->unary_stub()->ConvertSource(&context, convert, &unary);
+    require(converted.ok(), label + " converts over ConvertSource: " + converted.error_message());
+    const auto& expected = unary.response();
+
+    const auto& processing = envelopes[2 + index * 5];
+    const auto& exporting = envelopes[3 + index * 5];
+    const auto& document = envelopes[4 + index * 5];
+    const auto& outputs = envelopes[5 + index * 5];
+    const auto& result = envelopes[6 + index * 5];
+    require(is_status(processing, parsev1::StreamStatus::PHASE_PROCESSING) &&
+                processing.source_index() == index,
+            label + " opens with PROCESSING");
+    require(is_status(exporting, parsev1::StreamStatus::PHASE_EXPORTING) &&
+                exporting.source_index() == index && exporting.status().num_processed() == index,
+            label + " reports EXPORTING once it parsed");
+    require(document.has_final_document() &&
+                same_message(document.final_document(), expected.document().doc()),
+            label + "'s final_document is the unary Document");
+    require(outputs.has_source_outputs() && outputs.source_index() == index,
+            label + "'s source_outputs follows its final_document");
+    require(result.has_source_result() && result.source_result().success(),
+            label + " closes with its source_result");
+
+    const auto& sent = outputs.source_outputs();
+    require(sent.exports().has_md() && !sent.exports().md().empty() &&
+                same_message(sent.exports(), expected.document().exports()),
+            label + "'s exports are the unary exports");
+    require(sent.chunks_size() > 0 && same_messages(sent.chunks(), expected.chunks()),
+            label + "'s chunks are the unary chunks; got " + std::to_string(sent.chunks_size()) +
+                " where " + std::to_string(expected.chunks_size()) + " were due");
+    require(same_messages(sent.structure_findings(), expected.structure_findings()),
+            label + "'s structure findings are the unary findings");
+    require(sent.has_confidence() == expected.has_confidence() &&
+                same_message(sent.confidence(), expected.confidence()),
+            label + "'s confidence is the unary confidence");
+    require(sent.text_offsets_size() > 0 &&
+                same_messages(sent.text_offsets(), expected.text_offsets()),
+            label + "'s offset table is the unary offset table");
+    // Each kind of content reaches the comparison non-empty on one source.
+    if (index == 0) {
+      require(rules_on_the_wire(sent.structure_findings()) ==
+                  std::vector<int>{parsev1::STRUCTURE_RULE_TABLE_CELLS_OVER_LIMIT} &&
+                  !sent.has_confidence(),
+              "the storage table's cell finding streams, with no CV confidence");
+    } else {
+      require(sent.has_confidence() && sent.structure_findings().empty(),
+              "the raster's confidence streams, with no finding");
+    }
+  }
 }
 
 void verify_get_service_info(TestServer* server) {
@@ -5233,9 +5418,10 @@ docv1::Document stream_document(const WorkerCountServer& server, const std::stri
   const EnvelopeRun run = run_stream_document(client.get(), stream_document_request(unary_request()));
   require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
   require_envelope_order(run, std::nullopt, label);
-  require(run.envelopes.size() == 6 && run.envelopes[3].has_final_document(),
-          label + ": QUEUED, STARTED, PROCESSING, final_document, source_result, COMPLETED");
-  return run.envelopes[3].final_document();
+  require(run.envelopes.size() == 8 && run.envelopes[4].has_final_document(),
+          label + ": QUEUED, STARTED, PROCESSING, EXPORTING, final_document, source_outputs, "
+                  "source_result, COMPLETED");
+  return run.envelopes[4].final_document();
 }
 
 // Where two renderings first part, with a little of each side.
@@ -6386,9 +6572,11 @@ int main() {
         verify_deadline_cancels_scheduler_work();
         verify_unary_storage_suffix_routes_in_process(&server);
         verify_render_omissions_reach_the_caller(&server);
+        verify_stream_document_reports_render_omissions(&server);
         verify_stream_storage_content_type_routes_in_process(&server);
         verify_structure_validation_on_the_wire(&server);
         verify_table_cell_limits_on_the_wire(&server);
+        verify_stream_document_sends_the_whole_conversion(&server);
         verify_get_service_info(&server);
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();

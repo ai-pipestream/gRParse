@@ -174,9 +174,50 @@ class DocTagsRenderer : RendererBase {
           return render_key_value(document_.key_value_items(ref.index));
         }
         break;
-      default: break;
+      case ArenaRef::kFieldRegion:
+        if (ref.index < document_.field_regions_size()) {
+          const auto& region = document_.field_regions(ref.index);
+          return render_field_container(region.content_layer(), region.children());
+        }
+        break;
+      case ArenaRef::kFieldItem:
+        if (ref.index < document_.field_items_size()) {
+          const auto& item = document_.field_items(ref.index);
+          return render_field_container(item.content_layer(), item.children());
+        }
+        break;
+      // A form item holds graph cells and has no DocTags serialization
+      // upstream either; it renders nothing, as before.
+      case ArenaRef::kForm:
+      case ArenaRef::kUnknown: break;
     }
     return std::string();
+  }
+
+  // A form's field region or field item: DocTags has no token for either,
+  // so each is a transparent container, as in the other exports. The key
+  // and value text items under it render in place under their own label
+  // tokens; dropping the container dropped every field of the form.
+  std::string render_field_container(
+      docv1::ContentLayer layer,
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& children) {
+    if (excluded_layer(layer)) return std::string();
+    return render_children(children);
+  }
+
+  // The children of a transparent container, joined like top-level parts.
+  std::string render_children(
+      const google::protobuf::RepeatedPtrField<docv1::RefItem>& children) {
+    std::string body;
+    for (const auto& child : children) {
+      if (footnote_refs_.contains(child.ref())) continue;
+      if (!consume(child.ref())) continue;
+      const std::string part = render_ref(child.ref());
+      if (part.empty()) continue;
+      if (!body.empty()) body.push_back('\n');
+      body.append(part);
+    }
+    return body;
   }
 
   std::string render_text(const docv1::BaseTextItem& item) {
@@ -230,16 +271,7 @@ class DocTagsRenderer : RendererBase {
     }
     // Every other group label is a transparent container; its children join
     // like top-level parts.
-    std::string body;
-    for (const auto& child : group.children()) {
-      if (footnote_refs_.contains(child.ref())) continue;
-      if (!consume(child.ref())) continue;
-      const std::string part = render_ref(child.ref());
-      if (part.empty()) continue;
-      if (!body.empty()) body.push_back('\n');
-      body.append(part);
-    }
-    return body;
+    return render_children(group.children());
   }
 
   // docling's list assembly verbatim: every child's serialization wrapped in

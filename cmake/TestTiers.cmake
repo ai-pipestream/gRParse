@@ -33,7 +33,7 @@ set(GRPARSE_TIER_LOOPBACK
   chart-derender-test remote-pdf-source-test pdf-source-test
   remote-sources-test storage-connectors-test consensus-page-source-test
   prometheus-metrics-test page-scheduler-test page-previews-test
-  ort-session-ep-test)
+  ort-session-ep-test service-health-test)
 set(GRPARSE_TIER_MODELS
   layout-engine-test table-structure-engine-test figure-classifier-test
   chunk-hf-model-test tensorrt-model-test)

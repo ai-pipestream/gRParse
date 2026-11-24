@@ -26,6 +26,7 @@
 #include "grparse/layout_engine.h"
 #include "grparse/ocr_engine.h"
 #include "grparse/page_scheduler.h"
+#include "grparse/service_health.h"
 #include "grparse/table_structure_engine.h"
 #include "task_registry.h"
 
@@ -118,6 +119,26 @@ void report_retired_settings();
 // "gRParse model placement: layout on OpenVINO (GPU), 1 session".  A model
 // pinned to CPU under a GPU selection says so with its reason.
 void report_model_placements();
+
+// The optional engines startup built, as main holds them once the build_*
+// functions below have returned.
+struct BuiltEngines {
+  bool layout = false;
+  bool table_structure = false;
+  bool figure_classifier = false;
+  bool embeddings = false;
+};
+
+// How startup left each in-process engine, for Health (service_health.h).
+// OCR is always loaded: a pool that cannot be built stops startup. An
+// optional engine that was built is loaded. One that was not is disabled
+// when its own setting says off (GRPARSE_LAYOUT, GRPARSE_TABLE_STRUCTURE,
+// GRPARSE_FIGURE_CLASSES, `embeddings.backend`), or when GRPARSE_LAYOUT=off
+// took away the regions table structure and the figure classifier work on;
+// otherwise its setting allowed it and startup found nothing to build, which
+// is not loaded.
+EngineInventory read_engine_inventory(const BuiltEngines& built,
+                                      const EmbeddingConfig& embeddings);
 
 // GRPARSE_OPENVINO_DEVICE, validated: GPU (the default), GPU.<n>, NPU,
 // NPU.<n> or CPU.  Device lists (AUTO:, HETERO:, MULTI:, BATCH:) throw

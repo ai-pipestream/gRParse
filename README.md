@@ -157,7 +157,7 @@ its stage, and the counts say whether the page is simply denser.
 
 Tasks live in memory only, in keeping with the diskless rule: ids are per process, and a poll after a restart answers `NOT_FOUND`, as does an unknown, expired or cleared id. The registry holds at most `GRPARSE_MAX_TASKS` tasks (default 256, 1 to 65536; finished ones included until they go) and a submission past it is refused with `RESOURCE_EXHAUSTED` naming the variable; a finished task is kept for `GRPARSE_TASK_RESULT_TTL_SECONDS` (default 3600, 1 to 604800), then expires; at most `GRPARSE_MAX_WATCHERS` (default 256, 1 to 65536) watch streams and waiting polls run at once. A stored result is charged to `GRPARSE_MAX_INFLIGHT_BYTES` for its serialized size until it expires or is cleared, and a result the budget has no room for fails its task with `RESOURCE_EXHAUSTED`. The request is charged while its task is queued or running, as on the unary RPCs. A task's document passwords come from the submitting call's metadata, read at submission. No RPC cancels a task; on shutdown, queued and running tasks are cancelled before the executor drains.
 
-Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). A rendering that reaches one of these budgets says so on the response, typed: `DocumentExports.omissions` carries one `ExportOmissions` entry per export format that was cut (the formats read a table differently, so one export can be cut while another is whole), and `chunk_omissions` on `ConvertDocumentResponse`, `ChunkDocumentResponse` and the `StreamChunks` summary says the same for the chunk list. Each is a `RenderOmissions`: the tables cut and the rows and columns they lost, the spanned cells that did not repeat, and the first 64 tables by `self_ref` with their declared and kept grid. For chunks it also counts the subtrees nested deeper than the 256 levels the chunker follows and the key-value and form items, which hold graph cells and have no chunk serialization. An absent report means the rendering holds everything its format serializes. The server still writes one stderr line per document for the operator.
+Table exports are bounded per document, because a table's declared size and spans are untrusted. Each table's grid keeps at most 4,194,304 positions (its leading rows and columns), and all tables of one document share 8,388,608; a table built after that keeps no positions and renders empty. A spanned cell repeats at every position it covers only while the document's span budget lasts (8,388,608 extra positions and 64 MiB of repeated text); past it the cell renders once, at its first position (a Markdown cell that references another item renders empty at its later positions instead). A rendering that reaches one of these budgets says so on the response, typed: `DocumentExports.omissions` carries one `ExportOmissions` entry per export format that was cut (the formats read a table differently, so one export can be cut while another is whole), and `chunk_omissions` on `ConvertDocumentResponse`, `ChunkDocumentResponse`, the `StreamChunks` summary and `StreamDocument`'s `StreamSourceOutputs` says the same for the chunk list. Each is a `RenderOmissions`: the tables cut and the rows and columns they lost, the spanned cells that did not repeat, and the first 64 tables by `self_ref` with their declared and kept grid. For chunks it also counts the subtrees nested deeper than the 256 levels the chunker follows and the key-value and form items, which hold graph cells and have no chunk serialization. An absent report means the rendering holds everything its format serializes. The server still writes one stderr line per document for the operator.
 
 ### Chunking
 
@@ -685,19 +685,31 @@ in-flight budget, collectors, merge and repair), one source after another
 on a pool sized like the unary one (`GRPARSE_UNARY_WORKERS`,
 `GRPARSE_UNARY_QUEUE`). The stream is `status` `PHASE_QUEUED`, then
 `PHASE_STARTED`; per source in request order a `PHASE_PROCESSING` status,
-then either the merged `final_document` and a successful `source_result`,
-or an `error` (typed `code` and `failure`) and a failed `source_result`,
-after which the next source runs; and last `PHASE_COMPLETED` when any
-source converted, else `PHASE_FAILED`. The call then finishes OK. Every
+then either a `PHASE_EXPORTING` status, the merged `final_document`, its
+`source_outputs` and a successful `source_result`, or an `error` (typed
+`code` and `failure`) and a failed `source_result`, after which the next
+source runs; and last `PHASE_COMPLETED` when any source converted, else
+`PHASE_FAILED`. The call then finishes OK. `source_outputs`
+(`StreamSourceOutputs`) carries the rest of the conversion as
+`ConvertDocumentResponse` does for the same request, filled by the same
+code: the `exports` `to_formats` asked for, the `chunks` and what they
+left out (`chunk_omissions`), the
+`structure_findings`, the `confidence` and the `text_offsets`. It is sent
+for every converted source, so an empty field means the conversion
+produced nothing for it. A source whose outputs fail to render, or whose
+`final_document` or `source_outputs` is past the message limit, fails as a
+whole. Every
 envelope echoes `request_id` and carries `sequence_number`, counting from 1
 with no gaps, and `timestamp_ms`; source-scoped envelopes set
 `source_index`. The `part` arm is not sent: what streams is each source's
 result, not its pages (`StreamProcessDocument` streams pages). A request
-with no source, a `target` to deliver to, invalid options, or no room in
-the budget or the pool is refused with its status and no envelope; a
-client that cancels or stops reading ends the call `CANCELLED`. The server
-writes one source's envelopes before it parses the next, so a slow reader
-holds at most one finished `Document`.
+with no source, a `target` to deliver to (a typed `OptionRejection` on
+`target`: the stream has no envelope for a delivery result), invalid
+options, or no room in the budget or the pool is refused with its status
+and no envelope; a client that cancels or stops reading ends the call
+`CANCELLED`. The server writes one source's envelopes before it parses the
+next, so a slow reader holds at most one finished `Document` and its
+outputs.
 
 ## Collector scatter-gather
 
@@ -1076,6 +1088,24 @@ under the `s3` profile for a stack that brings its own.
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
+
+Both health surfaces report what the process holds, not that the port is
+bound. `Health` answers a typed `state` (`SERVING_STATE_NOT_SERVING` until
+startup has built everything the settings ask for, then `SERVING`, or
+`SERVING_DEGRADED` when a part is missing) and one `ComponentHealth` per
+in-process engine (loaded, disabled by its setting, or allowed and not
+built), per `GRPARSE_PDF_BACKEND` target, and per collector and peer target
+(not configured, configured, connected or unreachable, with the connectivity
+state of each channel a parse has already opened). Nothing is probed for the
+answer: `Health` never creates a channel or makes one connect, so a target no
+parse has needed yet reads `COMPONENT_STATE_CONFIGURED`. Degraded means an
+engine was allowed and not built, a configured target's last connection
+attempt failed, or no PDF backend is configured; a switched-off engine and an
+unset collector are deployment choices and do not count. The `status` string
+is the text form of `state` (`starting`, `ready`, `degraded`). `grpc.health.v1`
+answers for the server (`""`) and for `ai.pipestream.parse.v1.ParseService`
+and `ai.pipestream.parse.v1.ParseStreamingService` by name: `NOT_SERVING`
+until startup completes and `SERVING` after, degraded included.
 
 Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
 prints one pipeline metrics line to stdout: document and page counters, queue

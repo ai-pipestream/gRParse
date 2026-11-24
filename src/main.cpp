@@ -26,6 +26,7 @@
 #include "grparse/page_scheduler.h"
 #include "grparse/prometheus_metrics.h"
 #include "grparse/remote_page_source.h"
+#include "grparse/service_health.h"
 #include "grparse_session_ep.h"
 #include "server_config.h"
 
@@ -203,11 +204,14 @@ void install_shutdown_signal_pipe(int* signal_pipe) {
 }
 
 // Binds the port and registers both parsing surfaces. Null when the address
-// could not be listened on, which the caller reports and exits over.
+// could not be listened on, which the caller reports and exits over. gRPC's
+// default health service answers SERVING as soon as the server exists, so
+// `health`, still starting, is published before this returns.
 std::unique_ptr<grpc::Server> start_server(const std::string& listen_address,
                                            grparse::DocumentParserService& service,
                                            grparse::DocumentStreamingService& streaming_service,
-                                           const grparse::GrpcLimits& limits) {
+                                           const grparse::GrpcLimits& limits,
+                                           const grparse::ServiceHealth& health) {
   grpc::EnableDefaultHealthCheckService(true);
   grpc::reflection::InitProtoReflectionServerBuilderPlugin();
   grpc::ServerBuilder builder;
@@ -230,7 +234,9 @@ std::unique_ptr<grpc::Server> start_server(const std::string& listen_address,
   builder.AddChannelArgument(GRPC_ARG_KEEPALIVE_PERMIT_WITHOUT_CALLS, 1);
   builder.RegisterService(&service);
   builder.RegisterService(&streaming_service);
-  return builder.BuildAndStart();
+  auto server = builder.BuildAndStart();
+  if (server) grparse::publish_serving_status(health, server->GetHealthCheckService());
+  return server;
 }
 
 std::unique_ptr<grparse::MetricsHttpServer> start_metrics_exporter(
@@ -348,8 +354,18 @@ int main() {
     grparse::DocumentStreamingService streaming_service(scheduler, endpoints, repair, inflight,
                                                         {}, streaming_limits);
     streaming_service.set_remote_fetch_slots(service.remote_fetch_slots());
+    // What Health and grpc.health.v1 report: the engines as built above and
+    // the targets as configured, not serving until the last startup step.
+    const auto health = std::make_shared<grparse::ServiceHealth>(
+        grparse::read_engine_inventory({.layout = layout != nullptr,
+                                        .table_structure = table_structure != nullptr,
+                                        .figure_classifier = figure_classes != nullptr,
+                                        .embeddings = embedding_engine != nullptr},
+                                       embedding_config),
+        endpoints);
+    service.set_health(health);
     const auto server = start_server(process.listen_address, service, streaming_service,
-                                     grparse::read_grpc_limits());
+                                     grparse::read_grpc_limits(), *health);
     if (!server) {
       std::println(stderr, "Unable to listen on {}", process.listen_address);
       return 1;
@@ -361,6 +377,10 @@ int main() {
     MetricsLine metrics_line(scheduler, *engines, options);
     MetricsLogLoop metrics_log(metrics_config.interval_seconds,
                                [&metrics_line] { return metrics_line.next(); });
+    // Nothing is left to build or bind: from here both health surfaces say
+    // serving, and Health says with what.
+    health->mark_startup_complete();
+    grparse::publish_serving_status(*health, server->GetHealthCheckService());
     serve_until_signal(*server, signal_pipe, metrics_log);
   } catch (const std::exception& error) {
     std::println(stderr, "Startup failed: {}", error.what());

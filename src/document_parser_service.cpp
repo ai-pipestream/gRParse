@@ -21,9 +21,10 @@
 #include <grpcpp/alarm.h>
 
 #include "chunking/chunker.h"
+#include "conversion_outputs.h"
 #include "grparse/collector_coordinator.h"
-#include "grparse/document_render.h"
 #include "grparse/prometheus_metrics.h"
+#include "grparse/service_health.h"
 #include "grparse/service_version.h"
 #include "parse_support.h"
 #include "source_parse.h"
@@ -76,54 +77,6 @@ void record_rpc_completion(const SourceParse& parsed, const grpc::Status& status
   record_document_completion(parsed.doctype, completion, elapsed_ns);
 }
 
-// The document's plain text export: its text items in arena order, which is
-// each collector's emission order.
-std::string document_plain_text(const pipestream::document::v1::Document& document) {
-  std::string text;
-  for (const auto& item : document.texts()) {
-    const pipestream::document::v1::TextItemBase* base = nullptr;
-    switch (item.item_case()) {
-      case pipestream::document::v1::BaseTextItem::kTitle: base = &item.title().base(); break;
-      case pipestream::document::v1::BaseTextItem::kSectionHeader:
-        base = &item.section_header().base();
-        break;
-      case pipestream::document::v1::BaseTextItem::kListItem:
-        base = &item.list_item().base();
-        break;
-      case pipestream::document::v1::BaseTextItem::kFormula: base = &item.formula().base(); break;
-      case pipestream::document::v1::BaseTextItem::kText: base = &item.text().base(); break;
-      case pipestream::document::v1::BaseTextItem::kCode:
-        // CodeItem carries its fields inline instead of a nested base.
-        if (!text.empty()) text.push_back('\n');
-        text.append(item.code().text());
-        break;
-      case pipestream::document::v1::BaseTextItem::kFieldHeading:
-        base = &item.field_heading().base();
-        break;
-      case pipestream::document::v1::BaseTextItem::kFieldValue:
-        base = &item.field_value().base();
-        break;
-      case pipestream::document::v1::BaseTextItem::ITEM_NOT_SET: break;
-    }
-    if (base == nullptr) continue;
-    if (!text.empty()) text.push_back('\n');
-    text.append(base->text());
-  }
-  return text;
-}
-
-// True when the response must carry this output format. An empty to_formats
-// keeps the historical default of the plain-text export alone; every other
-// format is opt-in by explicit request.
-bool requested(const pipestream::parse::v1::ConvertDocumentOptions& options,
-               pipestream::parse::v1::OutputFormat format) {
-  if (options.to_formats().empty()) {
-    return format == pipestream::parse::v1::OUTPUT_FORMAT_TEXT;
-  }
-  return std::ranges::find(options.to_formats(), format) !=
-         options.to_formats().end();
-}
-
 // The collector failures of a parse, as the error list every conversion
 // surface reports them under.
 void report_failures(const std::vector<CollectorFailureInfo>& failures,
@@ -134,128 +87,6 @@ void report_failures(const std::vector<CollectorFailureInfo>& failures,
     error->set_module_name(std::string("collector:") + collector_name(failure.id));
     error->set_error_message(failure.error);
     error->set_category(failure_category_for(failure.code));
-  }
-}
-
-// True when a rendering left something of the document out. A
-// RenderOmissions that counts nothing has every field at its default and
-// serializes to no bytes.
-bool left_something_out(const pipestream::parse::v1::RenderOmissions& omissions) {
-  return omissions.ByteSizeLong() != 0;
-}
-
-// Puts what one export left out of the document beside the exports, under
-// its format. A complete export adds no entry, so an entry is the signal.
-void attach_omissions(pipestream::parse::v1::OutputFormat format,
-                      const pipestream::parse::v1::RenderOmissions& omissions,
-                      pipestream::parse::v1::DocumentExports* exports) {
-  if (!left_something_out(omissions)) return;
-  auto* entry = exports->add_omissions();
-  entry->set_format(format);
-  *entry->mutable_omissions() = omissions;
-}
-
-// Renders every output format the options asked for onto the response. A
-// renderer that lays tables out as grids bounds what they may cost
-// (document_render.h); whatever it left out for that goes on `exports` too,
-// so a cut export is never returned as a complete one. TEXT, JSON, YAML and
-// VTT build no grid and have nothing to report.
-void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options,
-                    const pipestream::document::v1::Document& document,
-                    pipestream::parse::v1::DocumentExports* exports) {
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_TEXT)) {
-    exports->set_text(document_plain_text(document));
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN)) {
-    MarkdownOptions markdown;
-    if (options.has_md_page_break_placeholder()) {
-      markdown.page_break_placeholder = options.md_page_break_placeholder();
-    }
-    markdown.compact_tables = options.md_compact_tables();
-    if (options.has_caption_placement()) {
-      switch (options.caption_placement()) {
-        case pipestream::parse::v1::CAPTION_PLACEMENT_LAYOUT:
-          markdown.caption_placement = MarkdownOptions::CaptionPlacement::kLayout;
-          break;
-        case pipestream::parse::v1::CAPTION_PLACEMENT_STANDARD:
-          markdown.caption_placement = MarkdownOptions::CaptionPlacement::kStandard;
-          break;
-        default:
-          throw std::invalid_argument("caption_placement is unspecified or unknown");
-      }
-    }
-    if (options.has_image_export_mode()) {
-      switch (options.image_export_mode()) {
-        case pipestream::parse::v1::IMAGE_REF_MODE_EMBEDDED:
-          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kEmbedded;
-          break;
-        case pipestream::parse::v1::IMAGE_REF_MODE_REFERENCED:
-          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kReferenced;
-          break;
-        case pipestream::parse::v1::IMAGE_REF_MODE_PLACEHOLDER:
-        case pipestream::parse::v1::IMAGE_REF_MODE_UNSPECIFIED:
-        default:
-          markdown.image_export_mode = MarkdownOptions::ImageExportMode::kPlaceholder;
-          break;
-      }
-    }
-    if (options.has_formatting_fallback_mode() &&
-        options.formatting_fallback_mode() ==
-            pipestream::parse::v1::FORMATTING_FALLBACK_MODE_HTML) {
-      markdown.html_formatting_fallback = true;
-    }
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_md(render_markdown(document, markdown, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_html(render_html(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_HTML, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
-    exports->set_json(render_json(document));
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_canonical_json(render_canonical_json(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_gdocs_json(render_gdocs_json(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_doctags(render_doctags(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_doclang(render_doclang(document, doclang_options(options), &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
-    exports->set_vtt(render_vtt(document));
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_html_split_page(render_html_split_page(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
-    exports->set_yaml(render_yaml(document));
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_LATEX)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_latex(render_latex(document, &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_LATEX, omissions, exports);
-  }
-  if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DCLX)) {
-    pipestream::parse::v1::RenderOmissions omissions;
-    exports->set_dclx(render_dclx(document, doclang_options(options), &omissions));
-    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DCLX, omissions, exports);
   }
 }
 
@@ -1105,45 +936,13 @@ grpc::Status DocumentParserService::convert_source(
   auto* document = document_response->mutable_doc();
   *document = std::move(result.document);
   report_failures(result.failures, converted->mutable_errors());
-  if (parsed->confidence.has_value()) *converted->mutable_confidence() = *parsed->confidence;
-  converted->mutable_structure_findings()->Swap(&parsed->structure_findings);
-  *converted->mutable_text_offsets() = chunking::offset_rows(parsed->offsets);
-  // Every requested output format renders from the same merged document;
-  // TEXT keeps its arena-order line export, the rest fold the body tree.
-  const auto& options = request.options();
-  render_exports(options, *document, document_response->mutable_exports());
-  const bool wants_chunks =
-      std::ranges::find(options.to_formats(),
-                        pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS) !=
-      options.to_formats().end();
-  if (wants_chunks) {
-    std::vector<pipestream::parse::v1::Chunk> chunks;
-    // What the chunker left out of the document rides beside the chunks.
-    pipestream::parse::v1::RenderOmissions chunk_omissions;
-    if (options.chunking_options_case() ==
-        pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
-      const grpc::Status chunked = chunking::chunk_hybrid(
-          *document, parsed->offsets, options.hybrid_chunking(), parsed->filename.string(),
-          &chunks, &chunk_omissions);
-      if (!chunked.ok()) return chunked;
-    } else {
-      // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
-      // hierarchical defaults (validate_options admits no other preset).
-      pipestream::parse::v1::HierarchicalChunkerOptions hierarchical;
-      if (options.chunking_options_case() ==
-          pipestream::parse::v1::ConvertDocumentOptions::kHierarchicalChunking) {
-        hierarchical = options.hierarchical_chunking();
-      }
-      const chunking::ChunkOptions chunk_opts = chunking::chunk_options_from(hierarchical);
-      chunks = chunking::chunk_hierarchical(*document, parsed->offsets, chunk_opts,
-                                            parsed->filename.string(), &chunk_omissions);
-    }
-    for (auto& chunk : chunks) {
-      *converted->add_chunks() = std::move(chunk);
-    }
-    if (left_something_out(chunk_omissions)) {
-      *converted->mutable_chunk_omissions() = std::move(chunk_omissions);
-    }
+  // The same function fills StreamDocument's source_outputs, so the two
+  // surfaces answer a request with the same conversion.
+  if (grpc::Status outputs =
+          fill_conversion_outputs(request.options(), *document, parsed,
+                                  document_response->mutable_exports(), converted);
+      !outputs.ok()) {
+    return outputs;
   }
   // The target delivers the same conversion somewhere else; the response
   // body above keeps everything it already carries either way. It runs
@@ -1403,7 +1202,13 @@ grpc::Status DocumentParserService::parse_chunk_source(
 grpc::ServerUnaryReactor* DocumentParserService::Health(
     grpc::CallbackServerContext* context, const pipestream::parse::v1::HealthRequest*,
     pipestream::parse::v1::HealthResponse* response) {
-  response->set_status("ready");
+  if (health_ != nullptr) {
+    health_->describe(response);
+  } else {
+    // Nobody told this service what it was started with (set_health).
+    response->set_state(pipestream::parse::v1::SERVING_STATE_NOT_SERVING);
+    response->set_status(serving_status_text(pipestream::parse::v1::SERVING_STATE_NOT_SERVING));
+  }
   response->set_version(std::string(kServiceVersion));
   return finish_inline(context, grpc::Status::OK);
 }

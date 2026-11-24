@@ -853,9 +853,11 @@ add_library(grparse_core STATIC
   src/parse_support.cpp
   src/input_format.cpp
   src/source_parse.cpp
+  src/conversion_outputs.cpp
   src/task_registry.cpp
   src/vlm_custom_options.cpp
   src/option_rejection.cpp
+  src/service_health.cpp
   src/service_identity.cpp
   src/structure_validation.cpp
   src/document_parser_service.cpp
@@ -1005,6 +1007,7 @@ if(BUILD_TESTING)
     input-format-test
     paragraph-split-test
     service-identity-test
+    service-health-test
     ocr-box-rescue-test)
   foreach(test_name IN LISTS GRPARSE_TESTS)
     string(REPLACE "-" "_" test_source "${test_name}")

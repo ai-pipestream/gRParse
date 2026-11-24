@@ -370,6 +370,14 @@ message StreamDocumentResponse {
 
     // Terminal or recoverable error associated with the stream / source.
     StreamError error = 14;
+
+    // What a source's conversion carries beside its Document: the exports
+    // and chunks the request asked for, the structure findings, the read
+    // quality and the offset table. Sent once for every source that
+    // converted, right after its final_document and before its
+    // source_result; a final_document with no source_outputs behind it
+    // comes from a server that predates this arm.
+    StreamSourceOutputs source_outputs = 15;
   }
 }
 
@@ -380,6 +388,8 @@ message StreamStatus {
     PHASE_QUEUED = 1;
     PHASE_STARTED = 2;
     PHASE_PROCESSING = 3;
+    // The source named by source_index parsed, and its exports and chunks
+    // are being rendered; its final_document and source_outputs follow.
     PHASE_EXPORTING = 4;
     PHASE_COMPLETED = 5;
     PHASE_FAILED = 6;
@@ -436,6 +446,42 @@ message StreamSourceResult {
   // final_document. Keeping it optional avoids double-shipping large docs
   // when the client only wants the final_document payload.
   optional string document_name = 5;
+}
+
+// StreamSourceOutputs is the rest of one source's conversion: the exports,
+// chunks, structure findings, read quality and offset table the unary
+// ConvertDocumentResponse carries beside the Document for the same request,
+// each with the same meaning and computed by the same code. It is always
+// sent for a converted source, so an empty field says the conversion
+// produced nothing for it (no finding, no chunk asked for), never that the
+// stream left it out. The unary response's status and errors are the
+// source_result's to report, its target_result has no counterpart because
+// StreamDocument refuses a delivery target, and its timings and profiling
+// are not streamed.
+message StreamSourceOutputs {
+  // The serialized forms ConvertDocumentOptions.to_formats asked for,
+  // rendered from the source's final_document (DocumentResponse.exports on
+  // the unary surface). An empty to_formats renders the plain-text export
+  // alone, as it does there.
+  optional DocumentExports exports = 1;
+  // Populated when to_formats includes OUTPUT_FORMAT_CHUNKS.
+  repeated Chunk chunks = 2;
+  // What ConvertDocumentOptions.structure_validation REPORT found, in
+  // document order. Empty when validation is OFF or the document breaks no
+  // checked rule.
+  repeated StructureFinding structure_findings = 3;
+  // The read quality of the in-process CV collector's pages. Absent when no
+  // CV page was read (a collector-folded office document, a fast-path PDF).
+  optional ConfidenceScores confidence = 4;
+  // The document's offset table, one row per text item in stream order
+  // (see ConvertDocumentResponse.text_offsets). Empty when the document has
+  // no text items.
+  repeated TextOffset text_offsets = 5;
+  // What `chunks` left out of the document (see
+  // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
+  // everything the chunker serializes, and when no chunks were asked for.
+  // What an export left out rides inside `exports`, as on the unary surface.
+  optional RenderOmissions chunk_omissions = 6;
 }
 
 // StreamErrorCode is the stable machine class of a StreamError.
