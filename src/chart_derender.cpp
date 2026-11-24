@@ -5,6 +5,7 @@
 #include <charconv>
 #include <chrono>
 #include <cstdint>
+#include <cstdlib>
 #include <optional>
 #include <set>
 #include <stdexcept>
@@ -198,6 +199,9 @@ std::string status_code_name(grpc::StatusCode code) {
 
 std::string skip_reason_text(const enrichv1::ItemSkipped& skipped) {
   std::string text = enrichv1::SkipReason_Name(skipped.reason());
+  // A reason newer than the vendored contract has no name here; its number
+  // still says which one the peer meant.
+  if (text.empty()) text = "skip reason " + std::to_string(static_cast<int>(skipped.reason()));
   if (skipped.chart_output() != enrichv1::CHART_OUTPUT_UNSPECIFIED) {
     text += ", " + enrichv1::ChartOutput_Name(skipped.chart_output());
   }
@@ -826,13 +830,30 @@ ChartDerenderReport derender_charts(const std::shared_ptr<grpc::Channel>& channe
                      " arrived");
       };
       claimed_against(report.trailer_succeeded, report.annotations_received, "annotation");
-      claimed_against(report.trailer_skipped, report.skips_received, "skip");
+      // An item that failed outside the VLM call is counted in `failed`
+      // and not in `skipped`, and the peer may still name it in a skip
+      // event (grpc-enrich does; an older one sent no event for it). So the
+      // skip events agree with the trailer when they number its skips, or
+      // its skips and its failures; anything else is a mismatch.
+      const int64_t skips = report.skips_received;
+      const int64_t without_failures = report.trailer_skipped;
+      const int64_t with_failures = without_failures + report.items_failed;
+      if (skips != without_failures && skips != with_failures) {
+        const int64_t off = std::min(std::abs(skips - without_failures),
+                                     std::abs(skips - with_failures));
+        mismatch(static_cast<int>(off),
+                 "document enrich: the enrich service's trailer counts " +
+                     std::to_string(report.trailer_skipped) + " skip(s)" +
+                     (report.items_failed > 0
+                          ? " and " + std::to_string(report.items_failed) + " failed item(s)"
+                          : std::string()) +
+                     ", " + std::to_string(report.skips_received) + " skip event(s) arrived");
+      }
       if (report.items_failed > 0) {
         mismatch(static_cast<int>(report.items_failed),
                  "document enrich: the enrich service reports " +
                      std::to_string(report.items_failed) +
-                     " item(s) failed outside the VLM call; they are not enriched and no "
-                     "event names them");
+                     " item(s) failed outside the VLM call; they are not enriched");
       }
     }
     if (selected.has_value()) {

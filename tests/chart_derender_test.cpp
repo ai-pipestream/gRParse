@@ -1220,6 +1220,56 @@ void verify_the_trailer_is_reconciled_with_the_events() {
   }
 }
 
+// grpc-enrich counts an item that failed outside the VLM call in the
+// trailer's `failed` only, and also names it in a skip event, whose reason
+// is a value newer than the vendored contract (it arrives as a bare
+// number). That stream adds up: the failure is reported once, the skip is
+// not a count the trailer contradicts, and the item was answered.
+void verify_a_failed_item_named_by_a_skip_is_one_failure() {
+  enrichv1::EnrichDocumentResponse internal_error = skipped_event("#/pictures/0");
+  // SKIP_REASON_INTERNAL_ERROR on grpc-enrich main; unknown to this build.
+  internal_error.mutable_skipped()->set_reason(static_cast<enrichv1::SkipReason>(7));
+  internal_error.mutable_skipped()->set_detail(
+      "unexpected failure enriching this item: IllegalStateException");
+  {
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(2, 0, 0),
+         annotation_event(Job::kDescription, "#/pictures/1", "A photograph."), internal_error,
+         complete_event(1, 0, 1)},
+        &document);
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 1 && mismatched[0].message.contains("failed") &&
+                mismatched[0].count == std::optional<uint64_t>(1),
+            "a failed item the peer also names in a skip is one count mismatch, the "
+            "failure:" + all_messages(report));
+    require(report.skips_received == 1 && report.items_failed == 1 &&
+                report.warnings.size() == 2 &&
+                warnings_coded(report, docv1::WARNING_CODE_UNSPECIFIED).size() == 1,
+            "beside it only the peer's own skip is passed on:" + all_messages(report));
+    require(report.warnings[0].message.contains("#/pictures/0") &&
+                report.warnings[0].message.contains("7") &&
+                report.warnings[0].message.contains("IllegalStateException"),
+            "a skip reason this build has no name for is passed on by its number: " +
+                report.warnings[0].message);
+  }
+  {
+    // More skip events than the trailer's skipped and failed can account for.
+    docv1::Document document = document_with_code_and_formula();
+    const grparse::ChartDerenderReport report = enrich_against(
+        {started_event(2, 0, 0), internal_error, skipped_event("#/pictures/1"),
+         complete_event(0, 0, 1)},
+        &document);
+    const std::vector<grparse::Warning> mismatched =
+        warnings_coded(report, docv1::WARNING_CODE_COLLECTOR_COUNT_MISMATCH);
+    require(mismatched.size() == 2 && mismatched[0].message.contains("skip") &&
+                mismatched[1].message.contains("failed"),
+            "skip events neither trailer count explains are still a mismatch:" +
+                all_messages(report));
+  }
+}
+
 // A selected picture whose inline pixels do not decode is never sent, so no
 // answer can come back for it; that is said, on the picture, rather than
 // left to look like a picture nobody selected.
@@ -1314,6 +1364,7 @@ int main() {
       verify_code_formula_options_reach_enrich_typed,
       verify_unapplied_annotations_are_typed_warnings,
       verify_the_trailer_is_reconciled_with_the_events,
+      verify_a_failed_item_named_by_a_skip_is_one_failure,
       verify_undecodable_inline_pixels_are_reported,
       verify_repetition_truncation_folds_typed,
       verify_item_crops_reach_enrich_with_code_formula_jobs,

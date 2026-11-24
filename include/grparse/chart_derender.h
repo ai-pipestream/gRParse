@@ -189,8 +189,9 @@ struct ChartDerenderReport {
   int skips_received = 0;
   // The enrich service's own account, from its EnrichComplete trailer; a
   // stream that ended without one leaves trailer_seen false and the counts
-  // zero. items_failed is EnrichComplete.failed: items that got neither an
-  // annotation nor a skip.
+  // zero. items_failed is EnrichComplete.failed: items that failed outside
+  // the VLM call. They are not in trailer_skipped, though the peer may
+  // still name each in a skip event.
   bool trailer_seen = false;
   uint32_t trailer_succeeded = 0;
   uint32_t trailer_skipped = 0;
