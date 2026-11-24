@@ -53,4 +53,15 @@ class PdfParseTally {
   std::optional<ai::protomolt::parse::pdf::v1::ParseTrailer> trailer_;
 };
 
+// What a Render answer says about the raster it carries
+// (RenderResponse.warnings: content the engine skipped or repaired while it
+// drew the page) as typed warnings: a WARNING_CODE_BACKEND_CONTENT_SKIPPED
+// for each, on `page_number` (one-based), the page the raster is of.
+// `backend` is the name the messages give the backend. A raster with
+// warnings is not the whole page, and a client that reads only the pixels
+// takes it for one.
+std::vector<Warning> render_warnings(
+    std::string_view backend, int32_t page_number,
+    const google::protobuf::RepeatedPtrField<ai::protomolt::parse::pdf::v1::ParseWarning>& said);
+
 }  // namespace grparse
