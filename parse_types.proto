@@ -794,15 +794,67 @@ message StoredObject {
   string store_id = 4;
 }
 
+// BundleImageIssueReason says why an image the Document carries has no
+// member in the result bundle, or has one whose type the bundle could not
+// name.
+enum BundleImageIssueReason {
+  BUNDLE_IMAGE_ISSUE_REASON_UNSPECIFIED = 0;
+  // The ImageRef's uri is not a data: URI (a path, an http or epub:
+  // reference, or empty), so the Document holds no bytes to write. No
+  // member is written.
+  BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED = 1;
+  // The uri is a data: URI whose payload the bundle could not read: not
+  // base64, malformed base64, or empty. No member is written.
+  BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE = 2;
+  // The bytes are written, but neither their signature nor a declared media
+  // type names an image type the bundle knows, so the member carries the
+  // extension ".bin" instead of a guessed one.
+  BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE = 3;
+}
+
+// BundleImageIssue names one page or picture image of the Document that the
+// result bundle does not hold as an image member of a known type.
+message BundleImageIssue {
+  BundleImageIssueReason reason = 1;
+  oneof image {
+    // The key in Document.pages of the page whose image this is.
+    int32 page_no = 2;
+    // The 0-based index in Document.pictures of the picture whose image
+    // this is (its member, when one is written, is numbered index + 1).
+    int32 picture_index = 3;
+  }
+  // The media type the Document declares for the image: the data URI's own,
+  // else ImageRef.mimetype. Empty when it declares none.
+  string declared_mimetype = 4;
+  // The bundle member the bytes were written to. Set only for
+  // BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE; the other reasons write none.
+  optional string path = 5;
+}
+
 // TargetResult carries what a non-inbody Target produced. Targets are an
 // additive delivery of the same conversion, never a replacement: a response
 // that carries a TargetResult still carries its DocumentResponse in full.
+//
+// The bundle a target delivers holds the conversion's own account of itself
+// as its member response.pb, a ConvertDocumentResponse: status, errors,
+// chunks, structure_findings, confidence, text_offsets, document.filename
+// and target_result.image_issues as the response carries them when the
+// bundle is built. document.doc and document.exports are left out of it
+// (they are the members document.pb and exports/*), and so are the clock
+// (processing_time, timings, profiling) and target_result's archive and
+// objects, which do not exist until the bundle is delivered. A delivery
+// that fails afterwards is reported on the RPC response alone.
 message TargetResult {
   // The ZIP archive of the result bundle, set only by ZipTarget.
   optional bytes archive = 1;
   // The objects written, in the bundle's own sorted path order. Set only by
   // the store-writing targets.
   repeated StoredObject objects = 2;
+  // The page and picture images of the Document that the bundle does not
+  // hold as an image member of a known type: pages first in page order, then
+  // pictures in arena order. Empty when every image the Document carries
+  // was written under its own type.
+  repeated BundleImageIssue image_issues = 3;
 }
 
 // ============================================================================

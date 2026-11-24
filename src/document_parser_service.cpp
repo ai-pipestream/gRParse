@@ -944,16 +944,21 @@ grpc::Status DocumentParserService::convert_source(
       !outputs.ok()) {
     return outputs;
   }
+  // The conversion's own status is settled before the target runs: the
+  // bundle a target delivers carries the response's status and errors as
+  // they stand here, so whoever reads the bucket sees a partial conversion
+  // as one.
+  converted->set_status(result.failures.empty()
+                            ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                            : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
   // The target delivers the same conversion somewhere else; the response
   // body above keeps everything it already carries either way. It runs
   // here on the conversion's own worker because it compresses and uploads,
   // which is not work a gRPC event thread may be handed.
   const auto& target = request.target();
-  bool delivery_failed = false;
   if (targets::needs_delivery(target)) {
     const grpc::Status delivered =
-        targets::deliver(target, *document, document_response->exports(),
-                         converted->mutable_target_result());
+        targets::deliver(target, *converted, converted->mutable_target_result());
     if (!delivered.ok()) {
       // Delivery is additive, never a replacement: the conversion the
       // response already carries survives a store that would not take it.
@@ -964,7 +969,7 @@ grpc::Status DocumentParserService::convert_source(
           delivered.error_code() == grpc::StatusCode::UNIMPLEMENTED) {
         return delivered;
       }
-      delivery_failed = true;
+      converted->set_status(pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
       *partial_success = true;
       auto* error = converted->add_errors();
       error->set_component_type(pipestream::parse::v1::COMPONENT_TYPE_PIPELINE);
@@ -973,9 +978,6 @@ grpc::Status DocumentParserService::convert_source(
       error->set_category(pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
     }
   }
-  converted->set_status(result.failures.empty() && !delivery_failed
-                            ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
-                            : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
   converted->set_processing_time(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
   (*converted->mutable_timings())["total"] = converted->processing_time();
