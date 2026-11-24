@@ -149,10 +149,11 @@ message DocumentStreamEvent {
     CollectorDocument collector_document = 5;
     // What the whole-document passes changed in the document the page
     // events above carry, and what the steps that need the whole document
-    // added to it (a PDF's form fields), sent once after a collector's
-    // last page and before its collector_document (for the CV pipeline's
-    // pages, before the complete event). Absent when the passes changed
-    // nothing and the steps added nothing.
+    // added to it (a PDF's form fields, the enrichment leg's chart tables),
+    // sent once after a collector's last page and before its
+    // collector_document (for the CV pipeline's pages, before the complete
+    // event). Absent when the passes changed nothing and the steps added
+    // nothing.
     DocumentRepairDelta repair = 6;
   }
 }
@@ -163,7 +164,10 @@ message DocumentStreamEvent {
 // break rejoined, empty groups removed, and the rest of RepairOptions),
 // plus, for the CV pipeline's pages, the list grouping the unary path does,
 // plus the AcroForm widgets of a PDF, which ConvertSource folds into the
-// finished Document as field items and no page event carries.
+// finished Document as field items and no page event carries, plus what the
+// enrichment leg adds to the items once the pages are whole (a chart's
+// table on its picture), which arrives as the changed item like any other
+// change.
 //
 // Folding page events: each item in PageData texts, tables, pictures and
 // groups lands at the arena index its self_ref names (#/texts/N at texts
@@ -377,8 +381,10 @@ message DocumentComplete {
   // that this stream did not run, in enum order. What they add is absent
   // from the stream's events for that reason alone; the document itself may
   // or may not have had any of it. Empty when the stream left no step out.
-  // A step the stream ran and that failed is not named here: its typed
-  // warning says so (WARNING_CODE_FORM_FIELDS_UNREADABLE for the widgets).
+  // A step the stream ran and that failed is not named here: its warning
+  // on this event says so (WARNING_CODE_FORM_FIELDS_UNREADABLE for the
+  // widgets; the enrichment leg's own statements, per item where it knows
+  // the item, as ConvertSource puts them on the Document).
   repeated StreamOmittedStep omitted_steps = 10;
 }
 
@@ -401,9 +407,17 @@ enum StreamOmittedStep {
   // false) and no whole collector Document stands for the pages, or
   // neither the PDF collector's Document nor the CV pipeline produced them.
   STREAM_OMITTED_STEP_FORM_FIELDS = 1;
-  // The enrichment leg (GRPARSE_ENRICH_TARGET): the tables of raster
-  // charts, and the picture, code and formula annotations a ConvertSource
-  // request can ask of it. The stream's items carry none of them.
+  // The enrichment leg (GRPARSE_ENRICH_TARGET) under the deployment's
+  // default jobs: the tables of raster charts. The stream runs it on every
+  // collector Document before that Document's events go out, and on the CV
+  // pipeline's pages once they are all recognized, whose additions reach
+  // the client on the repair event. The step is named here only when a
+  // document of this stream went out without it because no event could
+  // carry what it adds: the client turned the repair event off
+  // (DocumentChunk.repair_delta false) for CV pages, or turned it off
+  // together with slim_collector_documents. The picture, code and formula
+  // annotations are request options of ConvertSource; a stream has no such
+  // options and runs none of them.
   STREAM_OMITTED_STEP_ENRICHMENT = 2;
 }
 

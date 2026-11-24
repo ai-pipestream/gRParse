@@ -485,14 +485,23 @@ field items come back, on the repair event (`DocumentRepairDelta.
 field_regions` and `field_items`, with the key and value texts in `texts`
 and the regions in `body_children`) and, on the inspector's fast path, in
 the PDF collector document as well. A widget read that fails is a typed
-`WARNING_CODE_FORM_FIELDS_UNREADABLE` on the complete event. One step of
-the unary path does not run on a stream: the enrichment leg
-(`GRPARSE_ENRICH_TARGET`). `DocumentComplete.omitted_steps` names each step
-the deployment is configured for and the stream left out, so a stream's
-reader can tell that enrichment annotations are absent because of the
-surface, not the document. It names the widget step too when the stream had
-no event to carry field items: `repair_delta = false` on a PDF whose pages
-the CV path produced, or together with `slim_collector_documents`.
+`WARNING_CODE_FORM_FIELDS_UNREADABLE` on the complete event.
+
+The enrichment leg (`GRPARSE_ENRICH_TARGET`) runs on a stream as well, with
+the jobs `ConvertSource` runs under default options (the tables of raster
+charts): on each collector document before its events go out, and on the CV
+path's pages once they are all recognized, where the chart's table reaches
+the client as the changed picture on the repair event. What the leg could
+not add it says on the complete event, in the words the unary Document
+carries. The picture, code and formula annotations are `ConvertSource`
+request options, and a stream has none.
+
+`DocumentComplete.omitted_steps` names a step only when the stream had no
+event to carry what it adds, so neither service was asked for nobody:
+`repair_delta = false` on a document whose pages the CV path produced, or
+`repair_delta = false` together with `slim_collector_documents`. A reader
+can then tell that field items or chart tables are absent because of what
+the request turned off, not because of the document.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
