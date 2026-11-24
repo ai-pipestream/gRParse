@@ -462,7 +462,10 @@ sets `repair_delta_omitted` on the complete event. The page events,
 collector documents and `section_header_levels` are unchanged, so pages
 that streamed before the whole-document passes stay unrepaired; combined
 with `slim_collector_documents`, nothing on the stream carries the
-repaired items. Unset or `true` keeps the repair event.
+repaired items. Unset or `true` keeps the repair event. A stream that
+asks for `structure_validation` keeps the fold either way, since the fold
+is the document the check reads; `repair_delta = false` then only drops
+the repair event.
 
 Each outbound event and its nested protobuf messages are allocated in a
 short-lived `google::protobuf::Arena`. The arena stays alive until the
@@ -955,7 +958,15 @@ unset, so existing output does not change; `REPORT` returns one typed
 `ConvertDocumentResponse.structure_findings`, and `ENFORCE` fails the
 request with `FAILED_PRECONDITION` listing them (docling-core's
 `raise_on_error`). `structure_validation_rules` narrows the check to the
-named rules (a list with validation off is rejected). The rules: the
+named rules (a list with validation off is rejected).
+`StreamProcessDocument` takes the same options on `DocumentChunk`: each
+collector `Document` is checked as it lands (`REPORT` on
+`CollectorDocument.structure_findings`), and pages that stream with no
+collector `Document` behind them (the CV path) are checked once the last one
+is out, as the `Document` they fold to with the heading levels and the repair
+event applied (`REPORT` on `DocumentComplete.structure_findings`); `ENFORCE`
+ends the stream with the same `FAILED_PRECONDITION` either way, and
+`repair_delta = false` does not switch the check off. The rules: the
 deprecated furniture tree lists children; a key-value or form item exists
 (docling-core migrates both to field regions); a list group (`LIST` or
 `ORDERED_LIST`) lists a child that is not a list item; a list item's parent

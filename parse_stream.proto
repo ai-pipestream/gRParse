@@ -77,7 +77,14 @@ message DocumentChunk {
   // ConvertDocumentOptions fields of the same names: REPORT attaches the
   // findings to each CollectorDocument event, ENFORCE fails the stream with
   // FAILED_PRECONDITION at the first collector Document that breaks a rule.
-  // The CV path's page events carry no tree to check.
+  // Pages that stream with no collector Document behind them (the CV path,
+  // and an inspector-streamed prefix a CV run finished) are checked once the
+  // last of them is out, as the Document they fold to with the complete
+  // event's heading levels and the repair event applied: REPORT puts those
+  // findings on DocumentComplete.structure_findings, ENFORCE fails the
+  // stream with the status ConvertSource returns for the same document. The
+  // page events are already on the wire by then, so the status is what
+  // tells an ENFORCE client to discard them.
   optional StructureValidation structure_validation = 10;
   repeated StructureRule structure_validation_rules = 11;
   optional StructureRepairs structure_repairs = 12;
@@ -117,7 +124,9 @@ message DocumentChunk {
   // Document, and the complete event's section_header_levels still ship.
   // With slim_collector_documents as well, nothing on the stream rebuilds
   // a collector's repaired items. Resolved from the first chunk that sets
-  // it.
+  // it. structure_validation REPORT or ENFORCE needs the folded pages to
+  // check them, so with either the server still keeps the fold; false then
+  // only drops the repair event.
   optional bool repair_delta = 16;
 }
 
@@ -324,6 +333,13 @@ message DocumentComplete {
   // so a reader of a recorded stream knows the missing repair events were
   // asked for, not lost.
   bool repair_delta_omitted = 6;
+  // What DocumentChunk.structure_validation REPORT found in the Document
+  // the stream's own page events fold to (see structure_validation): the
+  // pages no CollectorDocument event stands for, with section_header_levels
+  // and the repair event applied, so the refs are the repaired document's.
+  // Empty when every page came from a collector Document, whose findings
+  // ride its CollectorDocument event instead.
+  repeated StructureFinding structure_findings = 8;
 }
 
 message StreamDocumentRequest {

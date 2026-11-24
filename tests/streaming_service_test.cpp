@@ -5236,9 +5236,7 @@ class WorkerCountServer final {
 
 // What a client holds once the stream ends: the page events folded, the
 // complete event's heading levels applied, then the repair event.
-docv1::Document fold_stream(const WorkerCountServer& server, const std::string& label) {
-  auto client = server.stub();
-  const StreamRun run = run_chunks(client.get(), {chunk(true)});
+docv1::Document fold_events(const StreamRun& run, const std::string& label) {
   require(run.status.ok(), label + ": stream failed: " + run.status.error_message());
   require(!run.events.empty() && run.events.back().has_complete(),
           label + ": the stream closes with the complete event");
@@ -5267,6 +5265,11 @@ docv1::Document fold_stream(const WorkerCountServer& server, const std::string& 
     }
   }
   return rebuilt;
+}
+
+docv1::Document fold_stream(const WorkerCountServer& server, const std::string& label) {
+  auto client = server.stub();
+  return fold_events(run_chunks(client.get(), {chunk(true)}), label);
 }
 
 docv1::Document convert_unary(const WorkerCountServer& server, const std::string& label) {
@@ -5508,6 +5511,113 @@ void verify_repair_delta_opt_out_keeps_no_fold() {
                 std::to_string(complete.section_header_levels_size()));
     require(levels_of(complete) == levels_of(kept.events.back().complete()),
             "the levels match the default stream's");
+  }
+}
+
+// The structural rules reach the CV path, whose pages stream with no
+// collector Document behind them. The synthetic scan's running header is
+// demoted into the furniture tree, which docling-core's rules call
+// deprecated, so the same bytes break a rule on both surfaces: REPORT puts
+// on the complete event exactly the findings ConvertSource returns (and the
+// library computes on the document a client folds from the stream), ENFORCE
+// ends the stream with ConvertSource's status, and a rule filter the
+// document passes lets it through. repair_delta = false changes none of
+// that: the check needs the folded pages, so only the repair event goes.
+void verify_structure_validation_reaches_cv_pages() {
+  namespace parsev1 = pipestream::parse::v1;
+  WorkerCountServer server(2, 2, 2);
+  const auto convert = [&server](parsev1::StructureValidation validation,
+                                 parsev1::ConvertSourceResponse* response) {
+    auto client = server.unary_stub();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 20s);
+    parsev1::ConvertSourceRequest request;
+    const std::string bytes = chunk(true).data();
+    auto* source = request.mutable_request()->add_sources()->mutable_file();
+    source->set_filename(chunk(true).filename());
+    source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+    request.mutable_request()->mutable_options()->set_structure_validation(validation);
+    return client->ConvertSource(&context, request, response);
+  };
+  // What ENFORCE says after the surface's own name.
+  const auto verdict = [](const grpc::Status& status) {
+    const size_t at = status.error_message().find(": the document breaks");
+    return at == std::string::npos ? std::string() : status.error_message().substr(at);
+  };
+  using Findings = google::protobuf::RepeatedPtrField<parsev1::StructureFinding>;
+  const auto same_findings = [](const Findings& left, const Findings& right) {
+    if (left.size() != right.size()) return false;
+    for (int index = 0; index < left.size(); ++index) {
+      if (!same_message(left.Get(index), right.Get(index))) return false;
+    }
+    return true;
+  };
+
+  parsev1::ConvertSourceResponse unary_report;
+  const grpc::Status reported = convert(parsev1::STRUCTURE_VALIDATION_REPORT, &unary_report);
+  require(reported.ok(), "unary REPORT failed: " + reported.error_message());
+  const Findings& expected = unary_report.response().structure_findings();
+  require(std::ranges::any_of(expected,
+                              [](const auto& finding) {
+                                return finding.rule() ==
+                                       parsev1::STRUCTURE_RULE_DEPRECATED_FURNITURE_TREE;
+                              }),
+          "the scan's demoted running header breaks the furniture rule on the unary surface");
+  parsev1::ConvertSourceResponse unary_enforce;
+  const grpc::Status unary_enforced =
+      convert(parsev1::STRUCTURE_VALIDATION_ENFORCE, &unary_enforce);
+  require(unary_enforced.error_code() == grpc::StatusCode::FAILED_PRECONDITION &&
+              !verdict(unary_enforced).empty(),
+          "unary ENFORCE fails on the same bytes: " + unary_enforced.error_message());
+
+  auto client = server.stub();
+  for (const bool repair_delta : {true, false}) {
+    const std::string label = repair_delta ? "repair_delta on" : "repair_delta off";
+    auto report = chunk(true);
+    report.set_structure_validation(parsev1::STRUCTURE_VALIDATION_REPORT);
+    if (!repair_delta) report.set_repair_delta(false);
+    const StreamRun run = run_chunks(client.get(), {report});
+    require(run.status.ok(), label + ": REPORT stream failed: " + run.status.error_message());
+    require(!run.events.empty() && run.events.back().has_complete(),
+            label + ": the REPORT stream closes with the complete event");
+    const Findings& streamed = run.events.back().complete().structure_findings();
+    require(same_findings(streamed, expected),
+            label + ": the complete event carries the findings ConvertSource returns; got " +
+                std::to_string(streamed.size()) + " of " + std::to_string(expected.size()));
+    const auto repairs = std::ranges::count_if(
+        run.events, [](const auto& event) { return event.has_repair(); });
+    require(repairs == (repair_delta ? 1 : 0), label + ": the repair event follows repair_delta");
+    if (repair_delta) {
+      require(wire_findings(streamed) == local_findings(fold_events(run, label)),
+              "the findings are those of the document the stream folds to");
+    }
+
+    auto enforce = chunk(true);
+    enforce.set_structure_validation(parsev1::STRUCTURE_VALIDATION_ENFORCE);
+    if (!repair_delta) enforce.set_repair_delta(false);
+    const StreamRun enforced = run_chunks(client.get(), {enforce});
+    require(enforced.status.error_code() == grpc::StatusCode::FAILED_PRECONDITION,
+            label + ": ENFORCE fails the stream FAILED_PRECONDITION; got code " +
+                std::to_string(enforced.status.error_code()) + " " +
+                enforced.status.error_message());
+    require(enforced.status.error_message().starts_with("StreamProcessDocument: ") &&
+                verdict(enforced.status) == verdict(unary_enforced),
+            label + ": the stream's status lists what ConvertSource's does: " +
+                enforced.status.error_message());
+    require(std::ranges::none_of(enforced.events,
+                                 [](const auto& event) { return event.has_complete(); }),
+            label + ": a failed check sends no complete event");
+
+    // A rule the document does not break: ENFORCE has nothing to refuse.
+    auto filtered = chunk(true);
+    filtered.set_structure_validation(parsev1::STRUCTURE_VALIDATION_ENFORCE);
+    filtered.add_structure_validation_rules(parsev1::STRUCTURE_RULE_PARENT_MISSING);
+    if (!repair_delta) filtered.set_repair_delta(false);
+    const StreamRun passed = run_chunks(client.get(), {filtered});
+    require(passed.status.ok() && !passed.events.empty() && passed.events.back().has_complete() &&
+                passed.events.back().complete().structure_findings().empty(),
+            label + ": ENFORCE on a rule the document keeps passes: " +
+                passed.status.error_message());
   }
 }
 
@@ -6486,6 +6596,7 @@ int main() {
         verify_streamed_pages_plus_repair_rebuild_the_document();
         verify_stream_is_invariant_under_worker_counts();
         verify_repair_delta_opt_out_keeps_no_fold();
+        verify_structure_validation_reaches_cv_pages();
         verify_streaming_pdf_fast_path_renders_previews();
         verify_streaming_pdf_fast_path_skips_previews_when_off();
         verify_pdf_without_backend_fails_precondition();
