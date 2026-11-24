@@ -12,6 +12,7 @@ never parse in this process: they go to the configured PdfBackendService
 | `content-sniff-fuzzer` | `resolve_mimetype`, `input_format_for` | every upload's routing: declared type, zip central-directory and mimetype-entry peeks, binary signatures, the text, markup, mail, Markdown and CSV ladders, the extension map |
 | `confluence-storage-fuzzer` | `COLLECTOR_CONFLUENCE` | the storage-format XHTML pull parser (`src/confluence/storage_parser.cpp`) and its fold into a Document |
 | `base64-differential-fuzzer` | `decode_base64`, `encode_base64` | simdutf's vector kernels against the scalar contract oracle |
+| `json-ld-fuzzer` | `COLLECTOR_LOL_HTML` | the strict JSON reader (`src/json_reader.cpp`) a page's JSON-LD script passes, and its fold into `StructuredData` (`src/structured_data.cpp`) |
 
 The contract under test: malformed bytes fail the way the door documents
 (`InvalidDocument`, an empty sniff, `std::invalid_argument`), never with a
@@ -35,6 +36,11 @@ its door promises:
   reject the same inputs with the same bytes, the two encoders to agree,
   and an encoding to round-trip with whitespace spliced in and to be
   rejected with its padding cut.
+- `json-ld-fuzzer` requires every input to end in a decode or a refusal
+  with a reason, a refusal to leave no items behind, and the reader and
+  the fold together to hold at most 512 bytes per input byte plus 1 MiB:
+  the smallest JSON value is two bytes of text and costs one tree node and
+  one message. Nesting is capped at 64 levels, so the stack is bounded.
 
 `document_passwords.cpp` reads its candidates from gRPC call metadata, not
 from the document, under fixed count and length bounds; the encrypted

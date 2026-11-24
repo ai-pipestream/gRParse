@@ -1,0 +1,1 @@
+{"@context":["https://schema.org",{"t":"http://purl.org/dc/terms/title"}],"@graph":[{"@id":"urn:a","@type":["A","B"],"t":"T"},{"steps":{"@list":[1,2.5e3,-0]}}]}

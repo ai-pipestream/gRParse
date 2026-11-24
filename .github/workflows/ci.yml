@@ -553,6 +553,15 @@ jobs:
           ./build-fuzz/base64-differential-fuzzer corpus-base64 \
             fuzz/corpus/base64 fuzz/regressions/base64-differential-fuzzer \
             -max_total_time=30 -max_len=16384 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
+      - name: Fuzz the JSON-LD reader and fold
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        env:
+          LSAN_OPTIONS: suppressions=tests/lsan.supp
+        run: |
+          mkdir -p corpus-json-ld
+          ./build-fuzz/json-ld-fuzzer corpus-json-ld \
+            fuzz/corpus/json-ld \
+            -max_total_time=30 -max_len=65536 -rss_limit_mb=2048 -timeout=25 -print_final_stats=1
       - name: Keep any crash input
         if: ${{ failure() }}
         uses: actions/upload-artifact@v4

@@ -1,0 +1,1 @@
+{"@context":"https://schema.org","@type":"Article","headline":"H","author":{"@type":"Person","name":"Ada"},"wordCount":1200,"ratingValue":4.5,"free":true,"about":["a",{"@id":"urn:b"}],"name":{"@value":"x","@language":"de"},"none":null}
