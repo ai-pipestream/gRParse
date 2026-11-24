@@ -4786,6 +4786,117 @@ bool warned(const docv1::Document& document, const std::string& collector,
 }
 
 
+// A one-page text PDF whose fold holds a formula with a box on a sized
+// page: the shape the enrich leg crops out of the rendered page.
+class FormulaPdfInspector final : public pdfv1::PdfParseService::Service {
+ public:
+  grpc::Status ParsePdf(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<pdfv1::ParsePdfResponse, pdfv1::ParsePdfRequest>* stream)
+      override {
+    pdfv1::ParsePdfRequest request;
+    while (stream->Read(&request)) {
+    }
+    pdfv1::ParsePdfResponse event;
+    event.mutable_info()->set_pdf_type(pdfv1::PDF_TYPE_TEXT_BASED);
+    event.mutable_info()->set_page_count(1);
+    stream->Write(event);
+    docv1::Document document;
+    document.mutable_body()->set_self_ref("#/body");
+    document.mutable_furniture()->set_self_ref("#/furniture");
+    auto* text = document.add_texts()->mutable_text()->mutable_base();
+    text->set_self_ref("#/texts/0");
+    text->mutable_parent()->set_ref("#/body");
+    text->set_label(docv1::DOC_ITEM_LABEL_TEXT);
+    text->set_text("The energy of a body at rest is given by");
+    text->add_prov()->set_page_no(1);
+    document.mutable_body()->add_children()->set_ref("#/texts/0");
+    auto* formula = document.add_texts()->mutable_formula()->mutable_base();
+    formula->set_self_ref("#/texts/1");
+    formula->mutable_parent()->set_ref("#/body");
+    formula->set_label(docv1::DOC_ITEM_LABEL_FORMULA);
+    formula->set_text("E = mc2");
+    auto* prov = formula->add_prov();
+    prov->set_page_no(1);
+    prov->mutable_bbox()->set_l(100);
+    prov->mutable_bbox()->set_t(200);
+    prov->mutable_bbox()->set_r(300);
+    prov->mutable_bbox()->set_b(240);
+    prov->mutable_bbox()->set_coord_origin(docv1::COORD_ORIGIN_TOPLEFT);
+    document.mutable_body()->add_children()->set_ref("#/texts/1");
+    auto& page = (*document.mutable_pages())[1];
+    page.set_page_no(1);
+    page.mutable_size()->set_width(612);
+    page.mutable_size()->set_height(792);
+    event.Clear();
+    *event.mutable_document() = std::move(document);
+    stream->Write(event);
+    event.Clear();
+    event.mutable_status()->set_pages_extracted(1);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// Formula enrichment reads each formula from a crop of the rendered page.
+// When the PDF cannot be opened for that render the formula still goes to
+// the enrich service, with its text alone, so the parse must say that the
+// crop was missing: one typed warning from gRParse itself, counting the
+// items it stands for. The parse is still OK.
+void verify_unary_parse_says_when_enrichment_crops_are_missing() {
+  // This backend holds no such document, so the crop session cannot open it.
+  grparse_test::ScopedPdfBackend pdf_backend;
+  FormulaPdfInspector inspector;
+  PdfInspectorServer inspector_server(&inspector);
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<RoutableDigitalSource>();
+      });
+  grparse::CollectorTargets targets;
+  targets.pdf = inspector_server.target();
+  // A reachable peer is enough to turn the enrich leg on; this one does not
+  // serve it, which the leg reports and the parse survives.
+  targets.derender.target = inspector_server.target();
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "enrichment crop test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 20s);
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("formula.pdf");
+  const std::string bytes = "%PDF-formula-crop-fixture";
+  source->set_base64_string(grparse::encode_base64(bytes.data(), bytes.size()));
+  request.mutable_request()->mutable_options()->set_do_formula_enrichment(true);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(status.ok(), "a missing crop must not fail the parse: " + status.error_message());
+  const auto& document = response.response().document().doc();
+  const auto missing =
+      std::ranges::find_if(document.warnings(), [](const docv1::CollectorWarning& warning) {
+        return warning.code() == docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING;
+      });
+  require(missing != document.warnings().end(),
+          "the document says the formula was enriched without its crop");
+  require(missing->source().collector() == "grparse-cv",
+          "gRParse renders the crops, so the warning is its own");
+  require(missing->has_count() && missing->count() == 1,
+          "the one warning counts the one formula left without a crop");
+  require(!missing->has_page_no() && !missing->has_item_ref(),
+          "a document that never opened names no page and no item");
+}
+
 void verify_pdf_searchable_scan_takes_the_cv_path() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {}, /*paged_document=*/false,
                              /*searchable_scan=*/true);
@@ -7655,6 +7766,7 @@ int main() {
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();
         verify_pdf_fast_path_skips_the_cv_pipeline();
+        verify_unary_parse_says_when_enrichment_crops_are_missing();
         verify_pdf_searchable_scan_takes_the_cv_path();
         verify_pdf_classification_restricts_recognition();
         verify_pdf_ocr_recommendation_takes_the_cv_path();
