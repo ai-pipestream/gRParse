@@ -23,26 +23,29 @@
 // a tap in the padding adding zero.
 #define DW_R 8
 
+// Eight of the loaded inputs for one tap: every SW-th from START.
+#define DW_PICK1(START) shuffle(v0, (uint8)(0, 1, 2, 3, 4, 5, 6, 7) + (uint8)(START))
+#define DW_PICK2(START) shuffle2(v0, v1, (uint8)(0, 2, 4, 6, 8, 10, 12, 14) + (uint8)(START))
+
 #define DW_TAPS(KW, SW, SHIFT)                                                           \
-  __attribute__((opencl_unroll_hint)) for (int kx = 0; kx < (KW); ++kx) {                \
-    const float wk = kernel_row[kx];                                                     \
-    __attribute__((opencl_unroll_hint)) for (int r = 0; r < DW_R; ++r)                   \
-        acc[r] = fma(wk, v[r * (SW) + kx + (SHIFT)], acc[r]);                            \
-  }
+  __attribute__((opencl_unroll_hint)) for (int kx = 0; kx < (KW); ++kx)                  \
+      acc = fma((float8)(kernel_row[kx]), DW_PICK##SW(kx + (SHIFT)), acc);
 
 // A kernel row at stride SW: 16 * SW inputs loaded from SHIFT before the
-// first tap, masked at the row's edges, then the taps for a kernel 3 or 5
+// first tap, zeroed outside the row, then the taps for a kernel 3 or 5
 // wide.
+#define DW_LOAD(V, L)                                                                    \
+  float16 V = RLOAD16(in, row + from + 16 * (L));                                        \
+  if (from + 16 * (L) < 0 || from + 16 * ((L) + 1) > p.iw) {                             \
+    const int16 at = (int16)(0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15) + (int16)(from + 16 * (L)); \
+    V = select(V, (float16)(0.0f), (at < (int16)(0)) | (at >= (int16)(p.iw)));           \
+  }
+#define DW_LOADS1 DW_LOAD(v0, 0)
+#define DW_LOADS2 DW_LOAD(v0, 0) DW_LOAD(v1, 1)
 #define DW_WIDE(SW, SHIFT)                                                               \
   {                                                                                      \
-    float v[16 * (SW)];                                                                  \
     const int from = sx0 - (SHIFT);                                                      \
-    __attribute__((opencl_unroll_hint)) for (int l = 0; l < (SW); ++l)                   \
-        vstore16(RLOAD16(in, row + from + 16 * l), 0, v + 16 * l);                       \
-    if (from < 0 || from + 16 * (SW) > p.iw) {                                           \
-      __attribute__((opencl_unroll_hint)) for (int i = 0; i < 16 * (SW); ++i)            \
-          v[i] = (from + i >= 0 && from + i < p.iw) ? v[i] : 0.0f;                       \
-    }                                                                                    \
+    DW_LOADS##SW                                                                         \
     if (p.kw == 3) {                                                                     \
       DW_TAPS(3, SW, SHIFT)                                                              \
     } else {                                                                             \
@@ -51,12 +54,13 @@
   }
 
 // Half loads are far slower from an odd element (an address that is not a
-// multiple of four bytes), which is where an odd padding starts a row; the
-// FP16 build loads from the element before it instead.
+// multiple of four bytes), which is where an odd padding or a row of an
+// odd-width plane starts; the FP16 build loads from the element before it
+// instead.
 #ifdef GRAPH_FP16
-#define DW_ODD(p) ((p).pw & 1)
+#define DW_ODD(at) ((int)((at) & 1))
 #else
-#define DW_ODD(p) 0
+#define DW_ODD(at) 0
 #endif
 
 __kernel void conv_depthwise(__global const real* in, __global real* out, __global const float* w,
@@ -71,13 +75,13 @@ __kernel void conv_depthwise(__global const real* in, __global real* out, __glob
   __global const float* kernel_row = w + (size_t)c * p.kh * p.kw;
   const int sx0 = x0 * p.sw - p.pw;
   const bool wide = (p.kw == 3 || p.kw == 5) && (p.sw == 1 || p.sw == 2);
-  const int span = 16 * p.sw, odd = DW_ODD(p);
-  float acc[DW_R];
-  __attribute__((opencl_unroll_hint)) for (int r = 0; r < DW_R; ++r) acc[r] = 0.0f;
+  const int span = 16 * p.sw;
+  float8 acc = (float8)(0.0f);
   for (int ky = 0; ky < p.kh; ++ky, kernel_row += p.kw) {
     const int sy = y * p.sh - p.ph + ky;
     if (sy < 0 || sy >= p.ih) continue;
     const long row = plane + (long)sy * p.iw;
+    const int odd = DW_ODD(row + sx0);
     if (wide && row + sx0 - odd >= 0 && row + sx0 - odd + span <= total) {
       if (p.sw == 1) {
         if (odd) {
@@ -92,29 +96,26 @@ __kernel void conv_depthwise(__global const real* in, __global real* out, __glob
       }
     } else {
       for (int kx = 0; kx < p.kw; ++kx) {
-        const float wk = kernel_row[kx];
+        float taps[DW_R];
         for (int r = 0; r < DW_R; ++r) {
           const int sx = sx0 + r * p.sw + kx;
-          acc[r] = fma(wk, (sx >= 0 && sx < p.iw) ? RLOAD(in, row + sx) : 0.0f, acc[r]);
+          taps[r] = (sx >= 0 && sx < p.iw) ? RLOAD(in, row + sx) : 0.0f;
         }
+        acc = fma((float8)(kernel_row[kx]), vload8(0, taps), acc);
       }
     }
   }
-  const float bias = b[c];
+  // Through activate() of graph_kernels.cl, value by value: the one place
+  // that knows every activation.
+  float sums[DW_R];
+  vstore8(acc + (float8)(b[c]), 0, sums);
+  __attribute__((opencl_unroll_hint)) for (int r = 0; r < DW_R; ++r)
+      sums[r] = activate(sums[r], p.act, p.alpha, p.beta);
   const size_t to = ((size_t)nc * p.oh + y) * p.ow + x0;
   if (x0 + DW_R <= p.ow) {
-    float8 o;
-    o.s0 = activate(acc[0] + bias, p.act, p.alpha, p.beta);
-    o.s1 = activate(acc[1] + bias, p.act, p.alpha, p.beta);
-    o.s2 = activate(acc[2] + bias, p.act, p.alpha, p.beta);
-    o.s3 = activate(acc[3] + bias, p.act, p.alpha, p.beta);
-    o.s4 = activate(acc[4] + bias, p.act, p.alpha, p.beta);
-    o.s5 = activate(acc[5] + bias, p.act, p.alpha, p.beta);
-    o.s6 = activate(acc[6] + bias, p.act, p.alpha, p.beta);
-    o.s7 = activate(acc[7] + bias, p.act, p.alpha, p.beta);
-    RSTORE8(out, to, o);
+    RSTORE8(out, to, vload8(0, sums));
   } else {
-    for (int r = 0; x0 + r < p.ow; ++r) RSTORE(out, to + r, activate(acc[r] + bias, p.act, p.alpha, p.beta));
+    for (int r = 0; x0 + r < p.ow; ++r) RSTORE(out, to + r, sums[r]);
   }
 }
 
