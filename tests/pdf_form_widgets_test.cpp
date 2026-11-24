@@ -307,6 +307,12 @@ void nothing_to_fold() {
 class FormBackend final : public pdfv1::PdfBackendService::Service {
  public:
   pdfv1::FamilySupport support = pdfv1::FAMILY_SUPPORT_SUPPORTED;
+  // False leaves the form-field family out of the header's verdicts, the
+  // way a backend released before the family existed answers.
+  bool states_family = true;
+  // Set, the engine gives up after the header: the call ends INTERNAL with
+  // this message and no widget is sent.
+  std::string engine_failure;
   bool cache_required = false;
   bool cached = false;
   int parses = 0;
@@ -325,9 +331,11 @@ class FormBackend final : public pdfv1::PdfBackendService::Service {
     if (!request->document().data().empty()) cached = true;
     caps->set_load_status(pdfv1::LOAD_STATUS_OK);
     caps->set_page_count(2);
-    auto* verdict = caps->add_families();
-    verdict->set_family(pdfv1::PDF_FAMILY_FORM_FIELDS);
-    verdict->set_support(support);
+    if (states_family) {
+      auto* verdict = caps->add_families();
+      verdict->set_family(pdfv1::PDF_FAMILY_FORM_FIELDS);
+      verdict->set_support(support);
+    }
     for (uint32_t index = 0; index < 2; ++index) {
       auto* info = header.mutable_header()->add_pages();
       info->set_page_index(index);
@@ -335,7 +343,8 @@ class FormBackend final : public pdfv1::PdfBackendService::Service {
       info->set_height_pts(kHeightPts);
     }
     if (!writer->Write(header)) return grpc::Status::OK;
-    if (support != pdfv1::FAMILY_SUPPORT_SUPPORTED) return grpc::Status::OK;
+    if (!states_family || support != pdfv1::FAMILY_SUPPORT_SUPPORTED) return grpc::Status::OK;
+    if (!engine_failure.empty()) return grpc::Status(grpc::StatusCode::INTERNAL, engine_failure);
     require(request->families_size() == 1 &&
                 request->families(0) == pdfv1::PDF_FAMILY_FORM_FIELDS,
             "the fetch asks for the form-field family alone");
@@ -426,6 +435,8 @@ void folds_from_the_configured_backends() {
   warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &untouched);
   require(warnings.size() == 1 && warnings[0].message.contains("127.0.0.1:1"),
           "the warning names the failed target");
+  require(warnings[0].code == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "and is typed: the widgets could not be read");
   require(same(untouched, before), "a failed fetch changes nothing");
 
   // Unset: the in-process path has no forms surface; nothing happens.
@@ -678,6 +689,124 @@ void verify_widget_trailer_warnings_are_typed() {
   require(warnings == fetch.warnings, "and the fold hands the backend's warnings to its caller");
 }
 
+// A deployment whose backends cannot read form fields is not a PDF without
+// a form. Three answers the fold must keep apart: no configured backend
+// reads the family (typed, FORM_FIELDS_UNSUPPORTED), a backend that might
+// have read it failed (typed, FORM_FIELDS_UNREADABLE), and a backend that
+// reads it says the document has none (nothing to report).
+void verify_unsupported_form_fields_are_not_a_formless_pdf() {
+  FormBackend unsupported;
+  unsupported.support = pdfv1::FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND;
+  FormBackend predates_family;
+  predates_family.states_family = false;
+  FormBackend formless;
+  formless.support = pdfv1::FAMILY_SUPPORT_ABSENT_IN_DOCUMENT;
+  FormBackend broken;
+  broken.engine_failure = "xref table is damaged";
+  std::unique_ptr<grpc::Server> servers[4];
+  const std::string no_forms = serve(unsupported, servers[0]);
+  const std::string old_backend = serve(predates_family, servers[1]);
+  const std::string no_widgets = serve(formless, servers[2]);
+  const std::string gives_up = serve(broken, servers[3]);
+
+  // Every configured backend lacks the family: the caller is told, with a
+  // code, and the warning names who was asked.
+  ::setenv("GRPARSE_PDF_BACKEND", (no_forms + "," + old_backend).c_str(), 1);
+  docv1::Document document = cv_document();
+  const docv1::Document before = document;
+  auto warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
+  require_equal(warnings.size(), size_t{1},
+                "backends that cannot read form fields leave one warning");
+  require(warnings[0].code == docv1::WARNING_CODE_FORM_FIELDS_UNSUPPORTED,
+          "typed WARNING_CODE_FORM_FIELDS_UNSUPPORTED, got " +
+              docv1::WarningCode_Name(warnings[0].code));
+  require(warnings[0].message.contains(no_forms) && warnings[0].message.contains(old_backend) &&
+              warnings[0].message.contains("fake-forms"),
+          "the warning names every backend that was asked: " + warnings[0].message);
+  require(!warnings[0].page_no.has_value(), "it is about the document, not a page");
+  require(same(document, before), "and the document is left as it was");
+
+  // One backend reads forms and says this document has none: that is the
+  // answer, whatever the others lack.
+  ::setenv("GRPARSE_PDF_BACKEND", (no_forms + "," + no_widgets).c_str(), 1);
+  warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
+  require(warnings.empty(), "a PDF without a form raises nothing");
+  require(same(document, before), "and folds nothing");
+
+  // A backend that announces the family and then fails is a failed read,
+  // not a missing capability, even beside one that lacks the family.
+  ::setenv("GRPARSE_PDF_BACKEND", (no_forms + "," + gives_up).c_str(), 1);
+  warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
+  require_equal(warnings.size(), size_t{1}, "a failed read leaves one warning");
+  require(warnings[0].code == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "typed WARNING_CODE_FORM_FIELDS_UNREADABLE, got " +
+              docv1::WarningCode_Name(warnings[0].code));
+  require(warnings[0].message.contains(gives_up) &&
+              warnings[0].message.contains("xref table is damaged"),
+          "the warning names the backend that failed and why: " + warnings[0].message);
+  require(same(document, before), "and the document is left as it was");
+
+  // A setting no backend can be read from is a failed read too.
+  ::setenv("GRPARSE_PDF_BACKEND", " ", 1);
+  warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
+  require(warnings.size() == 1 &&
+              warnings[0].code == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "a malformed GRPARSE_PDF_BACKEND is typed as well");
+
+  ::unsetenv("GRPARSE_PDF_BACKEND");
+  for (auto& server : servers) server->Shutdown();
+}
+
+// The same three answers on the Document a caller gets from the service:
+// the typed warning under the collector that reads PDFs through the
+// backend, and nothing at all for a PDF without a form.
+void verify_form_field_gaps_reach_the_converted_document() {
+  const auto form_warnings = [](FormBackend& backend) {
+    std::unique_ptr<grpc::Server> backend_server;
+    ::setenv("GRPARSE_PDF_BACKEND", serve(backend, backend_server).c_str(), 1);
+    std::vector<docv1::CollectorWarning> found;
+    {
+      ParseServer server;
+      parsev1::ConvertSourceResponse response;
+      // "%PDF-1.4\n"
+      const grpc::Status status =
+          server.convert("form.pdf", "JVBERi0xLjQK", std::nullopt, &response);
+      require(status.ok(), "the PDF converts: " + status.error_message());
+      for (const auto& warning : response.response().document().doc().warnings()) {
+        if (warning.code() == docv1::WARNING_CODE_FORM_FIELDS_UNSUPPORTED ||
+            warning.code() == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE ||
+            warning.message().contains("AcroForm")) {
+          found.push_back(warning);
+        }
+      }
+    }
+    ::unsetenv("GRPARSE_PDF_BACKEND");
+    backend_server->Shutdown();
+    return found;
+  };
+
+  FormBackend unsupported;
+  unsupported.support = pdfv1::FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND;
+  auto found = form_warnings(unsupported);
+  require_equal(found.size(), size_t{1},
+                "Document.warnings says no backend could read form fields");
+  require(found[0].code() == docv1::WARNING_CODE_FORM_FIELDS_UNSUPPORTED,
+          "as WARNING_CODE_FORM_FIELDS_UNSUPPORTED, got " +
+              docv1::WarningCode_Name(found[0].code()));
+  require(found[0].source().collector() == "grparse-cv" && !found[0].has_page_no(),
+          "under the collector that reads PDFs through the backend, on no page");
+
+  FormBackend broken;
+  broken.engine_failure = "xref table is damaged";
+  found = form_warnings(broken);
+  require(found.size() == 1 && found[0].code() == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "a backend that failed on the form is WARNING_CODE_FORM_FIELDS_UNREADABLE");
+
+  FormBackend formless;
+  formless.support = pdfv1::FAMILY_SUPPORT_ABSENT_IN_DOCUMENT;
+  require(form_warnings(formless).empty(), "a PDF without a form says nothing about forms");
+}
+
 // The whole way out: a PDF converted over the service, read through a
 // backend whose trailer says it skipped part of page one's text. The
 // warning is on the Document the caller gets, typed, with its page, under
@@ -736,5 +865,7 @@ int main() {
        absent_and_unsupported_families, folds_from_the_configured_backends,
        widget_frames_agree_on_cropped_and_rotated_pages, extract_form_fields_is_typed,
        extract_form_fields_unset_true_false_on_a_pdf, verify_widget_trailer_warnings_are_typed,
+       verify_unsupported_form_fields_are_not_a_formless_pdf,
+       verify_form_field_gaps_reach_the_converted_document,
        verify_backend_warnings_reach_the_converted_document});
 }

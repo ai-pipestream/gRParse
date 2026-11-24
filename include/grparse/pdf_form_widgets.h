@@ -91,12 +91,22 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // names backends, asks them in configured order for the widgets (the
 // first that answers wins; consensus mode needs no vote, the widgets are
 // stored state, not a reading) and folds them into `document`. Returns
-// the warnings the step leaves for the caller: none when there was nothing
-// to do or the fold ran on a clean answer, the answering backend's own
-// (PdfWidgetFetch::warnings) when it said the widgets it sent are not the
-// whole form, and one naming the failure when every backend failed; the
-// document is then left as it was. With GRPARSE_PDF_BACKEND unset no PDF is
-// read at all, so there are no widgets to fold.
+// the warnings the step leaves for the caller:
+// - none when a backend that reads form fields answered cleanly, whether it
+//   sent widgets or said the document has none (FAMILY_SUPPORT_ABSENT_IN_
+//   DOCUMENT), and none when no backend is configured;
+// - the answering backend's own (PdfWidgetFetch::warnings) when it said the
+//   widgets it sent are not the whole form;
+// - one WARNING_CODE_FORM_FIELDS_UNSUPPORTED naming the backends when every
+//   one answered and none reads the family (FAMILY_SUPPORT_UNSUPPORTED_BY_
+//   BACKEND, or no verdict at all): the document may have a form that
+//   nothing here could see, which is not the first case;
+// - one WARNING_CODE_FORM_FIELDS_UNREADABLE naming the failures when no
+//   backend answered for the family and at least one failed (unreachable,
+//   could not load the document, broke off mid-answer, or the setting is
+//   malformed), since the one that failed might have read the form.
+// In the last two the document is left as it was. With GRPARSE_PDF_BACKEND
+// unset no PDF is read at all, so there are no widgets to fold.
 // False when GRPARSE_PDF_BACKEND names no backend, so no PDF is read here
 // and fold_pdf_form_widgets_from_backend has nothing to ask. A malformed
 // setting counts as configured: the fold then names the failure.

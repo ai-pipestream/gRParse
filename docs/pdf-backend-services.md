@@ -332,9 +332,16 @@ typed fields out. Boxes land in the page's space (raster pixels top-left
 on the CV path, points bottom-left on the inspector path). In consensus
 mode the first target that answers wins; there is nothing to vote on. A
 backend that marks the family absent (grpc-pdfium does for a document
-without a form) ends the call at the header. The streaming page events
-(`StreamProcessDocument`) do not include field items yet; `PageData` has
-no slot for them.
+without a form) ends the call at the header, and nothing is reported: the
+PDF has no form. When every configured backend answers and none reads the
+family (`FAMILY_SUPPORT_UNSUPPORTED_BY_BACKEND`, or no verdict from a
+backend that predates it), the parse carries one
+`WARNING_CODE_FORM_FIELDS_UNSUPPORTED` naming them; when no backend
+answers for the family and one of them failed, one
+`WARNING_CODE_FORM_FIELDS_UNREADABLE` naming the failure (gRParse#403).
+Either way the caller can tell "no form" from "nobody looked". The
+streaming page events (`StreamProcessDocument`) do not include field items
+yet; `PageData` has no slot for them.
 
 ## The trailer (read since 2026-11-24, gRParse#401)
 
