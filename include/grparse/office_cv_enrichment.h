@@ -32,9 +32,10 @@ struct OfficeCvReport {
   // (the rest sit at the end of the body in a stable order).
   int pictures_anchored = 0;
   // Pages that carry a render the engines could not read (not an inline
-  // PNG, not base64, over the pixel cap, or not decodable): no figure was
-  // looked for on them. A page with no render at all is not counted; there
-  // was nothing to read.
+  // PNG, not base64, over the pixel cap, or not decodable) or could not use
+  // (the page states no size to convert a box into): no figure was looked
+  // for on them. A page with no render at all is not counted; there was
+  // nothing to read.
   int pages_unreadable = 0;
   // One WARNING_CODE_PAGE_RENDER_UNREADABLE per such page, naming it, in
   // page order.
