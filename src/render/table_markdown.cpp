@@ -10,6 +10,7 @@
 #include <string>
 #include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -173,6 +174,7 @@ std::string build_rule(const std::vector<int>& widths) {
 }  // namespace
 
 std::vector<std::vector<std::string>> table_rows(
+    const docv1::TableData& data,
     const std::vector<std::vector<const docv1::TableCell*>>& grid,
     const CellTextResolver& resolve_ref, GridBudget& budget) {
   // A cell that points at another item resolves at its first position and
@@ -183,6 +185,9 @@ std::vector<std::vector<std::string>> table_rows(
   // reference serializes to, so each repeat is charged again by its
   // resolved length and renders empty once that no longer fits.
   std::unordered_map<const docv1::TableCell*, std::optional<std::string>> repeats;
+  // The cells already reported as not repeating, so a cell that renders
+  // empty at many positions counts once.
+  std::unordered_set<const docv1::TableCell*> cut_short;
   std::vector<std::vector<std::string>> out;
   out.reserve(grid.size());
   for (const auto& row : grid) {
@@ -212,6 +217,10 @@ std::vector<std::vector<std::string>> table_rows(
                      "grparse: a spanned table cell's reference exceeds the document's "
                      "span budget; its later positions render empty, and later "
                      "truncations in this document are not logged");
+      }
+      if (cut_short.insert(cell).second) {
+        budget.note_span_not_repeated(data, static_cast<int>(grid.size()),
+                                      static_cast<int>(row.size()));
       }
       texts.emplace_back();
     }
@@ -293,7 +302,7 @@ std::string table_markdown(const docv1::TableData& data,
                            const CellTextResolver& resolve_ref, GridBudget& budget,
                            bool compact) {
   const auto grid = derived_table_grid(data, budget);
-  const Rows rows = table_rows(grid, resolve_ref, budget);
+  const Rows rows = table_rows(data, grid, resolve_ref, budget);
   if (rows.empty()) return std::string();
   const std::size_t columns = rows.front().size();
   const std::size_t num_headers = std::min(count_header_rows(grid), rows.size());

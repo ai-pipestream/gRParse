@@ -13,6 +13,7 @@
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -94,6 +95,8 @@ class DocTagsRenderer : RendererBase {
       for (const auto& ref : picture.footnotes()) footnote_refs_.insert(ref.ref());
     }
   }
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     std::vector<std::string> parts;
@@ -455,7 +458,15 @@ class DocTagsRenderer : RendererBase {
 }  // namespace
 
 std::string render_doctags(const docv1::Document& document) {
-  return DocTagsRenderer(document).render();
+  return render_doctags(document, nullptr);
+}
+
+std::string render_doctags(const docv1::Document& document,
+                           parsev1::RenderOmissions* omissions) {
+  DocTagsRenderer renderer(document);
+  std::string doctags = renderer.render();
+  renderer.report_omissions(omissions);
+  return doctags;
 }
 
 }  // namespace grparse

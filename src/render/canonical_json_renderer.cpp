@@ -29,6 +29,7 @@ namespace grparse {
 namespace {
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 using render::code_language_string;
 using render::content_layer_string;
 using render::derived_table_grid;
@@ -61,6 +62,12 @@ class CanonicalJsonRenderer : public render::CanonicalJsonParts {
     writer_.reserve(wire_bytes + wire_bytes / 4 + 4096);
     emit_document(document);
     return writer_.take();
+  }
+
+  // What the render of `document` left out, for the entry point's caller.
+  void report_omissions(const docv1::Document& document,
+                        parsev1::RenderOmissions* out) const {
+    render::report_omissions(grid_budget_, document, out);
   }
 
  private:
@@ -665,6 +672,20 @@ class CanonicalJsonRenderer : public render::CanonicalJsonParts {
 }  // namespace
 
 std::string render_canonical_json(const ai::pipestream::document::v1::Document& document) {
+  return render_canonical_json(document, nullptr);
+}
+
+std::string render_canonical_json(const ai::pipestream::document::v1::Document& document,
+                                  ai::pipestream::parse::v1::RenderOmissions* omissions) {
+  // Renders `walked`, the document or its normalized copy, and reports what
+  // the render left out while that document is still alive: the report
+  // names tables by where their data lives in it.
+  const auto render_walked = [omissions](const ai::pipestream::document::v1::Document& walked) {
+    CanonicalJsonRenderer renderer;
+    std::string json = renderer.render(walked);
+    renderer.report_omissions(walked, omissions);
+    return json;
+  };
   // The reference model normalizes a loaded document before dumping it.
   // Copying the whole document for that is expensive (page images and
   // picture crops dominate), so the copy happens only when a normalization
@@ -672,7 +693,7 @@ std::string render_canonical_json(const ai::pipestream::document::v1::Document& 
   // caller's document directly.
   if (!render::needs_clamping(document) && !render::has_misplaced_list_items(document) &&
       !render::has_ordered_list_groups(document)) {
-    return CanonicalJsonRenderer().render(document);
+    return render_walked(document);
   }
   ai::pipestream::document::v1::Document normalized = document;
   render::clamp_document(&normalized);
@@ -680,7 +701,7 @@ std::string render_canonical_json(const ai::pipestream::document::v1::Document& 
   // reference load; only then can the migration see them as list parents.
   render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
-  return CanonicalJsonRenderer().render(normalized);
+  return render_walked(normalized);
 }
 
 }  // namespace grparse

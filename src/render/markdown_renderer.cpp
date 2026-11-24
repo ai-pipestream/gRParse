@@ -50,6 +50,7 @@
 #include "value_repr.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -74,6 +75,8 @@ class MarkdownRenderer : public MarkdownWalk {
       set_page_break_placeholder(*options.page_break_placeholder);
     }
   }
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     std::vector<std::string> parts;
@@ -792,19 +795,33 @@ std::string render_markdown(const docv1::Document& document) {
 }
 
 std::string render_markdown(const docv1::Document& document, const MarkdownOptions& options) {
+  return render_markdown(document, options, nullptr);
+}
+
+std::string render_markdown(const docv1::Document& document, const MarkdownOptions& options,
+                            parsev1::RenderOmissions* omissions) {
+  // Renders `walked`, the document or its normalized copy, and reports what
+  // the render left out while that document is still alive: the report
+  // names tables by where their data lives in it.
+  const auto render_walked = [&options, omissions](const docv1::Document& walked) {
+    MarkdownRenderer renderer(walked, options);
+    std::string markdown = renderer.render();
+    renderer.report_omissions(omissions);
+    return markdown;
+  };
   // Only the list-item migration can change the Markdown; the box clamping
   // the model also applies on load is invisible here, so the defensive copy
   // is taken only when a list item actually needs re-homing.
   if (!render::has_misplaced_list_items(document) &&
       !render::has_ordered_list_groups(document)) {
-    return MarkdownRenderer(document, options).render();
+    return render_walked(document);
   }
   docv1::Document normalized = document;
   // Ordered-list groups relabel to plain list groups first, exactly like the
   // reference load; only then can the migration see them as list parents.
   render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
-  return MarkdownRenderer(normalized, options).render();
+  return render_walked(normalized);
 }
 
 }  // namespace grparse

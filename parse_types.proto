@@ -1832,6 +1832,72 @@ message ProfilingItem {
 // Document response types
 // ============================================================================
 
+// One table a rendering did not carry whole (RenderOmissions.tables).
+message TruncatedTable {
+  // The self_ref of the item the table belongs to: the table item itself
+  // ("#/tables/3"), or the picture whose chart data the table is
+  // ("#/pictures/0"). Empty when the table belongs to no item of the
+  // rendered document.
+  string item_ref = 1;
+  // The grid the table declares: num_rows x num_cols, or, for a rendering
+  // that reads the table's wire grid, its row count and its widest row.
+  int32 declared_rows = 2;
+  int32 declared_cols = 3;
+  // The leading rows and columns the rendering kept. Equal to the declared
+  // grid when only spanned cells were affected, and 0 x 0 when the
+  // document's tables had already spent its budget, so this one rendered
+  // no cell at all.
+  int32 kept_rows = 4;
+  int32 kept_cols = 5;
+  // This table's share of RenderOmissions.spans_not_repeated.
+  int64 spans_not_repeated = 6;
+}
+
+// What one rendering of a Document (one export, or one chunk list) left
+// out because it reached a fixed budget, or because the rendering has no
+// form for an item. The budgets bound what a hostile or malformed document
+// can make the service allocate and are not configurable; this message is
+// how a caller learns one was reached. A rendering that carries no
+// RenderOmissions holds everything its format serializes. One that carries
+// it is incomplete in exactly the ways counted here, while the Document
+// itself is untouched: the items named still hold their whole content.
+// Every count covers the whole rendering; each list names the first 64
+// affected items in the order the rendering reached them, so a count
+// above its list's length means more were affected than are named.
+message RenderOmissions {
+  // Tables that rendered only their leading rows and columns, because the
+  // grid they declare is over the budget of positions one table may take,
+  // or over what the document's budget across all its tables had left.
+  int32 tables_cut = 1;
+  // The declared rows and columns those tables did not render, summed.
+  int64 rows_dropped = 2;
+  int64 columns_dropped = 3;
+  // Spanned cells whose text does not repeat at every position the cell
+  // covers, because the document's budget for repeated cell text was
+  // spent. The text still appears at the cell's first position.
+  int64 spans_not_repeated = 4;
+  // The tables counted above.
+  repeated TruncatedTable tables = 5;
+  // Chunk lists only: subtrees no chunk holds, because they are nested
+  // deeper than the chunker follows the body tree.
+  int32 subtrees_too_deep = 6;
+  // The self_ref of the group or item each of those subtrees hangs from.
+  // Nothing below it is in any chunk.
+  repeated string too_deep_refs = 7;
+  // Chunk lists only: key-value and form items of the body tree. They hold
+  // graph cells, which the chunk text serialization has no form for, so
+  // they contribute no chunk.
+  int32 items_not_serialized = 8;
+  // The self_refs of those items.
+  repeated string not_serialized_refs = 9;
+}
+
+// What one export format left out (DocumentExports.omissions).
+message ExportOmissions {
+  OutputFormat format = 1;
+  RenderOmissions omissions = 2;
+}
+
 // DocumentExports contains optional serialized output formats.
 message DocumentExports {
   // Canonical JSON form of the document (same serialization as upstream REST).
@@ -1856,6 +1922,13 @@ message DocumentExports {
   optional string latex = 12;
   // DocLang OPC archive bytes (see OUTPUT_FORMAT_DCLX). Binary ZIP, not text.
   optional bytes dclx = 13;
+  // What the exports above left out of the document: one entry per format
+  // whose rendering reached a budget. A format with no entry rendered
+  // everything it serializes. The formats read a table differently (the
+  // wire grid, or the grid computed from the cell list), so the same
+  // document can be cut in one export and whole in another. json, yaml,
+  // text and vtt build no table grid and never have an entry.
+  repeated ExportOmissions omissions = 14;
 }
 
 // DocumentResponse contains the converted document and optional exports.
@@ -1967,6 +2040,11 @@ message ConvertDocumentResponse {
   // for the CV path's own pages and `confidence` is left unset (the page
   // events carry it). Empty when the document has no text items.
   repeated TextOffset text_offsets = 12;
+  // What `chunks` left out of the document: tables cut to a budget,
+  // subtrees nested too deep, items with no chunk serialization. Absent
+  // when the chunks hold everything the chunker serializes, and when no
+  // chunks were asked for.
+  optional RenderOmissions chunk_omissions = 13;
 }
 
 // Embeddings are opt-in on the chunk RPCs: the two synchronous ones,
@@ -2167,6 +2245,10 @@ message ChunkDocumentResponse {
   repeated Document documents = 2;
   double processing_time = 3;
   map<string, ScalarValue> chunking_info = 4;
+  // What `chunks` left out of the document (see
+  // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
+  // everything the chunker serializes.
+  optional RenderOmissions chunk_omissions = 5;
 }
 
 // TaskStatusPollRequest mirrors GET /v1/status/poll/{taskId}

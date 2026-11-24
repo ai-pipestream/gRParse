@@ -261,6 +261,8 @@ std::vector<parsev1::Chunk> run_hybrid(const docv1::Document& document,
                                        const parsev1::HybridChunkerOptions& options,
                                        const std::string& filename);
 
+parsev1::HybridChunkerOptions hybrid_options(int max_tokens);
+
 // -- the fixture ------------------------------------------------------------
 
 // A document with every shape the walk has a rule for: a title, two heading
@@ -847,9 +849,113 @@ void verify_deep_nesting_is_bounded() {
   const std::string deep = next_text_ref(document);
   fill_base(document.add_texts()->mutable_text()->mutable_base(), deep, "deep", 0);
   document.mutable_groups(document.groups_size() - 1)->add_children()->set_ref(deep);
-  const auto chunks = chunk_hierarchical(document, {}, {}, "deep.html");
+  parsev1::RenderOmissions omissions;
+  const auto chunks = chunk_hierarchical(document, {}, {}, "deep.html", &omissions);
   require(find_chunk(chunks, "shallow") != nullptr, "the shallow paragraph chunks");
   require(find_chunk(chunks, "deep") == nullptr, "the subtree past the cap is left out");
+  // The caller is told, with the group the missing subtree hangs from: the
+  // walk follows 256 levels, and group k sits k + 2 levels down.
+  require_eq(omissions.subtrees_too_deep(), 1, "the subtree left out is counted");
+  require_eq(omissions.too_deep_refs_size(), 1, "and named");
+  require_eq(omissions.too_deep_refs(0), "#/groups/255",
+             "by the group at which the walk stopped");
+
+  parsev1::RenderOmissions hybrid_omissions;
+  std::vector<parsev1::Chunk> hybrid_chunks;
+  require(chunk_hybrid(document, {}, hybrid_options(64), "deep.html", &hybrid_chunks,
+                       &hybrid_omissions)
+              .ok(),
+          "the hybrid chunker runs");
+  require_eq(hybrid_omissions.SerializeAsString(), omissions.SerializeAsString(),
+             "the hybrid chunker reports what its walk left out the same way");
+}
+
+// A table over the grid budget chunks its leading rows and columns only,
+// and the chunk list says so: which table, the grid it declares and the
+// grid its chunk holds. The sheet is the common case, a few hundred rows
+// and one stray cell in the last of 16,384 columns.
+void verify_a_cut_table_is_reported_with_the_chunks() {
+  docv1::Document document = new_document();
+  add_paragraph(&document, "before");
+  auto* table = document.add_tables();
+  table->set_self_ref("#/tables/0");
+  table->set_label(docv1::DOC_ITEM_LABEL_TABLE);
+  table->mutable_parent()->set_ref("#/body");
+  document.mutable_body()->add_children()->set_ref("#/tables/0");
+  auto* data = table->mutable_data();
+  data->set_num_rows(300);
+  data->set_num_cols(16384);
+  const auto place = [data](const std::string& text, int row, int column) {
+    auto* cell = data->add_table_cells();
+    cell->set_text(text);
+    cell->set_start_row_offset_idx(row);
+    cell->set_end_row_offset_idx(row + 1);
+    cell->set_start_col_offset_idx(column);
+    cell->set_end_col_offset_idx(column + 1);
+  };
+  place("first", 0, 0);
+  place("kept", 255, 0);
+  place("lost", 256, 0);
+  place("stray", 299, 16383);
+
+  parsev1::RenderOmissions omissions;
+  const auto chunks = chunk_hierarchical(document, {}, {}, "sheet.xlsx", &omissions);
+  const auto* chunk = find_chunk(chunks, "first");
+  require(chunk != nullptr, "the table chunks");
+  require(chunk->text().contains("kept") && !chunk->text().contains("lost") &&
+              !chunk->text().contains("stray"),
+          "the chunk holds the 256 leading rows: " + chunk->text());
+  require_eq(omissions.tables_cut(), 1, "the cut table is counted");
+  require(omissions.rows_dropped() == 44 && omissions.columns_dropped() == 0,
+          "with the rows it lost: " + omissions.ShortDebugString());
+  require_eq(omissions.tables_size(), 1, "the cut table is listed");
+  require_eq(omissions.tables(0).item_ref(), "#/tables/0", "by its self_ref");
+  require(omissions.tables(0).declared_rows() == 300 &&
+              omissions.tables(0).declared_cols() == 16384 &&
+              omissions.tables(0).kept_rows() == 256 &&
+              omissions.tables(0).kept_cols() == 16384,
+          "with the declared and the kept grid: " + omissions.ShortDebugString());
+  require(omissions.subtrees_too_deep() == 0 && omissions.items_not_serialized() == 0,
+          "nothing else was left out");
+
+  parsev1::RenderOmissions none;
+  chunk_hierarchical(field_guide(), {}, {}, "guide.pdf", &none);
+  require(none.ByteSizeLong() == 0, "chunks that hold the whole document report nothing: " +
+                                        none.ShortDebugString());
+}
+
+// Key-value and form items hold graph cells, which text/1 has no form for:
+// they contribute no chunk, and the chunk list counts and names them so
+// that no chunk is not mistaken for no content. One on a layer the chunker
+// leaves out anyway is not counted, and neither is a reference that names
+// no item.
+void verify_items_without_a_chunk_form_are_counted() {
+  docv1::Document document = new_document();
+  add_paragraph(&document, "before");
+  auto* key_value = document.add_key_value_items();
+  key_value->set_self_ref("#/key_value_items/0");
+  key_value->mutable_graph()->add_cells()->set_text("Name");
+  document.mutable_body()->add_children()->set_ref("#/key_value_items/0");
+  auto* furniture = document.add_key_value_items();
+  furniture->set_self_ref("#/key_value_items/1");
+  furniture->set_content_layer(docv1::CONTENT_LAYER_FURNITURE);
+  document.mutable_body()->add_children()->set_ref("#/key_value_items/1");
+  auto* form = document.add_form_items();
+  form->set_self_ref("#/form_items/0");
+  form->mutable_graph()->add_cells()->set_text("Signature");
+  document.mutable_body()->add_children()->set_ref("#/form_items/0");
+  document.mutable_body()->add_children()->set_ref("#/form_items/7");
+  add_paragraph(&document, "after");
+
+  parsev1::RenderOmissions omissions;
+  const auto chunks = chunk_hierarchical(document, {}, {}, "form.pdf", &omissions);
+  require_eq(static_cast<int>(chunks.size()), 2, "only the two paragraphs chunk");
+  require_eq(omissions.items_not_serialized(), 2, "the key-value and the form item are counted");
+  require_eq(omissions.not_serialized_refs_size(), 2, "and named");
+  require_eq(omissions.not_serialized_refs(0), "#/key_value_items/0", "the key-value item");
+  require_eq(omissions.not_serialized_refs(1), "#/form_items/0", "the form item");
+  require(omissions.tables_cut() == 0 && omissions.subtrees_too_deep() == 0,
+          "nothing else was left out");
 }
 
 // -- hybrid -----------------------------------------------------------------
@@ -1413,6 +1519,8 @@ const Case kCases[] = {
     {"list group consumption", verify_list_group_consumes_its_items},
     {"list item children", verify_list_items_carry_their_children},
     {"nesting depth cap", verify_deep_nesting_is_bounded},
+    {"cut table reported with the chunks", verify_a_cut_table_is_reported_with_the_chunks},
+    {"items without a chunk form", verify_items_without_a_chunk_form_are_counted},
     {"table serialization", verify_table_serialization_and_its_degradations},
     {"picture captions", verify_picture_chunks_carry_captions_only},
     {"footnotes chunk with their item", verify_footnotes_chunk_with_their_item},

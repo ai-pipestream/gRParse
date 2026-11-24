@@ -9,12 +9,16 @@
 #include <print>
 #include <string>
 #include <string_view>
+#include <unordered_map>
 #include <utility>
 #include <vector>
 
 #include <simdutf.h>
 
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
+
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse::render {
 
@@ -88,6 +92,70 @@ std::string code_fence_language(const docv1::CodeItem& code) {
   return name;
 }
 
+GridBudget::Table* GridBudget::listed(const docv1::TableData& data, int rows, int cols) {
+  // A table's notes arrive together while its grid is built, so its entry
+  // is almost always the last one.
+  for (auto entry = tables_.rbegin(); entry != tables_.rend(); ++entry) {
+    if (entry->data == &data) return &*entry;
+  }
+  if (tables_.size() >= kMaximumListedTables) return nullptr;
+  tables_.push_back({&data, rows, cols, rows, cols, 0});
+  return &tables_.back();
+}
+
+void GridBudget::note_cut(const docv1::TableData& data, int rows, int cols, int kept_rows,
+                          int kept_cols) {
+  ++tables_cut_;
+  rows_dropped_ += rows - kept_rows;
+  columns_dropped_ += cols - kept_cols;
+  if (Table* table = listed(data, rows, cols)) {
+    table->kept_rows = kept_rows;
+    table->kept_cols = kept_cols;
+  }
+}
+
+void GridBudget::note_span_not_repeated(const docv1::TableData& data, int rows, int cols) {
+  ++spans_not_repeated_;
+  if (Table* table = listed(data, rows, cols)) ++table->spans_not_repeated;
+}
+
+void report_omissions(const GridBudget& budget, const docv1::Document& document,
+                      parsev1::RenderOmissions* out) {
+  if (out == nullptr || (budget.tables_cut() == 0 && budget.spans_not_repeated() == 0)) return;
+  out->set_tables_cut(budget.tables_cut());
+  out->set_rows_dropped(budget.rows_dropped());
+  out->set_columns_dropped(budget.columns_dropped());
+  out->set_spans_not_repeated(budget.spans_not_repeated());
+  // The grids were built from table data alone; the item each one belongs
+  // to is found by where that data lives in the document.
+  std::unordered_map<const docv1::TableData*, const std::string*> owners;
+  for (const auto& table : document.tables()) {
+    if (table.has_data()) owners.emplace(&table.data(), &table.self_ref());
+  }
+  for (const auto& picture : document.pictures()) {
+    if (picture.has_meta() && picture.meta().has_tabular_chart() &&
+        picture.meta().tabular_chart().has_chart_data()) {
+      owners.emplace(&picture.meta().tabular_chart().chart_data(), &picture.self_ref());
+    }
+    for (const auto& annotation : picture.annotations()) {
+      if (annotation.has_tabular_chart() && annotation.tabular_chart().has_chart_data()) {
+        owners.emplace(&annotation.tabular_chart().chart_data(), &picture.self_ref());
+      }
+    }
+  }
+  for (const GridBudget::Table& table : budget.tables()) {
+    auto* entry = out->add_tables();
+    if (const auto owner = owners.find(table.data); owner != owners.end()) {
+      entry->set_item_ref(*owner->second);
+    }
+    entry->set_declared_rows(table.declared_rows);
+    entry->set_declared_cols(table.declared_cols);
+    entry->set_kept_rows(table.kept_rows);
+    entry->set_kept_cols(table.kept_cols);
+    entry->set_spans_not_repeated(table.spans_not_repeated);
+  }
+}
+
 namespace {
 
 // The most positions a dense grid may hold (32 MiB of pointers). Table
@@ -96,9 +164,13 @@ namespace {
 // grid keeps its leading rows and columns and drops the rest, with a warning.
 constexpr std::int64_t kMaxGridPositions = std::int64_t{1} << 22;
 
-// The grid rows and columns kept for a declared rows x cols table, spent
-// from the document's budget.
-std::pair<int, int> kept_dimensions(int rows, int cols, GridBudget& budget) {
+// The grid rows and columns kept for `data`, a declared rows x cols table,
+// spent from the document's budget. A cut goes on the budget's account as
+// well as to stderr: the log line is for the operator and is written once
+// per document, the account is what the caller is told and covers every
+// table.
+std::pair<int, int> kept_dimensions(const docv1::TableData& data, int rows, int cols,
+                                    GridBudget& budget) {
   const std::int64_t allowance = std::min(kMaxGridPositions, budget.remaining());
   if (static_cast<std::int64_t>(rows) * cols <= allowance) {
     budget.spend(static_cast<std::int64_t>(rows) * cols);
@@ -113,6 +185,7 @@ std::pair<int, int> kept_dimensions(int rows, int cols, GridBudget& budget) {
                  "truncations in this document are not logged",
                  rows, cols, kMaxGridPositions, budget.remaining(), kept_rows, kept_cols);
   }
+  budget.note_cut(data, rows, cols, kept_rows, kept_cols);
   budget.spend(static_cast<std::int64_t>(kept_rows) * kept_cols);
   return {kept_rows, kept_cols};
 }
@@ -139,10 +212,11 @@ struct Reach {
 
 // Writes `cell` at every position its row and column reaches cover, or,
 // when the document's budget cannot pay for the repeats, at the first one
-// only: the cell's text then appears once instead of once per position.
+// only: the cell's text then appears once instead of once per position,
+// which the budget records against `data`, the cell's table.
 void place_cell(std::vector<std::vector<const docv1::TableCell*>>& grid,
-                const docv1::TableCell& cell, const Reach& rows, const Reach& cols,
-                GridBudget& budget) {
+                const docv1::TableData& data, const docv1::TableCell& cell, const Reach& rows,
+                const Reach& cols, GridBudget& budget) {
   const std::int64_t covered = rows.count() * cols.count();
   if (covered == 0) return;
   if (!budget.spend_repeats(covered - 1, static_cast<std::int64_t>(cell.text().size()))) {
@@ -153,6 +227,8 @@ void place_cell(std::vector<std::vector<const docv1::TableCell*>>& grid,
                    "truncations in this document are not logged",
                    covered);
     }
+    budget.note_span_not_repeated(data, static_cast<int>(grid.size()),
+                                  static_cast<int>(grid.front().size()));
     grid[static_cast<std::size_t>(rows.first())][static_cast<std::size_t>(cols.first())] = &cell;
     return;
   }
@@ -173,7 +249,7 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
     // the widest, so the rows times the widest row is what it costs.
     int widest = 0;
     for (const auto& row : data.grid()) widest = std::max(widest, row.cells_size());
-    const auto [rows, cols] = kept_dimensions(data.grid_size(), widest, budget);
+    const auto [rows, cols] = kept_dimensions(data, data.grid_size(), widest, budget);
     grid.reserve(static_cast<size_t>(rows));
     for (const auto& row : data.grid()) {
       if (static_cast<int>(grid.size()) == rows) break;
@@ -186,7 +262,8 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
     return grid;
   }
   if (data.num_rows() <= 0 || data.num_cols() <= 0) return grid;
-  const auto [rows, cols] = kept_dimensions(data.num_rows(), data.num_cols(), budget);
+  const auto [rows, cols] =
+      kept_dimensions(data, data.num_rows(), data.num_cols(), budget);
   grid.assign(static_cast<size_t>(rows),
               std::vector<const docv1::TableCell*>(static_cast<size_t>(cols), nullptr));
   for (const auto& cell : data.table_cells()) {
@@ -198,7 +275,7 @@ std::vector<std::vector<const docv1::TableCell*>> table_grid(
     row_reach.direct = {std::max(0, cell.start_row_offset_idx()), row_end};
     Reach col_reach;
     col_reach.direct = {std::max(0, cell.start_col_offset_idx()), col_end};
-    place_cell(grid, cell, row_reach, col_reach, budget);
+    place_cell(grid, data, cell, row_reach, col_reach, budget);
   }
   return grid;
 }
@@ -207,7 +284,7 @@ std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
     const docv1::TableData& data, GridBudget& budget) {
   const int rows = std::max(data.num_rows(), 0);
   const int cols = std::max(data.num_cols(), 0);
-  const auto [kept_rows, kept_cols] = kept_dimensions(rows, cols, budget);
+  const auto [kept_rows, kept_cols] = kept_dimensions(data, rows, cols, budget);
   std::vector<std::vector<const docv1::TableCell*>> grid(
       static_cast<std::size_t>(kept_rows),
       std::vector<const docv1::TableCell*>(static_cast<std::size_t>(kept_cols), nullptr));
@@ -225,7 +302,7 @@ std::vector<std::vector<const docv1::TableCell*>> derived_table_grid(
     return out;
   };
   for (const auto& cell : data.table_cells()) {
-    place_cell(grid, cell,
+    place_cell(grid, data, cell,
                reach(cell.start_row_offset_idx(), cell.end_row_offset_idx(), rows, kept_rows),
                reach(cell.start_col_offset_idx(), cell.end_col_offset_idx(), cols, kept_cols),
                budget);

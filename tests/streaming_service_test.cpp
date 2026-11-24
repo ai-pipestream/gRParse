@@ -1512,6 +1512,148 @@ void verify_unary_storage_suffix_routes_in_process(TestServer* server) {
               response.response().document().exports().text());
 }
 
+// A rendering that reached a budget says so on the wire, typed, beside the
+// export or the chunks it describes: before, only the service's stderr did.
+// 65 x 64 is past the storage handler's grid ceiling, so the table keeps
+// its flat cells and every renderer places them itself. Its one cell spans
+// the whole table and is 17,000 bytes long: repeating it at 4,160 positions
+// is over the document's budget for repeated cell text, so each rendering
+// places it once.
+void verify_render_omissions_reach_the_caller(TestServer* server) {
+  std::string storage = "<p>before</p><table><tbody><tr><td rowspan=\"65\" colspan=\"64\">" +
+                        std::string(17000, 'x') + "</td></tr>";
+  for (int row = 1; row < 65; ++row) storage += "<tr></tr>";
+  storage += "</tbody></table>";
+  const auto source_of = [](const std::string& body) {
+    pipestream::parse::v1::Source source;
+    source.mutable_file()->set_filename("wide.confluence");
+    source.mutable_file()->set_base64_string(grparse::encode_base64(body.data(), body.size()));
+    return source;
+  };
+  const auto require_the_span = [](const pipestream::parse::v1::RenderOmissions& omissions,
+                                   const std::string& where) {
+    require(omissions.spans_not_repeated() == 1 && omissions.tables_cut() == 0 &&
+                omissions.tables_size() == 1 &&
+                omissions.tables(0).item_ref() == "#/tables/0" &&
+                omissions.tables(0).spans_not_repeated() == 1 &&
+                omissions.tables(0).declared_rows() == 65 &&
+                omissions.tables(0).declared_cols() == 64 &&
+                omissions.tables(0).kept_rows() == 65 && omissions.tables(0).kept_cols() == 64,
+            where + " names the table and the span it placed once: " +
+                omissions.ShortDebugString());
+  };
+  auto client = server->unary_stub();
+
+  pipestream::parse::v1::ConvertSourceRequest convert;
+  *convert.mutable_request()->add_sources() = source_of(storage);
+  auto* options = convert.mutable_request()->mutable_options();
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_TEXT);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_HTML);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_LATEX);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
+  options->set_md_compact_tables(true);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, convert, &response);
+    require(status.ok(), "the wide table converts: " + status.error_message());
+    const auto& data = response.response().document().doc().tables(0).data();
+    require(data.num_rows() == 65 && data.num_cols() == 64 && data.grid_size() == 0,
+            "the storage table keeps its flat cells");
+    const auto& exports = response.response().document().exports();
+    require(exports.has_text() && exports.has_md() && exports.has_html() && exports.has_latex(),
+            "every requested export is rendered");
+    require(exports.omissions_size() == 3,
+            "each export that lays the table out reports it, the text export has nothing to: " +
+                std::to_string(exports.omissions_size()) + " entries");
+    const pipestream::parse::v1::OutputFormat formats[] = {
+        pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN,
+        pipestream::parse::v1::OUTPUT_FORMAT_HTML,
+        pipestream::parse::v1::OUTPUT_FORMAT_LATEX,
+    };
+    for (int index = 0; index < 3; ++index) {
+      const auto& entry = exports.omissions(index);
+      require(entry.format() == formats[index],
+              "the entries follow the formats in render order: " +
+                  pipestream::parse::v1::OutputFormat_Name(entry.format()));
+      require_the_span(entry.omissions(),
+                       "the " + pipestream::parse::v1::OutputFormat_Name(entry.format()) +
+                           " export");
+    }
+    require(response.response().has_chunk_omissions(),
+            "ConvertSource says what its chunks left out");
+    require_the_span(response.response().chunk_omissions(), "ConvertSource's chunk list");
+  }
+
+  pipestream::parse::v1::ChunkHierarchicalSourceRequest chunk;
+  *chunk.mutable_request()->add_sources() = source_of(storage);
+  chunk.mutable_request()->set_include_converted_doc(true);
+  chunk.mutable_request()->mutable_convert_options()->add_to_formats(
+      pipestream::parse::v1::OUTPUT_FORMAT_HTML);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, chunk, &response);
+    require(status.ok(), "the wide table chunks: " + status.error_message());
+    require(response.response().has_chunk_omissions(),
+            "ChunkHierarchicalSource says what its chunks left out");
+    require_the_span(response.response().chunk_omissions(), "the hierarchical chunk list");
+    require(response.response().documents_size() == 1 &&
+                response.response().documents(0).content().exports().omissions_size() == 1,
+            "the converted document's export reports its own omissions");
+    require_the_span(response.response().documents(0).content().exports().omissions(0).omissions(),
+                     "the converted document's HTML export");
+  }
+
+  pipestream::parse::v1::ChunkHybridSourceRequest hybrid;
+  *hybrid.mutable_request()->add_sources() = source_of(storage);
+  hybrid.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ChunkHybridSourceResponse response;
+    const grpc::Status status = client->ChunkHybridSource(&context, hybrid, &response);
+    require(status.ok(), "the wide table chunks under a budget: " + status.error_message());
+    require(response.response().has_chunk_omissions(),
+            "ChunkHybridSource says what its chunks left out");
+    require_the_span(response.response().chunk_omissions(), "the hybrid chunk list");
+  }
+
+  pipestream::parse::v1::StreamChunksRequest stream;
+  *stream.mutable_hierarchical() = chunk.request();
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto reader = client->StreamChunks(&context, stream);
+    pipestream::parse::v1::StreamChunksResponse message;
+    pipestream::parse::v1::StreamChunksSummary summary;
+    while (reader->Read(&message)) {
+      if (message.has_summary()) summary = message.summary();
+    }
+    const grpc::Status status = reader->Finish();
+    require(status.ok(), "the wide table streams its chunks: " + status.error_message());
+    require(summary.has_chunk_omissions(), "the StreamChunks summary carries the report");
+    require_the_span(summary.chunk_omissions(), "the streamed chunk list");
+  }
+
+  // A document every rendering carries whole reports nothing anywhere.
+  convert.mutable_request()->clear_sources();
+  *convert.mutable_request()->add_sources() =
+      source_of(std::string(kStorageBody, sizeof(kStorageBody) - 1));
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse whole;
+  const grpc::Status status = client->ConvertSource(&context, convert, &whole);
+  require(status.ok(), "the small body converts: " + status.error_message());
+  require(whole.response().chunks_size() > 0 &&
+              whole.response().document().exports().omissions_size() == 0 &&
+              !whole.response().has_chunk_omissions(),
+          "complete renderings carry no omissions");
+}
+
 void verify_stream_storage_content_type_routes_in_process(TestServer* server) {
   auto client = server->stub();
   grpc::ClientContext context;
@@ -6243,6 +6385,7 @@ int main() {
         verify_wide_page_window_streams_completely();
         verify_deadline_cancels_scheduler_work();
         verify_unary_storage_suffix_routes_in_process(&server);
+        verify_render_omissions_reach_the_caller(&server);
         verify_stream_storage_content_type_routes_in_process(&server);
         verify_structure_validation_on_the_wire(&server);
         verify_table_cell_limits_on_the_wire(&server);

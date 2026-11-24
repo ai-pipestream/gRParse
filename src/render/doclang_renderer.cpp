@@ -13,6 +13,7 @@
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -26,6 +27,8 @@ class DoclangRenderer : RendererBase {
       : RendererBase(document), include_namespace_(include_namespace), picture_uri_(picture_uri) {
     claim_satellites();
   }
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     // The root grpc-xml sniffs: the doclang local name in its NS_DOCLANG
@@ -531,8 +534,12 @@ class DoclangRenderer : RendererBase {
 namespace render {
 
 std::string render_doclang_markup(const docv1::Document& document, bool include_namespace,
-                                  const PictureUri& picture_uri) {
-  return DoclangRenderer(document, include_namespace, picture_uri).render();
+                                  const PictureUri& picture_uri,
+                                  parsev1::RenderOmissions* omissions) {
+  DoclangRenderer renderer(document, include_namespace, picture_uri);
+  std::string markup = renderer.render();
+  renderer.report_omissions(omissions);
+  return markup;
 }
 
 }  // namespace render
@@ -542,6 +549,11 @@ std::string render_doclang(const docv1::Document& document) {
 }
 
 std::string render_doclang(const docv1::Document& document, const DoclangOptions& options) {
+  return render_doclang(document, options, nullptr);
+}
+
+std::string render_doclang(const docv1::Document& document, const DoclangOptions& options,
+                           parsev1::RenderOmissions* omissions) {
   using Mode = DoclangOptions::ImageMode;
   // docling-core's export_to_doclang default.
   const Mode mode = options.image_mode.value_or(Mode::kPlaceholder);
@@ -566,7 +578,8 @@ std::string render_doclang(const docv1::Document& document, const DoclangOptions
       };
       break;
   }
-  return render::render_doclang_markup(document, options.include_namespace, picture_uri);
+  return render::render_doclang_markup(document, options.include_namespace, picture_uri,
+                                       omissions);
 }
 
 }  // namespace grparse

@@ -10,7 +10,23 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 
+namespace ai::pipestream::parse::v1 {
+class RenderOmissions;
+}
+
 namespace grparse {
+
+// Every renderer that lays a table out as a grid (Markdown, HTML and its
+// split-page layout, the canonical JSON dialect, the Docs API body, DocTags,
+// DocLang and its archive, LaTeX) bounds what a document's tables may cost:
+// a table over the budget renders its leading rows and columns only, and a
+// spanned cell whose repeats no longer fit renders once. The output is then
+// not the whole document, so each of those renderers has an overload taking
+// a RenderOmissions (parse_types.proto) that it fills with what it left
+// out: the counts, and the tables by self_ref. It is left untouched when
+// the rendering is complete, and the overload without it renders the same
+// bytes and reports the cut on stderr alone. render_json, render_yaml and
+// render_vtt build no grid and have nothing to report.
 
 // Renders the document as Markdown, byte for byte as the reference Markdown
 // serializer does with its export defaults: "#" headings by level, paragraph
@@ -55,6 +71,10 @@ struct MarkdownOptions {
 std::string render_markdown(const ai::pipestream::document::v1::Document& document,
                             const MarkdownOptions& options);
 
+std::string render_markdown(const ai::pipestream::document::v1::Document& document,
+                            const MarkdownOptions& options,
+                            ai::pipestream::parse::v1::RenderOmissions* omissions);
+
 // Renders the document as structural HTML mirroring docling-core's HTML
 // serializer: a "<!DOCTYPE html>" skeleton with a charset meta and the
 // document name as its title (no CSS), then h1-h6, p, ul/ol/li,
@@ -63,6 +83,9 @@ std::string render_markdown(const ai::pipestream::document::v1::Document& docume
 // MathML conversion). Text content is HTML-escaped; code and formula text
 // too, since nothing downstream re-escapes it.
 std::string render_html(const ai::pipestream::document::v1::Document& document);
+
+std::string render_html(const ai::pipestream::document::v1::Document& document,
+                        ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 // Renders the canonical protobuf JSON of the document via
 // google::protobuf::util::MessageToJsonString with proto field names
@@ -86,6 +109,9 @@ std::string render_json(const ai::pipestream::document::v1::Document& document);
 // would corrupt arena references).
 std::string render_canonical_json(const ai::pipestream::document::v1::Document& document);
 
+std::string render_canonical_json(const ai::pipestream::document::v1::Document& document,
+                                  ai::pipestream::parse::v1::RenderOmissions* omissions);
+
 // Renders the document into the body shape of the Docs API "document"
 // resource: a {"title", "body": {"content": [...]}, "lists",
 // "inlineImagePlaceholders"} object whose structural elements are the
@@ -96,6 +122,9 @@ std::string render_canonical_json(const ai::pipestream::document::v1::Document& 
 // src/render/gdocs_renderer.cpp states that contract in full. Output is
 // deterministic: the same document always renders byte for byte the same.
 std::string render_gdocs_json(const ai::pipestream::document::v1::Document& document);
+
+std::string render_gdocs_json(const ai::pipestream::document::v1::Document& document,
+                              ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 // Renders docling's DocTags serialization: a "<doctag>" wrapper holding one
 // line per body item, label-named tags ("<title>", "<section_header_level_N>",
@@ -109,6 +138,9 @@ std::string render_gdocs_json(const ai::pipestream::document::v1::Document& docu
 // documents without provenance carry none, matching docling. Text is emitted
 // raw (DocTags does not escape).
 std::string render_doctags(const ai::pipestream::document::v1::Document& document);
+
+std::string render_doctags(const ai::pipestream::document::v1::Document& document,
+                           ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 // Renders the DocLang XML export: a `<doclang>` root in grpc-xml's
 // NS_DOCLANG namespace whose element vocabulary is the one that service's
@@ -162,6 +194,10 @@ struct DoclangOptions {
 std::string render_doclang(const ai::pipestream::document::v1::Document& document,
                            const DoclangOptions& options);
 
+std::string render_doclang(const ai::pipestream::document::v1::Document& document,
+                           const DoclangOptions& options,
+                           ai::pipestream::parse::v1::RenderOmissions* omissions);
+
 // Renders the WebVTT export of track-timed text: a "WEBVTT" header (with the
 // document title item's text when present), then one cue per body text item
 // whose source list carries a TrackSource, in document order, as
@@ -183,6 +219,9 @@ std::string render_vtt(const ai::pipestream::document::v1::Document& document);
 // without provenance stay with the page in effect where they appear, and a
 // document with no page provenance at all renders as one page.
 std::string render_html_split_page(const ai::pipestream::document::v1::Document& document);
+
+std::string render_html_split_page(const ai::pipestream::document::v1::Document& document,
+                                   ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 // Renders the document as block-style YAML with exactly the structure of
 // render_json (proto field names preserved), by re-emitting that JSON
@@ -213,6 +252,9 @@ std::string render_yaml(const ai::pipestream::document::v1::Document& document);
 // failing the export.
 std::string render_latex(const ai::pipestream::document::v1::Document& document);
 
+std::string render_latex(const ai::pipestream::document::v1::Document& document,
+                         ai::pipestream::parse::v1::RenderOmissions* omissions);
+
 // Packs a DocLang OPC archive (`.dclx`) in the layout docling-core's
 // save_as_doclang_archive writes: `[Content_Types].xml` and `_rels/.rels`
 // (the OPC parts the doclang packager writes), root `document.xml` holding
@@ -228,6 +270,10 @@ std::string render_dclx(const ai::pipestream::document::v1::Document& document);
 
 std::string render_dclx(const ai::pipestream::document::v1::Document& document,
                         const DoclangOptions& options);
+
+std::string render_dclx(const ai::pipestream::document::v1::Document& document,
+                        const DoclangOptions& options,
+                        ai::pipestream::parse::v1::RenderOmissions* omissions);
 
 }  // namespace grparse
 

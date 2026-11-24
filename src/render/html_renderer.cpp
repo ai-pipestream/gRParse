@@ -10,6 +10,7 @@
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -19,6 +20,8 @@ using namespace grparse::render;
 class HtmlRenderer : RendererBase {
  public:
   explicit HtmlRenderer(const docv1::Document& document) : RendererBase(document) {}
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     render_children(document_.body());
@@ -442,11 +445,26 @@ class HtmlRenderer : RendererBase {
 }  // namespace
 
 std::string render_html(const docv1::Document& document) {
-  return HtmlRenderer(document).render();
+  return render_html(document, nullptr);
+}
+
+std::string render_html(const docv1::Document& document, parsev1::RenderOmissions* omissions) {
+  HtmlRenderer renderer(document);
+  std::string html = renderer.render();
+  renderer.report_omissions(omissions);
+  return html;
 }
 
 std::string render_html_split_page(const docv1::Document& document) {
-  return HtmlRenderer(document).render_split_page();
+  return render_html_split_page(document, nullptr);
+}
+
+std::string render_html_split_page(const docv1::Document& document,
+                                   parsev1::RenderOmissions* omissions) {
+  HtmlRenderer renderer(document);
+  std::string html = renderer.render_split_page();
+  renderer.report_omissions(omissions);
+  return html;
 }
 
 }  // namespace grparse

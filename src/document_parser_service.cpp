@@ -137,7 +137,29 @@ void report_failures(const std::vector<CollectorFailureInfo>& failures,
   }
 }
 
-// Renders every output format the options asked for onto the response.
+// True when a rendering left something of the document out. A
+// RenderOmissions that counts nothing has every field at its default and
+// serializes to no bytes.
+bool left_something_out(const pipestream::parse::v1::RenderOmissions& omissions) {
+  return omissions.ByteSizeLong() != 0;
+}
+
+// Puts what one export left out of the document beside the exports, under
+// its format. A complete export adds no entry, so an entry is the signal.
+void attach_omissions(pipestream::parse::v1::OutputFormat format,
+                      const pipestream::parse::v1::RenderOmissions& omissions,
+                      pipestream::parse::v1::DocumentExports* exports) {
+  if (!left_something_out(omissions)) return;
+  auto* entry = exports->add_omissions();
+  entry->set_format(format);
+  *entry->mutable_omissions() = omissions;
+}
+
+// Renders every output format the options asked for onto the response. A
+// renderer that lays tables out as grids bounds what they may cost
+// (document_render.h); whatever it left out for that goes on `exports` too,
+// so a cut export is never returned as a complete one. TEXT, JSON, YAML and
+// VTT build no grid and have nothing to report.
 void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options,
                     const pipestream::document::v1::Document& document,
                     pipestream::parse::v1::DocumentExports* exports) {
@@ -182,40 +204,58 @@ void render_exports(const pipestream::parse::v1::ConvertDocumentOptions& options
             pipestream::parse::v1::FORMATTING_FALLBACK_MODE_HTML) {
       markdown.html_formatting_fallback = true;
     }
-    exports->set_md(render_markdown(document, markdown));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_md(render_markdown(document, markdown, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_MARKDOWN, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML)) {
-    exports->set_html(render_html(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_html(render_html(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_HTML, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_JSON)) {
     exports->set_json(render_json(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON)) {
-    exports->set_canonical_json(render_canonical_json(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_canonical_json(render_canonical_json(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_CANONICAL_JSON, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON)) {
-    exports->set_gdocs_json(render_gdocs_json(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_gdocs_json(render_gdocs_json(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_GDOCS_JSON, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS)) {
-    exports->set_doctags(render_doctags(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_doctags(render_doctags(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DOCTAGS, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG)) {
-    exports->set_doclang(render_doclang(document, doclang_options(options)));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_doclang(render_doclang(document, doclang_options(options), &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DOCLANG, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_VTT)) {
     exports->set_vtt(render_vtt(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE)) {
-    exports->set_html_split_page(render_html_split_page(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_html_split_page(render_html_split_page(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_HTML_SPLIT_PAGE, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_YAML)) {
     exports->set_yaml(render_yaml(document));
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_LATEX)) {
-    exports->set_latex(render_latex(document));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_latex(render_latex(document, &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_LATEX, omissions, exports);
   }
   if (requested(options, pipestream::parse::v1::OUTPUT_FORMAT_DCLX)) {
-    exports->set_dclx(render_dclx(document, doclang_options(options)));
+    pipestream::parse::v1::RenderOmissions omissions;
+    exports->set_dclx(render_dclx(document, doclang_options(options), &omissions));
+    attach_omissions(pipestream::parse::v1::OUTPUT_FORMAT_DCLX, omissions, exports);
   }
 }
 
@@ -1078,11 +1118,13 @@ grpc::Status DocumentParserService::convert_source(
       options.to_formats().end();
   if (wants_chunks) {
     std::vector<pipestream::parse::v1::Chunk> chunks;
+    // What the chunker left out of the document rides beside the chunks.
+    pipestream::parse::v1::RenderOmissions chunk_omissions;
     if (options.chunking_options_case() ==
         pipestream::parse::v1::ConvertDocumentOptions::kHybridChunking) {
       const grpc::Status chunked = chunking::chunk_hybrid(
           *document, parsed->offsets, options.hybrid_chunking(), parsed->filename.string(),
-          &chunks);
+          &chunks, &chunk_omissions);
       if (!chunked.ok()) return chunked;
     } else {
       // hierarchical_chunking, chunking_preset, or CHUNKS with no config:
@@ -1094,10 +1136,13 @@ grpc::Status DocumentParserService::convert_source(
       }
       const chunking::ChunkOptions chunk_opts = chunking::chunk_options_from(hierarchical);
       chunks = chunking::chunk_hierarchical(*document, parsed->offsets, chunk_opts,
-                                            parsed->filename.string());
+                                            parsed->filename.string(), &chunk_omissions);
     }
     for (auto& chunk : chunks) {
       *converted->add_chunks() = std::move(chunk);
+    }
+    if (left_something_out(chunk_omissions)) {
+      *converted->mutable_chunk_omissions() = std::move(chunk_omissions);
     }
   }
   // The target delivers the same conversion somewhere else; the response
@@ -1276,6 +1321,9 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         summary->mutable_documents()->Swap(rest.mutable_documents());
         summary->set_processing_time(rest.processing_time());
         summary->mutable_chunking_info()->swap(*rest.mutable_chunking_info());
+        if (rest.has_chunk_omissions()) {
+          summary->mutable_chunk_omissions()->Swap(rest.mutable_chunk_omissions());
+        }
         return grpc::Status::OK;
       });
 }
@@ -1297,12 +1345,14 @@ grpc::Status DocumentParserService::chunk_hierarchical_source(
   if (!parse_status.ok()) return parse_status;
   const chunking::ChunkOptions options =
       chunking::chunk_options_from(chunk_request.chunking_options());
+  pipestream::parse::v1::RenderOmissions omissions;
   *chunks = chunking::chunk_hierarchical(parsed->result.document, parsed->offsets, options,
-                                         parsed->filename.string());
+                                         parsed->filename.string(), &omissions);
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 
@@ -1325,14 +1375,16 @@ grpc::Status DocumentParserService::chunk_hybrid_source(
       parse_chunk_source(call, chunk_request.sources(), chunk_request.convert_options(),
                          surface, parsed);
   if (!parse_status.ok()) return parse_status;
-  const grpc::Status chunk_status =
-      chunking::chunk_hybrid(parsed->result.document, parsed->offsets,
-                             chunk_request.chunking_options(), parsed->filename.string(), chunks);
+  pipestream::parse::v1::RenderOmissions omissions;
+  const grpc::Status chunk_status = chunking::chunk_hybrid(
+      parsed->result.document, parsed->offsets, chunk_request.chunking_options(),
+      parsed->filename.string(), chunks, &omissions);
   if (!chunk_status.ok()) return chunk_status;
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 

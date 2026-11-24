@@ -13,10 +13,12 @@
 
 #include "../src/render/renderer_base.h"
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "support/check.h"
 #include "support/document_builder.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 namespace render = grparse::render;
 
 using grparse_test::add_cell;
@@ -366,6 +368,167 @@ void verify_spanned_cells_spend_from_the_document_budget() {
                 "a span that fits still repeats at every position it covers");
 }
 
+// A cut the budget makes is on its account, not only on stderr: how many
+// tables, how much of each, and which. The sheet is the common case: a few
+// hundred real rows and one stray cell in the last column declare 16,384
+// columns, and only the first 256 rows fit the per-table budget.
+void verify_a_cut_table_is_on_the_budgets_account() {
+  docv1::TableData sheet;
+  sheet.set_num_rows(300);
+  sheet.set_num_cols(16384);
+  render::GridBudget budget;
+  require_equal(render::derived_table_grid(sheet, budget).size(), std::size_t{256},
+                "300 x 16384 positions keep the 256 leading rows");
+  require_equal(budget.tables_cut(), 1, "the cut table is counted");
+  require_equal(budget.rows_dropped(), std::int64_t{44}, "the rows it lost are counted");
+  require_equal(budget.columns_dropped(), std::int64_t{0}, "it kept every column");
+  require_equal(budget.tables().size(), std::size_t{1}, "the cut table is listed");
+  const render::GridBudget::Table& listed = budget.tables().front();
+  require(listed.data == &sheet, "the entry names the table it is about");
+  require(listed.declared_rows == 300 && listed.declared_cols == 16384 &&
+              listed.kept_rows == 256 && listed.kept_cols == 16384,
+          "the entry holds the declared and the kept grid");
+
+  docv1::TableData small;
+  small.set_num_rows(2);
+  small.set_num_cols(2);
+  render::table_grid(small, budget);
+  require(budget.tables_cut() == 1 && budget.tables().size() == 1,
+          "a table that fits adds nothing to the account");
+
+  // A wire grid is cut by its rows times its widest row, and what it has
+  // left of the document's budget: 4096 x 2048 keeps 1023 rows here.
+  docv1::TableData jagged;
+  auto* wide = jagged.add_grid();
+  for (int col = 0; col < 4096; ++col) wide->add_cells();
+  for (int row = 1; row < 2048; ++row) jagged.add_grid()->add_cells();
+  const std::int64_t left = budget.remaining();
+  require_equal(render::table_grid(jagged, budget).size(),
+                static_cast<std::size_t>(left / 4096), "the wire grid takes what is left");
+  require_equal(budget.tables_cut(), 2, "the cut wire grid is counted");
+  require_equal(budget.rows_dropped(), 44 + 2048 - left / 4096,
+                "its lost rows add to the document's");
+  require(budget.tables().back().data == &jagged &&
+              budget.tables().back().declared_rows == 2048 &&
+              budget.tables().back().declared_cols == 4096,
+          "a wire grid declares its row count and its widest row");
+}
+
+// A table built after the document's budget is spent keeps nothing, and a
+// document can hold thousands of them: every one is counted, the first 64
+// are listed.
+void verify_the_account_lists_a_bounded_number_of_tables() {
+  render::GridBudget budget;
+  budget.spend(render::GridBudget::kDocumentPositions);
+  std::vector<docv1::TableData> tables(70);
+  for (auto& data : tables) {
+    data.set_num_rows(3);
+    data.set_num_cols(2);
+    require(render::derived_table_grid(data, budget).empty(), "nothing is left to build with");
+  }
+  require_equal(budget.tables_cut(), 70, "every table is counted");
+  require_equal(budget.rows_dropped(), std::int64_t{210}, "every dropped row is counted");
+  require_equal(budget.columns_dropped(), std::int64_t{140}, "every dropped column is counted");
+  require_equal(budget.tables().size(), render::GridBudget::kMaximumListedTables,
+                "the list is bounded");
+  require(budget.tables().back().data == &tables[63] && budget.tables().back().kept_rows == 0 &&
+              budget.tables().back().kept_cols == 0,
+          "the listed tables are the first ones, each keeping 0 x 0");
+}
+
+// A span the budget cannot repeat is on the account too, against its
+// table, which was not cut: its kept grid is the declared one.
+void verify_a_span_that_does_not_repeat_is_on_the_budgets_account() {
+  docv1::TableData data;
+  data.set_num_rows(2048);
+  data.set_num_cols(2048);
+  auto* wide = data.add_table_cells();
+  wide->set_text(std::string(1024, 'x'));
+  wide->set_end_row_offset_idx(2048);
+  wide->set_end_col_offset_idx(2048);
+  render::GridBudget budget;
+  render::derived_table_grid(data, budget);
+  require_equal(budget.spans_not_repeated(), std::int64_t{1}, "the refused span is counted");
+  require_equal(budget.tables_cut(), 0, "its table was not cut");
+  require_equal(budget.tables().size(), std::size_t{1}, "its table is listed");
+  const render::GridBudget::Table& listed = budget.tables().front();
+  require(listed.data == &data && listed.spans_not_repeated == 1 &&
+              listed.declared_rows == 2048 && listed.kept_rows == 2048 &&
+              listed.declared_cols == 2048 && listed.kept_cols == 2048,
+          "the entry counts the span and keeps the whole grid");
+
+  docv1::TableData empty_spans;
+  empty_spans.set_num_rows(2048);
+  empty_spans.set_num_cols(2048);
+  for (int index = 0; index < 100; ++index) {
+    auto* cell = empty_spans.add_table_cells();
+    cell->set_end_row_offset_idx(2048);
+    cell->set_end_col_offset_idx(2048);
+  }
+  render::GridBudget fresh;
+  render::table_grid(empty_spans, fresh);
+  require_equal(fresh.spans_not_repeated(), std::int64_t{98},
+                "two full-grid cells fit the repeat pool, the other 98 do not repeat");
+  require(fresh.tables().size() == 1 && fresh.tables().front().spans_not_repeated == 98,
+          "one table carries them all in one entry");
+}
+
+// The report names each table by the item it belongs to: the table item,
+// or the picture whose chart data it is. A table that belongs to no item of
+// the document is still reported, without a reference.
+void verify_the_omission_report_names_the_tables_by_item() {
+  docv1::Document document;
+  auto* table = document.add_tables();
+  table->set_self_ref("#/tables/0");
+  table->mutable_data()->set_num_rows(5);
+  table->mutable_data()->set_num_cols(4);
+  auto* picture = document.add_pictures();
+  picture->set_self_ref("#/pictures/0");
+  auto* chart = picture->mutable_meta()->mutable_tabular_chart()->mutable_chart_data();
+  chart->set_num_rows(3);
+  chart->set_num_cols(2);
+  auto* annotated = document.add_pictures();
+  annotated->set_self_ref("#/pictures/1");
+  auto* legacy =
+      annotated->add_annotations()->mutable_tabular_chart()->mutable_chart_data();
+  legacy->set_num_rows(2);
+  legacy->set_num_cols(2);
+  docv1::TableData stray;
+  stray.set_num_rows(1);
+  stray.set_num_cols(1);
+
+  render::GridBudget untouched;
+  render::table_grid(table->data(), untouched);
+  parsev1::RenderOmissions none;
+  render::report_omissions(untouched, document, &none);
+  require_equal(none.ByteSizeLong(), std::size_t{0},
+                "a render that cut nothing reports nothing");
+
+  render::GridBudget budget;
+  budget.spend(render::GridBudget::kDocumentPositions);
+  render::table_grid(table->data(), budget);
+  render::derived_table_grid(*chart, budget);
+  render::table_grid(*legacy, budget);
+  render::table_grid(stray, budget);
+  parsev1::RenderOmissions omissions;
+  render::report_omissions(budget, document, &omissions);
+  require_equal(omissions.tables_cut(), 4, "the report carries the count");
+  require_equal(omissions.rows_dropped(), std::int64_t{11}, "and the dropped rows");
+  require_equal(omissions.columns_dropped(), std::int64_t{9}, "and the dropped columns");
+  require_equal(omissions.tables_size(), 4, "every cut table is listed");
+  require_equal(omissions.tables(0).item_ref(), "#/tables/0", "a table item by its self_ref");
+  require(omissions.tables(0).declared_rows() == 5 && omissions.tables(0).declared_cols() == 4 &&
+              omissions.tables(0).kept_rows() == 0 && omissions.tables(0).kept_cols() == 0,
+          "with the declared and the kept grid");
+  require_equal(omissions.tables(1).item_ref(), "#/pictures/0",
+                "a picture's chart data by the picture");
+  require_equal(omissions.tables(2).item_ref(), "#/pictures/1",
+                "an annotation's chart data by the picture too");
+  require_equal(omissions.tables(3).item_ref(), "",
+                "a table of no item is reported without a reference");
+  render::report_omissions(budget, document, nullptr);
+}
+
 void verify_custom_fields_order_by_their_final_name() {
   google::protobuf::Map<std::string, google::protobuf::Value> fields;
   fields["zeta__b"].set_string_value("z");
@@ -458,6 +621,10 @@ int main() {
       verify_the_derived_grid_ignores_the_wire_grid,
       verify_grids_spend_from_the_document_budget,
       verify_spanned_cells_spend_from_the_document_budget,
+      verify_a_cut_table_is_on_the_budgets_account,
+      verify_the_account_lists_a_bounded_number_of_tables,
+      verify_a_span_that_does_not_repeat_is_on_the_budgets_account,
+      verify_the_omission_report_names_the_tables_by_item,
       verify_custom_fields_order_by_their_final_name,
       verify_a_non_conforming_name_moves_under_the_pipestream_namespace,
       verify_a_rename_collision_takes_a_numeric_suffix,
