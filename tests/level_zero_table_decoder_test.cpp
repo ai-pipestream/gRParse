@@ -14,6 +14,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <filesystem>
+#include <format>
 #include <map>
 #include <string>
 #include <print>
@@ -137,8 +138,13 @@ int main() {
         const float* row = got.logits.data() + size_t(s) * V;
         std::vector<double> sorted(want.logits.begin() + s * V, want.logits.begin() + (s + 1) * V);
         std::sort(sorted.begin(), sorted.end());
+        double row_error = 0;
+        for (int v = 0; v < V; ++v) row_error = std::max(row_error, std::abs(row[v] - want.logits[size_t(s) * V + v]));
         require(sorted[V - 1] - sorted[V - 2] < 1e-2 || tokens[s] == want.tokens[s],
-                "seed " + std::to_string(seed) + ": token differs at step " + std::to_string(s));
+                std::format("seed {}: token {} where the reference has {} at step {} (reference margin {:.4f}, "
+                            "logit error {:.2e} here, {:.2e} before)",
+                            seed, tokens[s], want.tokens[s], s, sorted[V - 1] - sorted[V - 2], row_error,
+                            logit_error));
         for (int v = 0; v < V; ++v) logit_error = std::max(logit_error, std::abs(row[v] - want.logits[size_t(s) * V + v]));
         for (int k = 0; k < 8; ++k)
           box_error = std::max(box_error, std::abs(got.location[size_t(s) * 8 + k] - want.location[size_t(s) * 8 + k]));
