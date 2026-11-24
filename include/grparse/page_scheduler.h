@@ -147,6 +147,18 @@ class PageScheduler final {
     std::string sha256_hex;
   };
 
+  // The optional model passes this scheduler runs, each true when its engine
+  // was installed. A served deployment leaves one false only by its setting
+  // (GRPARSE_LAYOUT, GRPARSE_TABLE_STRUCTURE or GRPARSE_FIGURE_CLASSES=off):
+  // a model file that is missing stops startup. The parse surfaces read
+  // this to say on each document which pass it went without, and to turn
+  // down a request that asks for one by name (src/model_pass_report.h).
+  struct ModelPasses {
+    bool layout = false;
+    bool table_structure = false;
+    bool figure_classification = false;
+  };
+
   enum class DeliveryResult { kAccepted, kAcceptedAndRelease, kCancelled };
 
   struct Callbacks {
@@ -246,6 +258,9 @@ class PageScheduler final {
   // Whether page previews are captured: the CV path paints them off its
   // rasters, and a collector-folded PDF gets them rendered on purpose.
   bool captures_page_images() const;
+  // Which optional model passes run. Table structure and figure
+  // classification work on layout's regions, so neither runs without it.
+  ModelPasses model_passes() const;
 
  private:
   class Impl;

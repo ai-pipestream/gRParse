@@ -611,22 +611,43 @@ read row by row. Tables and pictures anchor into that order: before the
 lines they own, else before the first block of their own column that starts
 below them, else (when nothing runs beside them) before the first block
 below their top edge anywhere on the page, else after their column. Control layout with
-`GRPARSE_LAYOUT=auto|on|off` (`auto`, the default, enables layout when the
-selected model's file exists and says so at startup; `on` fails startup if it
-is missing). Full-digital pages are still rasterized when layout is active,
-but continue to skip OCR.
+`GRPARSE_LAYOUT=on|off`. `on`, the default, requires the selected model's
+file: when it is missing, startup stops with a message naming the setting and
+the path it looked at. `off` is the only way to run without layout, and
+`auto` (the default before #410, which ran without the pass when the file was
+missing) is refused at startup. Full-digital pages are still rasterized when
+layout is active, but continue to skip OCR.
+
+A deployment that runs with a pass off says so on every document that pass
+would have worked on, once per document, as a typed `Document.warnings` entry
+under source `grparse-cv` (on the page stream, in
+`DocumentComplete.typed_warnings`): `WARNING_CODE_LAYOUT_PASS_DISABLED` on
+every document the CV path reads, `WARNING_CODE_TABLE_STRUCTURE_PASS_DISABLED`
+when the document holds a table, `WARNING_CODE_FIGURE_CLASSIFICATION_PASS_DISABLED`
+when it holds a picture. A request that sets `do_table_structure` or
+`do_picture_classification` to `true` while that pass is off is turned down
+with `INVALID_ARGUMENT` and an `OptionRejection`
+(`OPTION_REJECTION_REASON_NOT_IMPLEMENTED`); unset takes the document without
+the pass, with the warning, and `false` asks for nothing. The `Health` RPC
+reports each pass as a component (`layout`, `table-structure`,
+`figure-classifier`) in state `LOADED` or `DISABLED`. `GRPARSE_LAYOUT=off`
+takes the regions away from the other two passes, so they are off with it
+when their own setting is unset; setting one of them to `on` beside it stops
+startup.
 
 The layout model loads once into a single ONNX Runtime session that every
 inference worker shares, rather than one session per worker: `Run` is
 thread-safe and the decoders hold no state between calls, so pooling only
 bought another full copy of the weights.
 
-Every `TableItem` additionally carries cell structure in `data`. When
-`models/slanet_plus.onnx` is present (`GRPARSE_TABLE_STRUCTURE=auto|on|off`,
-same contract as layout), SLANet-plus runs on each detected table crop and
+Every `TableItem` additionally carries cell structure in `data`. With table
+structure on (`GRPARSE_TABLE_STRUCTURE=on|off`, same contract as layout:
+`on` is the default and needs `models/slanet_plus.onnx`), SLANet-plus runs on
+each detected table crop and
 supplies the real grid: cell spans, `<thead>` rows as `column_header`, and
-model cell boxes, with text lines bound to cells by box center. Without the
-model, a geometry fallback clusters the table's text lines into row bands by
+model cell boxes, with text lines bound to cells by box center. With it off
+(or for a request that sets `do_table_structure` to `false`), a geometry
+fallback clusters the table's text lines into row bands by
 vertical overlap and columns by merging horizontal spans (a gap wider than
 about half the median line height counts as a column gutter) with unit spans
 and no header flags. Both paths give `num_rows`/`num_cols`, a rectangular
@@ -634,8 +655,9 @@ and no header flags. Both paths give `num_rows`/`num_cols`, a rectangular
 streams as ordinary `TEXT` items too, so UTF offsets stay contiguous for
 clients that ignore tables.
 
-When `models/figure_classifier.onnx` is present (`GRPARSE_FIGURE_CLASSES`,
-same auto/on/off contract), each picture crop also runs the MIT-licensed
+With figure classes on (`GRPARSE_FIGURE_CLASSES=on|off`, same contract: `on`
+is the default and needs `models/figure_classifier.onnx`), each picture crop
+also runs the MIT-licensed
 figure classifier (EfficientNet-B0, 26 classes such as bar_chart, qr_code,
 signature, photograph, engineering_drawing, scatter_plot) and every
 `PictureItem` carries a `classification` annotation with the full sorted

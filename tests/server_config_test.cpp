@@ -277,7 +277,9 @@ void verify_engine_inventory_tells_switched_off_from_not_built() {
               EngineState::kLoaded,
           "a built embedding engine is loaded");
 
-  // auto, and startup built none: the model files were not there.
+  // Every setting on and nothing built. Startup cannot leave it so (a
+  // missing model file stops it), and an inventory that says so still
+  // reports the engine as missing, never as switched off.
   const auto none = grparse::read_engine_inventory({}, embeddings);
   require(none.ocr == EngineState::kLoaded, "OCR is loaded whenever startup got this far");
   require(none.layout == EngineState::kNotLoaded &&
@@ -301,6 +303,136 @@ void verify_engine_inventory_tells_switched_off_from_not_built() {
   ::unsetenv("GRPARSE_LAYOUT");
 }
 
+constexpr const char* kPassSettings[] = {"GRPARSE_LAYOUT", "GRPARSE_TABLE_STRUCTURE",
+                                         "GRPARSE_FIGURE_CLASSES"};
+
+// A models directory that holds none of the three optional models.
+std::filesystem::path empty_models_dir() {
+  const std::filesystem::path dir = std::filesystem::temp_directory_path() /
+                                    ("grparse-no-models-" + std::to_string(::getpid()));
+  std::filesystem::remove_all(dir);
+  std::filesystem::create_directories(dir);
+  return dir;
+}
+
+// What building one engine did: the startup failure's words, or how it
+// went on without one.
+template <typename Build>
+std::string startup_failure(Build build) {
+  try {
+    return build() == nullptr ? "it went on without the engine" : "it built an engine";
+  } catch (const std::exception& error) {
+    return std::string("stopped: ") + error.what();
+  }
+}
+
+// Layout, table structure and the figure classifier default to on (#410):
+// a model file that is not there stops startup, and the message names the
+// setting and the path it looked at. Each used to default to auto, which
+// printed one line and served every document without the pass.
+void verify_a_missing_model_file_stops_startup_by_default() {
+  for (const char* name : kPassSettings) ::unsetenv(name);
+  ::unsetenv("GRPARSE_LAYOUT_MODEL");
+  const std::filesystem::path models = empty_models_dir();
+  const auto stops = [&](const char* setting, const char* file, const std::string& outcome) {
+    const std::string path = (models / file).string();
+    require(outcome.starts_with("stopped: ") && outcome.contains(setting) &&
+                outcome.contains(path) && outcome.contains(std::string(setting) + "=off"),
+            std::string(setting) + " unset with no " + file +
+                " must stop startup naming the setting, the path and the way to run "
+                "without the pass; " +
+                outcome);
+  };
+  std::string layout;
+  std::string table;
+  std::string figures;
+  // The builders print their startup line; it is not this test's output.
+  (void)captured_stdout([&] {
+    layout = startup_failure([&] { return grparse::build_layout_engine(models); });
+    table = startup_failure(
+        [&] { return grparse::build_table_structure_pool(models, 1, /*layout_active=*/true); });
+    figures = startup_failure(
+        [&] { return grparse::build_figure_classifier_pool(models, 1, /*layout_active=*/true); });
+  });
+  stops("GRPARSE_LAYOUT", "layout_heron.onnx", layout);
+  stops("GRPARSE_TABLE_STRUCTURE", "slanet_plus.onnx", table);
+  stops("GRPARSE_FIGURE_CLASSES", "figure_classifier.onnx", figures);
+
+  // The explicit spelling of the default says the same.
+  for (const char* name : kPassSettings) ::setenv(name, "on", 1);
+  (void)captured_stdout([&] {
+    layout = startup_failure([&] { return grparse::build_layout_engine(models); });
+  });
+  stops("GRPARSE_LAYOUT", "layout_heron.onnx", layout);
+  for (const char* name : kPassSettings) ::unsetenv(name);
+  std::filesystem::remove_all(models);
+}
+
+// off is the only way to run without a pass. GRPARSE_LAYOUT=off takes the
+// regions away from the two passes that work on them, so they follow it
+// when their own setting is unset, and say so in the startup log whether or
+// not their model file is there. auto, the old default that let a missing
+// file through, is refused by name.
+void verify_off_is_the_only_way_to_run_without_a_pass() {
+  const std::filesystem::path models = empty_models_dir();
+  for (const char* name : kPassSettings) ::setenv(name, "off", 1);
+  // A check that fails inside the capture would leave stdout redirected, so
+  // the captured bodies only record what happened.
+  bool none_built = false;
+  std::string out = captured_stdout([&] {
+    none_built = grparse::build_layout_engine(models) == nullptr &&
+                 grparse::build_table_structure_pool(models, 1, true) == nullptr &&
+                 grparse::build_figure_classifier_pool(models, 1, true) == nullptr;
+  });
+  require(none_built, "a pass whose setting is off builds no engine and needs no model file");
+  require(out.contains("gRParse layout: disabled (GRPARSE_LAYOUT=off)") &&
+              out.contains("gRParse table structure: disabled (GRPARSE_TABLE_STRUCTURE=off)") &&
+              out.contains("gRParse figure classes: disabled (GRPARSE_FIGURE_CLASSES=off)"),
+          "each switched-off pass says so in the startup log:\n" + out);
+
+  ::unsetenv("GRPARSE_TABLE_STRUCTURE");
+  ::unsetenv("GRPARSE_FIGURE_CLASSES");
+  out = captured_stdout([&] {
+    none_built =
+        grparse::build_table_structure_pool(models, 1, /*layout_active=*/false) == nullptr &&
+        grparse::build_figure_classifier_pool(models, 1, /*layout_active=*/false) == nullptr;
+  });
+  require(none_built, "with layout off the passes that work on its regions are off too");
+  require(out.contains("gRParse table structure: disabled (GRPARSE_LAYOUT=off)") &&
+              out.contains("gRParse figure classes: disabled (GRPARSE_LAYOUT=off)"),
+          "a pass that follows GRPARSE_LAYOUT=off says so, model file or not:\n" + out);
+
+  // Asking for a pass by name while switching off the layout it needs is a
+  // contradiction, not a pass to drop quietly.
+  ::setenv("GRPARSE_TABLE_STRUCTURE", "on", 1);
+  const std::string contradiction = startup_failure(
+      [&] { return grparse::build_table_structure_pool(models, 1, /*layout_active=*/false); });
+  require(contradiction.starts_with("stopped: ") &&
+              contradiction.contains("GRPARSE_TABLE_STRUCTURE=on"),
+          "GRPARSE_TABLE_STRUCTURE=on with layout off stops startup; " + contradiction);
+
+  for (const char* name : kPassSettings) {
+    for (const char* other : kPassSettings) ::unsetenv(other);
+    ::setenv(name, "auto", 1);
+    std::string outcome;
+    (void)captured_stdout([&] {
+      outcome = std::string(name) == "GRPARSE_LAYOUT"
+                    ? startup_failure([&] { return grparse::build_layout_engine(models); })
+                : std::string(name) == "GRPARSE_TABLE_STRUCTURE"
+                    ? startup_failure(
+                          [&] { return grparse::build_table_structure_pool(models, 1, true); })
+                    : startup_failure(
+                          [&] { return grparse::build_figure_classifier_pool(models, 1, true); });
+    });
+    require(outcome.starts_with("stopped: ") && outcome.contains(name) &&
+                outcome.contains("on or off"),
+            std::string(name) + "=auto is refused naming the variable and what it accepts; " +
+                outcome);
+  }
+  for (const char* name : kPassSettings) ::unsetenv(name);
+  std::filesystem::remove_all(models);
+}
+
 }  // namespace
 
 int main() {
@@ -313,5 +445,7 @@ int main() {
       verify_openvino_device_setting,
       verify_model_placements_are_reported,
       verify_engine_inventory_tells_switched_off_from_not_built,
+      verify_a_missing_model_file_stops_startup_by_default,
+      verify_off_is_the_only_way_to_run_without_a_pass,
   });
 }

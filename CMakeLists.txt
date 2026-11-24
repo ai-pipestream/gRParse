@@ -858,6 +858,7 @@ add_library(grparse_core STATIC
   src/task_registry.cpp
   src/vlm_custom_options.cpp
   src/option_rejection.cpp
+  src/model_pass_report.cpp
   src/service_health.cpp
   src/service_identity.cpp
   src/structure_validation.cpp

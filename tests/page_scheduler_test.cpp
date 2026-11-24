@@ -461,6 +461,40 @@ void verify_figure_classification_runs_on_crops() {
           "classification metric must count figure crops");
 }
 
+// The scheduler says which optional model passes it runs, which is what the
+// parse surfaces read to tell a caller what a document went without (#410).
+// Table structure and figure classification work on layout's regions, so an
+// engine installed without a detector is not a pass that runs.
+void verify_model_passes_name_the_engines_that_run() {
+  FakeRecognizer recognizer;
+  FakeDetector detector;
+  FakeStructurer structurer;
+  FakeClassifier classifier;
+  const auto passes_of = [&](grparse::RegionDetector* layout, grparse::TableStructurer* tables,
+                             grparse::FigureClassifierBase* figures) {
+    grparse::PageScheduler scheduler(
+        recognizer, {2, 2, 2, 2, 1, 1, 1},
+        [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+          return std::make_shared<FakeSource>(1);
+        },
+        layout, tables, figures);
+    return scheduler.model_passes();
+  };
+  const auto none = passes_of(nullptr, nullptr, nullptr);
+  require(!none.layout && !none.table_structure && !none.figure_classification,
+          "a scheduler with no engine installed runs none of the passes");
+  const auto all = passes_of(&detector, &structurer, &classifier);
+  require(all.layout && all.table_structure && all.figure_classification,
+          "every installed engine is a pass that runs");
+  const auto layout_only = passes_of(&detector, nullptr, nullptr);
+  require(layout_only.layout && !layout_only.table_structure &&
+              !layout_only.figure_classification,
+          "layout alone runs neither pass that works on its regions");
+  const auto no_layout = passes_of(nullptr, &structurer, &classifier);
+  require(!no_layout.layout && !no_layout.table_structure && !no_layout.figure_classification,
+          "without layout there are no regions, so neither dependent pass runs");
+}
+
 // Docling do_picture_classification=false skips the classifier even when one
 // is installed on the scheduler.
 void verify_do_picture_classification_false_skips() {
@@ -1784,6 +1818,7 @@ int main() {
       verify_do_table_structure_false_skips_structure,
       verify_figure_classification_runs_on_crops,
       verify_do_picture_classification_false_skips,
+      verify_model_passes_name_the_engines_that_run,
       verify_picture_capture_encodes_figure_crops,
       verify_page_capture_encodes_previews,
       verify_barcode_decode_triggers_on_class,

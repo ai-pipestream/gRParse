@@ -134,9 +134,12 @@ struct BuiltEngines {
 // optional engine that was built is loaded. One that was not is disabled
 // when its own setting says off (GRPARSE_LAYOUT, GRPARSE_TABLE_STRUCTURE,
 // GRPARSE_FIGURE_CLASSES, `embeddings.backend`), or when GRPARSE_LAYOUT=off
-// took away the regions table structure and the figure classifier work on;
-// otherwise its setting allowed it and startup found nothing to build, which
-// is not loaded.
+// took away the regions table structure and the figure classifier work on.
+// Anything else is not loaded: its setting asked for it and nothing was
+// built, which the build_* functions below no longer let startup reach for
+// layout, table structure or the figure classifier (a missing model file
+// stops it), so Health cannot report one of those three ready while it is
+// absent.
 EngineInventory read_engine_inventory(const BuiltEngines& built,
                                       const EmbeddingConfig& embeddings);
 
@@ -178,21 +181,25 @@ std::optional<RepairOptions> configure_repair();
 std::unique_ptr<OcrEnginePool> build_engine_pool(const std::filesystem::path& models,
                                                  size_t worker_count, int gpu_index);
 
-// GRPARSE_LAYOUT: auto (default) enables layout labelling when the model file
-// exists; on requires it and fails startup when absent; off disables it.
-// GRPARSE_LAYOUT_MODEL picks which detector that file is.  Nothing here
-// degrades silently: auto logs which way it went, and an explicitly selected
-// model that is not on disk stops the process.
+// GRPARSE_LAYOUT: on (the default) requires the layout model and stops
+// startup when its file is absent, naming the setting and the path; off is
+// the only way to run without layout labelling, and returns null.
+// GRPARSE_LAYOUT_MODEL picks which detector that file is. auto, the default
+// before #410, is refused: it let a missing file switch the pass off.
+// A parse on a deployment whose pass is off says so on every document it
+// touches (src/model_pass_report.h).
 std::unique_ptr<LayoutEngine> build_layout_engine(const std::filesystem::path& models_dir);
 
-// GRPARSE_TABLE_STRUCTURE follows the same auto/on/off contract as layout.
-// Structure only ever sees crops of layout-detected table regions, so it
-// additionally requires layout to be active.
+// GRPARSE_TABLE_STRUCTURE follows the same on/off contract as layout.
+// Structure only ever sees crops of layout-detected table regions, so with
+// layout off it is off too when its setting is unset, and a contradiction
+// that stops startup when its setting says on.
 std::unique_ptr<TableStructureEnginePool> build_table_structure_pool(
     const std::filesystem::path& models_dir, size_t worker_count, bool layout_active);
 
-// GRPARSE_FIGURE_CLASSES follows the same auto/on/off contract; the
-// classifier only ever sees crops of layout-detected figure regions.
+// GRPARSE_FIGURE_CLASSES follows the same on/off contract; the classifier
+// only ever sees crops of layout-detected figure regions, so it follows
+// layout the way table structure does.
 std::unique_ptr<FigureClassifierPool> build_figure_classifier_pool(
     const std::filesystem::path& models_dir, size_t worker_count, bool layout_active);
 
