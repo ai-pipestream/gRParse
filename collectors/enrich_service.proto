@@ -32,7 +32,10 @@ option java_package = "ai.pipestream.enrich.v1";
 // Document are INVALID_ARGUMENT. A per-request VLM endpoint the server's
 // operator has not allowed is PERMISSION_DENIED. A failed VLM call is NOT
 // an RPC error: the item is reported as ItemSkipped with reason
-// SKIP_REASON_VLM_ERROR and the remaining items continue.
+// SKIP_REASON_VLM_ERROR and the remaining items continue. A stream that ends
+// OK always carries its EnrichComplete trailer: a server fault outside any
+// one item ends the RPC INTERNAL, and an enrichment the server had to stop
+// before the trailer (it is shutting down) ends it UNAVAILABLE.
 service EnrichService {
   // Enriches one document. The client sends exactly one EnrichOptions message
   // first (carrying the document inline, or followed by DocumentChunk
@@ -43,8 +46,10 @@ service EnrichService {
   // starts when that chunk arrives.
   rpc EnrichDocument(stream EnrichDocumentRequest) returns (stream EnrichDocumentResponse);
   // Reports server identity and operational limits: versions, the configured
-  // default VLM endpoint, the document byte cap, and the VLM concurrency cap.
-  // Intended for capability discovery by orchestrators and LLM tool facades.
+  // default VLM endpoint, the document byte cap, the VLM concurrency cap, and
+  // whether each operator-named VLM endpoint is answering and which models it
+  // reports. Intended for capability discovery by orchestrators and LLM tool
+  // facades.
   rpc GetServiceInfo(GetServiceInfoRequest) returns (GetServiceInfoResponse);
 }
 
@@ -282,6 +287,13 @@ message EnrichStarted {
   uint32 code_enrichments = 3;
   // Formula items selected for enrichment.
   uint32 formula_enrichments = 4;
+  // ItemImage crops whose self_ref names no picture, code or formula item of
+  // the document, so their bytes reached nothing. Non-zero means the caller's
+  // crop keys and the document's self_refs disagree; the items those crops
+  // were meant for are enriched without them (ANNOTATION_INPUT_TEXT_ONLY) or
+  // skipped (SKIP_REASON_NO_IMAGE). A crop for an item whose job is switched
+  // off is not counted.
+  uint32 unmatched_images = 5;
 }
 
 // The annotation produced for one item, keyed by the item's self_ref so the
@@ -289,8 +301,12 @@ message EnrichStarted {
 message ItemAnnotation {
   // Self-reference of the annotated item (for example "#/pictures/0").
   string self_ref = 1;
-  // Name of the model that produced the annotation, as reported to or by the
-  // VLM endpoint.
+  // Name of the model that produced the annotation, as the VLM endpoint
+  // reported it in its reply ("model" of the chat-completions response).
+  // Empty when the endpoint reported none: the name the request asked for is
+  // never substituted here, it is in requested_model. Some servers echo the
+  // requested name in their reply; what an endpoint has loaded is its own
+  // model list, GetServiceInfoResponse.vlm_endpoints[].models.
   string model = 2;
   // The annotation payload; the variant identifies the enrichment job.
   oneof annotation {
@@ -314,6 +330,32 @@ message ItemAnnotation {
   // the other annotation kinds are never emitted from a length-stopped reply
   // (SKIP_REASON_OUTPUT_TRUNCATED). The endpoint is never named here.
   ai.pipestream.document.v1.GenerationSource generation = 9;
+  // What the model was given to produce the annotation. Set on every
+  // annotation. A code or formula annotation marked
+  // ANNOTATION_INPUT_TEXT_ONLY was written from the item's existing text
+  // alone, without the item's image.
+  AnnotationInput input = 10;
+  // The model name this service sent to the endpoint: a preset's alias
+  // ("smolvlm", "granite-vision-chart2csv"), the request's own
+  // VlmGenerationParams.model or ChartExtractionOptions.model, or empty when
+  // the request named none. An endpoint serves what it has loaded whatever
+  // name it is asked for, so this is what was asked, and model is what
+  // answered.
+  string requested_model = 11;
+}
+
+// What a VLM call was given for an item.
+enum AnnotationInput {
+  // Never emitted; the zero value required by proto3.
+  ANNOTATION_INPUT_UNSPECIFIED = 0;
+  // The item's image (an ItemImage crop, the bytes in its ImageRef.data, or
+  // an inline data URI) went with the prompt.
+  ANNOTATION_INPUT_IMAGE = 1;
+  // No image was available for the item, so the prompt carried only the
+  // item's existing text (code and formula items; the documented fallback
+  // when the caller supplies no crop). The result is a rewrite of that text,
+  // not a reading of the page.
+  ANNOTATION_INPUT_TEXT_ONLY = 2;
 }
 
 // A VLM-generated description of a picture.
@@ -416,7 +458,8 @@ message EnrichComplete {
   uint32 skipped = 2;
   // Items that failed unexpectedly outside the VLM call. Normally zero; a
   // per-item failure that is not a clean skip lands here rather than failing
-  // the RPC.
+  // the RPC. Each one is reported as an ItemSkipped with
+  // SKIP_REASON_INTERNAL_ERROR.
   uint32 failed = 3;
   // The full document with the emitted annotations applied, present only
   // when EnrichOptions.return_document was true. Picture descriptions and
@@ -433,16 +476,18 @@ message EnrichComplete {
 enum SkipReason {
   // Never emitted; the zero value required by proto3.
   SKIP_REASON_UNSPECIFIED = 0;
-  // The item has no image bytes: no inline data URI and no ItemImage crop
-  // was supplied for its self_ref.
+  // The item has no image bytes: nothing in its ImageRef.data, no inline
+  // data URI, and no ItemImage crop was supplied for its self_ref.
   SKIP_REASON_NO_IMAGE = 1;
-  // The item's image is a non-data URI and the server is not configured to
-  // fetch external image URIs (the default; inline only, no outbound HTTP).
+  // The item's image is only a reference (a non-data URI, no bytes in
+  // ImageRef.data) and the server is not configured to fetch external image
+  // URIs (the default; inline only, no outbound HTTP).
   SKIP_REASON_UNFETCHABLE_URI = 2;
   // The picture's area is below EnrichOptions.picture_description_area_threshold.
   SKIP_REASON_BELOW_AREA_THRESHOLD = 3;
-  // The VLM call failed: endpoint unreachable, non-200 response, timeout, or
-  // an unparseable reply.
+  // The VLM call failed: endpoint unreachable, non-200 response, timeout, an
+  // unparseable reply, or a reply with no text in it (an annotation is never
+  // emitted with empty text, and item text is never replaced by nothing).
   SKIP_REASON_VLM_ERROR = 4;
   // The server's endpoint policy refuses the endpoint the request named for
   // this item: per-request endpoints are not allowed, or, with
@@ -456,6 +501,11 @@ enum SkipReason {
   // emitted and never replaces item text; raise VlmGenerationParams.max_tokens
   // to give the model room.
   SKIP_REASON_OUTPUT_TRUNCATED = 6;
+  // The server failed while enriching this item, outside the VLM call (a
+  // fault in this service, not in the endpoint or the request). The item is
+  // counted in EnrichComplete.failed, not skipped; the server log has the
+  // stack trace.
+  SKIP_REASON_INTERNAL_ERROR = 7;
 }
 
 // Picture-description model families served by the remote endpoint. UNSPECIFIED plus picture_description_preset_raw addresses
@@ -531,6 +581,45 @@ message GetServiceInfoResponse {
   uint32 max_concurrent_vlm_calls = 5;
   // Frontend advertisement for the shared demo shell.
   UiInfo ui = 6;
+  // What each VLM endpoint the operator named answered the server's last
+  // probe: ENRICH_VLM_URL first (default_endpoint true), then every
+  // ENRICH_VLM_ENDPOINT_ALLOWLIST origin. Empty when the operator named none
+  // (ENRICH_ALLOW_REQUEST_ENDPOINT alone). grpc.health.v1 reports NOT_SERVING
+  // while the default endpoint is not serving or, with no default endpoint,
+  // while none of the allowlisted origins is.
+  repeated VlmEndpointStatus vlm_endpoints = 7;
+}
+
+// One operator-named VLM endpoint as of the server's last probe of it. The
+// probe is a GET of the endpoint's model list (the /models sibling of its
+// chat-completions URL); it costs no generation and does not queue behind
+// running completions.
+message VlmEndpointStatus {
+  // The endpoint as scheme://host[:port]. Userinfo, path, and query are
+  // never reported, so a credential in the configured URL stays private.
+  string origin = 1;
+  // True for ENRICH_VLM_URL, the endpoint used when a request names none.
+  bool default_endpoint = 2;
+  // Whether the endpoint answered the last probe.
+  VlmEndpointState state = 3;
+  // Why the endpoint is not serving: the connection failure, the timeout, or
+  // the HTTP status. Empty when it is serving.
+  string detail = 4;
+  // The model ids the endpoint's model list reported, in its order: what the
+  // endpoint says it is serving, as opposed to what a request asked for.
+  // Empty when the endpoint has no model list.
+  repeated string models = 5;
+}
+
+// Whether a VLM endpoint answered the server's last probe.
+enum VlmEndpointState {
+  // Not probed yet (the server has just started).
+  VLM_ENDPOINT_STATE_UNSPECIFIED = 0;
+  // The endpoint's HTTP server answered and did not refuse the request.
+  VLM_ENDPOINT_STATE_SERVING = 1;
+  // The endpoint could not be reached, timed out, answered a 5xx status, or
+  // refused the operator's credential (401, 403).
+  VLM_ENDPOINT_STATE_NOT_SERVING = 2;
 }
 
 // Frontend advertisement. Same shape in every ai-pipestream grpc service:
