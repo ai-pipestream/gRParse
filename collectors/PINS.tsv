@@ -23,7 +23,7 @@ collectors/xml_service.proto	grpc-xml	proto/ai/pipestream/xml/v1/xml_service.pro
 collectors/warc.proto	fastwarc-grpc	proto/fastwarc/v1/warc.proto	6c3a6398d4d86f5ee65e635a58078e043a4028b1
 collectors/warc_service.proto	fastwarc-grpc	proto/fastwarc/v1/warc_service.proto	6c3a6398d4d86f5ee65e635a58078e043a4028b1
 backends/pdf_backend_types.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto	dce4e90542329601b4604f0f49daea5b2de24c46
-backends/pdf_backend_service.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto	dce4e90542329601b4604f0f49daea5b2de24c46
+backends/pdf_backend_service.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto	fa1d6bb2f87ffda90c00d099d42283213f5b486f
 office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	fad324cfaccb8ef675903b76cf045e4c2bd5e608
 examples/web-demo/peer-protos/grpc-libreoffice/proto/ai/pipestream/office/v1/office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	fad324cfaccb8ef675903b76cf045e4c2bd5e608
 examples/web-demo/peer-protos/grpc-asr/proto/ai/pipestream/media/v1/media.proto	grpc-asr	proto/ai/pipestream/media/v1/media.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
