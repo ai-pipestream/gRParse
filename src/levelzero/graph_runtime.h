@@ -64,8 +64,22 @@ class GraphModel {
   struct Kernels;
   struct Value;
 
-  void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs);
-  void execute();
+  // The launches of one input shape, recorded once into a closed command
+  // list and executed again on every later call of that shape: kernel
+  // arguments and arena addresses are fixed when a launch is appended, so a
+  // repeated shape costs no host work beyond the input and output copies.
+  struct Plan {
+    std::vector<int64_t> shape;
+    ze_command_list_handle_t list = nullptr;
+    std::vector<std::vector<int64_t>> output_shapes;
+    std::vector<size_t> output_floats;  // each output's start in io_out_
+    uint64_t used = 0;
+  };
+
+  Plan& plan_for(const std::vector<int64_t>& shape);
+  void record(const std::vector<int64_t>& shape, Plan* plan);
+  void drop_plans();
+  std::vector<HostTensor> execute(const Plan& plan, const float* input);
   void build_fp16_weights();
   void build_plane_weights();
 
@@ -84,12 +98,14 @@ class GraphModel {
   std::vector<size_t> planes_offsets_;  // per node, halves into planes_, or SIZE_MAX
   char* arena_ = nullptr;
   size_t arena_elements_ = 0;
-  char* io_in_ = nullptr;          // float staging for the input and the outputs
+  char* io_in_ = nullptr;          // float staging for the input and the outputs, host memory
   size_t io_in_floats_ = 0;
   char* io_out_ = nullptr;
   size_t io_out_floats_ = 0;
   ze_command_queue_handle_t queue_ = nullptr;
-  ze_command_list_handle_t list_ = nullptr;
+  ze_command_list_handle_t list_ = nullptr;      // the list record() is appending to
+  std::vector<Plan> plans_;                      // most recently used shapes, at most kPlans
+  uint64_t plan_clock_ = 0;
   ze_fence_handle_t fence_ = nullptr;
   std::mutex mutex_;
   // Profiling: one timestamp event per launch, and the node each belongs to.
