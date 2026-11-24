@@ -61,11 +61,21 @@ void fill_structured_table_data(const OcrPage& page, const LayoutRegion& region,
     proto_cell.set_start_col_offset_idx(cell.col);
     proto_cell.set_end_col_offset_idx(cell.col + cell.col_span);
     proto_cell.set_column_header(cell.header);
+    // The box of a cell with text is its words' box, as Docling writes it;
+    // the model's own box can sit off its words on a dense table.
+    AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
+    if (!cell_lines[cell_at].empty()) box = bounding_box(page.lines[cell_lines[cell_at].front()]);
+    for (const size_t line_index : cell_lines[cell_at]) {
+      const AxisAlignedBox line = bounding_box(page.lines[line_index]);
+      box.left = std::min(box.left, line.left);
+      box.top = std::min(box.top, line.top);
+      box.right = std::max(box.right, line.right);
+      box.bottom = std::max(box.bottom, line.bottom);
+    }
+    set_bounding_box(box, proto_cell.mutable_bbox());
     LineJoiner text;
     for (const size_t line_index : visual_line_order(page, std::move(cell_lines[cell_at]))) text.add(page.lines[line_index].text);
     proto_cell.set_text(text.take());
-    AxisAlignedBox box{cell.left, cell.top, cell.right, cell.bottom};
-    set_bounding_box(box, proto_cell.mutable_bbox());
     const int cell_index = static_cast<int>(protos.size());
     for (int row = cell.row; row < cell.row + cell.row_span && row < rows; ++row) {
       for (int col = cell.col; col < cell.col + cell.col_span && col < cols; ++col) {

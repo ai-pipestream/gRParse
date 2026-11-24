@@ -151,7 +151,7 @@ std::vector<parsev1::PageData> assembled_pages(const std::vector<grparse::OcrPag
   return out;
 }
 
-// What the stream does once the CV pages are out (emit_fold_delta_locked):
+// What the stream does once the CV pages are out (settle_fold_locked):
 // the fold with the terminal event's heading levels, then list grouping and
 // the repair pass under a rename log.
 struct Settled {
