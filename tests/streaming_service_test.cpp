@@ -4135,6 +4135,13 @@ void verify_pdf_collector_failure_degrades_to_the_cv_path() {
   require(warned(run.response.response().document().doc(), "pdf",
                  "fell back to the in-process CV path"),
           "the degradation is recorded as a collector warning");
+  const auto& warnings = run.response.response().document().doc().warnings();
+  require(std::ranges::any_of(warnings,
+                              [](const docv1::CollectorWarning& warning) {
+                                return warning.code() ==
+                                       docv1::WARNING_CODE_COLLECTOR_FALLBACK;
+                              }),
+          "the degradation carries its typed code, so a consumer need not match the words");
 }
 
 // Holds the first recognition until released, so one conversion can be
@@ -4925,6 +4932,14 @@ void verify_streaming_pdf_hands_the_rest_to_the_cv_path() {
                                 return warning.find("pages 1-1 streamed") != std::string::npos;
                               }),
           "the complete event says which pages came from the text layer");
+  require(complete.typed_warnings_size() == complete.warnings_size(),
+          "every warning on the complete event has its typed twin");
+  for (int index = 0; index < complete.warnings_size(); ++index) {
+    require(complete.typed_warnings(index).message() == complete.warnings(index),
+            "the typed twins keep the order and the words");
+    require(complete.typed_warnings(index).source().collector() == "grparse-cv",
+            "the CV path is the source of the complete event's warnings");
+  }
 }
 
 // Streams a three-page text document page by page whose whole-document

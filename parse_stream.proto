@@ -220,6 +220,10 @@ message CollectorDocument {
   repeated string warnings = 3;
   // What DocumentChunk.structure_validation REPORT found in `document`.
   repeated StructureFinding structure_findings = 4;
+  // The same warnings as `warnings`, in the same order, each with its typed
+  // code, page and item where the collector stated them. `warnings` stays
+  // for readers that predate this field.
+  repeated ai.pipestream.document.v1.CollectorWarning typed_warnings = 5;
 }
 
 // CollectorFailure records one collector that could not contribute. The
@@ -333,6 +337,10 @@ message DocumentComplete {
   // so a reader of a recorded stream knows the missing repair events were
   // asked for, not lost.
   bool repair_delta_omitted = 6;
+  // The same warnings as `warnings`, in the same order, each with its typed
+  // code, page and item where the CV path stated them, and the CV collector
+  // as its source. `warnings` stays for readers that predate this field.
+  repeated ai.pipestream.document.v1.CollectorWarning typed_warnings = 7;
   // What DocumentChunk.structure_validation REPORT found in the Document
   // the stream's own page events fold to (see structure_validation): the
   // pages no CollectorDocument event stands for, with section_header_levels

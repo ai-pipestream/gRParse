@@ -176,7 +176,7 @@ void add_byte_provenance(docv1::TextItemBase* base, const lolv1::SourceSpan& spa
 class LolHtmlFold {
  public:
   LolHtmlFold(docv1::Document& document, const lolv1::ExtractOptions& options,
-              std::vector<std::string>& warnings)
+              std::vector<Warning>& warnings)
       : document_(document), raw_text_chunks_(options.raw_text_chunks()), warnings_(warnings) {
     document_.mutable_body()->set_self_ref("#/body");
     document_.mutable_body()->set_content_layer(docv1::CONTENT_LAYER_BODY);
@@ -931,7 +931,7 @@ class LolHtmlFold {
   bool text_limit_warned_ = false;
   docv1::Document& document_;
   bool raw_text_chunks_ = false;
-  std::vector<std::string>& warnings_;
+  std::vector<Warning>& warnings_;
   std::map<std::string, int> groups_by_rule_;
   std::map<std::string, ActiveElement> element_by_rule_;
   std::map<std::string, RawTextBuffer> raw_text_by_rule_;
@@ -942,7 +942,7 @@ class LolHtmlFold {
 // rule that matched nothing is worth saying out loud, because an empty group
 // and a mistyped selector look identical otherwise.
 void note_finished(const lolv1::ExtractFinished& finished,
-                   std::vector<std::string>* warnings) {
+                   std::vector<Warning>* warnings) {
   if (finished.bailed_out()) {
     std::string prefix = "bailed out before the end of the document";
     if (finished.bytes_parsed() > 0) {

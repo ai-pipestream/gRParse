@@ -188,7 +188,7 @@ void verify_unknown_region_label_falls_back_loudly() {
   grparse::OcrPage page{1000, 1000, {line("mystery block", 10)}};
   page.regions = {{"aside", 0.9F, 0, 0, 1000, 40}};
 
-  std::vector<std::string> warnings;
+  std::vector<grparse::Warning> warnings;
   ai::pipestream::parse::v1::PageData data;
   grparse::append_page_data(page, 1, &cursor, &data, &warnings);
   require(data.texts_size() == 1, "one region, one block");
@@ -197,10 +197,10 @@ void verify_unknown_region_label_falls_back_loudly() {
           "an unknown label lands on the TEXT catch-all");
   require(base.has_label_raw() && base.label_raw() == "aside",
           "the raw spelling rides label_raw, so version skew loses nothing");
-  require(warnings.size() == 1 && warnings[0].contains("unknown region label") &&
-              warnings[0].contains("'aside'"),
+  require(warnings.size() == 1 && warnings[0].message.contains("unknown region label") &&
+              warnings[0].message.contains("'aside'"),
           "the fallback is named, once: "
-          + (warnings.empty() ? std::string("no warning") : warnings[0]));
+          + (warnings.empty() ? std::string("no warning") : warnings[0].message));
 
   grparse::OcrPage plain{1000, 1000, {line("inside", 10)}};
   plain.regions = {{"text", 0.9F, 0, 0, 1000, 40}};

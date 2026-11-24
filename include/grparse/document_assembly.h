@@ -9,6 +9,7 @@
 #include "ai/pipestream/parse/v1/parse_stream.pb.h"
 #include "grparse/line_joiner.h"
 #include "grparse/ocr_types.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -26,7 +27,7 @@ void set_picture_image(const std::vector<unsigned char>& png,
                        ai::pipestream::document::v1::ImageRef* image);
 void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cursor,
                       ai::pipestream::parse::v1::PageData* output,
-                      std::vector<std::string>* warnings = nullptr);
+                      std::vector<Warning>* warnings = nullptr);
 // Folds one page into the document. `text_offsets`, when given, collects the
 // page's offset rows: the same side table the streaming surface puts on the
 // wire, kept for the unary callers that need to locate an item in the
@@ -39,7 +40,7 @@ void append_page_to_document(
     ai::pipestream::document::v1::Document* document, std::string* plain_text,
     google::protobuf::RepeatedPtrField<ai::pipestream::parse::v1::TextOffset>* text_offsets =
         nullptr,
-    std::vector<std::string>* warnings = nullptr);
+    std::vector<Warning>* warnings = nullptr);
 
 // Wraps each run of consecutive body list items in a LIST group, the way
 // the reference's layout assembly does, so a list is one structure (one
