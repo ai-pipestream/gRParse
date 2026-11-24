@@ -8,10 +8,12 @@
 #include <vector>
 
 #include "ai/pipestream/asr/v1/asr_service.grpc.pb.h"
+#include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "collector_support.h"
 
 namespace asrv1 = ai::pipestream::asr::v1;
+namespace docv1 = ai::pipestream::document::v1;
 namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
@@ -92,6 +94,41 @@ void apply_asr_pipeline_options(const parsev1::AsrPipelineOptions& in,
   if (in.has_channel_mode()) out->set_channel_mode(in.channel_mode());
 }
 
+// One finding of grpc-asr's decoder, from the transcript's trailer, as a
+// warning of the document. The transcript ended OK with it, so this warning
+// is the only place the document says that it may not cover the whole
+// recording. The peer's own words stay in the message; the code and the
+// numbers carry the facts.
+Warning decode_warning(const asrv1::DecodeWarning& finding) {
+  const std::string detail = finding.message().empty() ? "" : " (" + finding.message() + ")";
+  switch (finding.code()) {
+    case asrv1::DECODE_WARNING_CODE_DECODER_ERRORS: {
+      Warning warning(docv1::WARNING_CODE_SOURCE_STRUCTURE_MALFORMED,
+                      "asr: the decoder reported errors in the media and carried on; the "
+                      "audio around each error may be missing from the transcript" +
+                          detail);
+      if (finding.error_count() > 0) warning.count = finding.error_count();
+      return warning;
+    }
+    case asrv1::DECODE_WARNING_CODE_SHORTER_THAN_DECLARED: {
+      Warning warning(docv1::WARNING_CODE_SOURCE_INPUT_INCOMPLETE,
+                      "asr: less audio was decoded than the media says it holds; the "
+                      "transcript ends where the audio does" +
+                          detail);
+      warning.duration_kept_ms = finding.decoded_duration_ms();
+      if (finding.declared_duration_ms() > 0) {
+        warning.duration_total_ms = finding.declared_duration_ms();
+      }
+      return warning;
+    }
+    default:
+      // A code this build does not know, or none: the finding still counts,
+      // with the peer's words and no meaning this build would have to guess.
+      return Warning("asr: decode warning " + std::to_string(static_cast<int>(finding.code())) +
+                     detail);
+  }
+}
+
 }  // namespace
 
 CollectorOutcome collect_asr_document(
@@ -131,8 +168,12 @@ CollectorOutcome collect_asr_document(
       });
   return drain_stream<asrv1::TranscribeResponse>(
       "asr", *stream, upload,
-      [](const asrv1::TranscribeResponse& event, std::vector<Warning>&) {
-        return event.has_complete();
+      [](const asrv1::TranscribeResponse& event, std::vector<Warning>& warnings) {
+        if (!event.has_complete()) return false;
+        for (const asrv1::DecodeWarning& finding : event.complete().decode_warnings()) {
+          warnings.push_back(decode_warning(finding));
+        }
+        return true;
       });
 }
 
