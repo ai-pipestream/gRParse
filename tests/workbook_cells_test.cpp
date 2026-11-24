@@ -266,6 +266,11 @@ void verify_formatted_values_and_formula_caches() {
   number(left, 0, 1, 1234.5, "$1,234.50")->mutable_value()->set_number_format("$#,##0.00");
   number(left, 0, 2, 9, "9.00")->mutable_value()->set_number_format("0.00");
   text(left, 1, 0, "3")->mutable_value()->set_formula("SUM(A1:A2)");
+  // A formula as the libreoffice fold shapes it when the worker states the
+  // result: the cached number typed, the source beside it.
+  auto* typed = number(left, 1, 2, 1234.5, "$1,234.50");
+  typed->mutable_value()->set_number_format("$#,##0.00");
+  typed->mutable_value()->set_formula_source("SUM(B1:B1)");
   Workbook calamine("calamine");
   auto* right = calamine.sheet("S");
   number(right, 0, 0, 0.125, "0.125");
@@ -275,6 +280,7 @@ void verify_formatted_values_and_formula_caches() {
   formula->mutable_value()->set_formula_source("SUM(A1:A2)");
   auto* only = number(right, 1, 1, 42, "42");
   only->mutable_value()->set_formula_source("6*7");
+  number(right, 1, 2, 1234.5, "1234.5")->mutable_value()->set_formula_source("SUM(B1:B1)");
   std::vector<std::string> warnings;
   grparse::adopt_calamine_cells(calamine.document(), &libre.document(), &warnings);
   const auto& result = libre.document().tables(0).data();
@@ -286,6 +292,11 @@ void verify_formatted_values_and_formula_caches() {
                 "formula and cache coexist");
   require_equal(at(result, 1, 1)->value().formula_source(), std::string("6*7"),
                 "calamine-only formula retained");
+  require_equal(at(result, 1, 2)->text(), std::string("$1,234.50"),
+                "a typed formula result keeps its display like any formatted number");
+  require_equal(at(result, 1, 2)->value().number(), 1234.5, "typed formula value retained");
+  require_equal(at(result, 1, 2)->value().formula_source(), std::string("SUM(B1:B1)"),
+                "typed formula source retained");
 }
 
 void verify_declared_headers_survive_adoption() {
