@@ -134,6 +134,9 @@ struct PipelineTelemetry {
   std::array<CollectorMetrics, kMetricCollectors.size()> collectors{};
   std::array<uint64_t, kConsensusEvents.size()> consensus{};
   std::array<EmbeddingMetrics, kMetricEmbeddingBackends.size()> embeddings{};
+  // Exceptions a CallExecutor task let escape to its worker. Each one is a
+  // task that failed outside its own error handling.
+  uint64_t executor_task_exceptions = 0;
 
   DoctypeMetrics& doctype(std::string_view name);
   const DoctypeMetrics& doctype(std::string_view name) const;
@@ -157,6 +160,9 @@ void reset_pipeline_telemetry();
 
 void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
                                 uint64_t duration_ns);
+// One exception a CallExecutor task let escape to its worker; exported as
+// grparse_executor_task_exceptions_total.
+void record_executor_task_exception();
 void record_collector_call(std::string_view collector, CollectorCallStatus status,
                            uint64_t duration_ns, uint64_t warnings = 0);
 void record_collector_call(ai::pipestream::parse::v1::Collector collector,

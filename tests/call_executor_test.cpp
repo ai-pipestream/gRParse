@@ -10,6 +10,7 @@
 #include <thread>
 
 #include "grparse/call_executor.h"
+#include "grparse/prometheus_metrics.h"
 #include "support/check.h"
 
 namespace {
@@ -123,6 +124,59 @@ void verify_a_throwing_task_leaves_the_pool_serving() {
   await(ran, 4, "the pool must keep running tasks after one throws");
 }
 
+// The worker's catch is the last place an escaped exception is seen, so it
+// has to leave a count behind: a task that threw past its own handling is a
+// call that may not have been finished.
+void verify_an_escaped_exception_is_counted() {
+  const uint64_t before = grparse::pipeline_telemetry().executor_task_exceptions;
+  std::atomic<int> ran{0};
+  grparse::CallExecutor executor({.workers = 1, .queue_capacity = 8});
+  require(executor.submit([] { throw std::runtime_error("task failed"); }),
+          "the throwing task must be accepted");
+  require(executor.submit([&] { ran.fetch_add(1); }), "the task behind it must be accepted");
+  await(ran, 1, "the task behind the throwing one must run");
+  const uint64_t counted = grparse::pipeline_telemetry().executor_task_exceptions - before;
+  require(counted == 1,
+          "one escaped exception must be counted once, counted " + std::to_string(counted));
+}
+
+// A task that owns a call names what finishes it when the task throws: the
+// handler gets the exception on the worker, and a handler that throws in turn
+// does not take the worker down either.
+void verify_an_escaped_exception_reaches_the_owner_of_the_task() {
+  std::atomic<int> told{0};
+  std::atomic<int> ran{0};
+  std::mutex mutex;
+  std::string what;
+  grparse::CallExecutor executor({.workers = 1, .queue_capacity = 8});
+  require(executor.submit([] { throw std::runtime_error("envelope allocation failed"); },
+                          [&](std::exception_ptr failure) {
+                            try {
+                              std::rethrow_exception(failure);
+                            } catch (const std::exception& error) {
+                              std::lock_guard<std::mutex> lock(mutex);
+                              what = error.what();
+                            }
+                            told.fetch_add(1);
+                          }),
+          "the throwing task must be accepted");
+  require(executor.submit([] { throw std::runtime_error("task failed"); },
+                          [&](std::exception_ptr) {
+                            told.fetch_add(1);
+                            throw std::runtime_error("handler failed");
+                          }),
+          "the task with a throwing handler must be accepted");
+  require(executor.submit([&] { ran.fetch_add(1); }, [&](std::exception_ptr) { told.fetch_add(100); }),
+          "the returning task must be accepted");
+  await(ran, 1, "the pool must keep running tasks after a handler throws");
+  require(told.load() == 2, "each escaped exception must reach its task's handler once, and a "
+                            "task that returns must not reach its handler; told " +
+                                std::to_string(told.load()));
+  std::lock_guard<std::mutex> lock(mutex);
+  require(what == "envelope allocation failed",
+          "the handler must be given the exception the task threw, got \"" + what + "\"");
+}
+
 }  // namespace
 
 int main() {
@@ -131,5 +185,7 @@ int main() {
       verify_a_full_queue_refuses,
       verify_shutdown_drains_the_queue,
       verify_a_throwing_task_leaves_the_pool_serving,
+      verify_an_escaped_exception_is_counted,
+      verify_an_escaped_exception_reaches_the_owner_of_the_task,
   });
 }

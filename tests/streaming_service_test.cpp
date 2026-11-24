@@ -7668,6 +7668,69 @@ void verify_vlm_pipeline_losses_reach_the_caller_typed() {
           "a trailer that miscounts the stream arrives as a typed count mismatch");
 }
 
+// The offset table is derived from the final Document, so a VLM-pipeline
+// conversion has one like every other path: ConvertSource returns its rows,
+// and the chunker, which reads the same table, gives each chunk its span.
+void verify_vlm_pipeline_response_carries_text_offsets() {
+  OneTextVlmConvertService vlm;
+  grpc::ServerBuilder vlm_builder;
+  int vlm_port = 0;
+  vlm_builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &vlm_port);
+  vlm_builder.RegisterService(&vlm);
+  auto vlm_server = vlm_builder.BuildAndStart();
+  require(vlm_server && vlm_port != 0, "fake VLM convert peer failed to start");
+
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(recognizer, {2, 3, 2, 3, 2, 2, 2},
+                                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+                                     return std::make_shared<FakeSource>();
+                                   });
+  grparse::CollectorTargets targets;
+  targets.vlm.target = "127.0.0.1:" + std::to_string(vlm_port);
+  grparse::DocumentParserService parser_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&parser_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "VLM pipeline test server failed to start");
+  auto client = pipestream::parse::v1::ParseService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  pipestream::parse::v1::ConvertSourceRequest request;
+  auto* source = request.mutable_request()->add_sources()->mutable_file();
+  source->set_filename("page.png");
+  // A 1x1 PNG: the VLM leg renders the image itself.
+  source->set_base64_string(
+      "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==");
+  auto* options = request.mutable_request()->mutable_options();
+  options->set_pipeline(pipestream::parse::v1::PROCESSING_PIPELINE_VLM);
+  options->add_to_formats(pipestream::parse::v1::OUTPUT_FORMAT_CHUNKS);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 10s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  vlm_server->Shutdown(std::chrono::system_clock::now() + 2s);
+  vlm_server->Wait();
+  require(status.ok(), "VLM pipeline conversion failed: " + status.error_message());
+  const auto& converted = response.response();
+  require_equal(converted.text_offsets_size(), 1,
+                "a VLM-pipeline response carries one offset row per text item");
+  const auto& row = converted.text_offsets(0);
+  require(row.self_ref() == "#/texts/0" && row.utf_start() == 0 &&
+              row.utf_end() == std::string_view("vlm page").size(),
+          "the row spans the VLM page's text: " + row.ShortDebugString());
+  require_equal(converted.chunks_size(), 1, "the VLM document chunks into its one text");
+  const auto& chunk = converted.chunks(0);
+  require(chunk.has_start_offset() && chunk.has_end_offset() && chunk.start_offset() == 0 &&
+              chunk.end_offset() == static_cast<std::int64_t>(row.utf_end()),
+          "the VLM document's chunk carries its span in the offset stream: " +
+              chunk.ShortDebugString());
+}
+
 // These RPC tests exercise orchestration, not model quality. Native model
 // acceptance is a separate gate against the packaged artifacts.
 class RecordingEmbedder final : public grparse::EmbeddingEngine {
@@ -8506,6 +8569,7 @@ int main() {
         verify_stream_chunks_matches_the_unary_chunkers(&server);
         verify_vlm_pipeline_document_carries_the_parse_identity();
         verify_vlm_pipeline_losses_reach_the_caller_typed();
+        verify_vlm_pipeline_response_carries_text_offsets();
         verify_chunk_rpcs_refuse_targets_and_surface_failures(&server);
         verify_chunk_embeddings_rpc();
         verify_disabled_embeddings_on_every_chunk_rpc(&server);

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <chrono>
+#include <cstdint>
 #include <memory>
 #include <optional>
 #include <string>
@@ -12,6 +13,7 @@
 #include "ai/pipestream/enrich/v1/enrich_service.pb.h"
 #include "grparse/chart_extraction_policy.h"
 #include "grparse/collector_coordinator.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -179,7 +181,32 @@ struct ChartDerenderReport {
   int pictures_described = 0;
   int codes_enriched = 0;
   int formulas_enriched = 0;
-  std::vector<std::string> warnings;
+  // What the stream carried, counted as it was read: every ItemAnnotation
+  // (of any job), the ones among them that could not be applied to the
+  // document, and every ItemSkipped.
+  int annotations_received = 0;
+  int annotations_not_applied = 0;
+  int skips_received = 0;
+  // The enrich service's own account, from its EnrichComplete trailer; a
+  // stream that ended without one leaves trailer_seen false and the counts
+  // zero. items_failed is EnrichComplete.failed: items that failed outside
+  // the VLM call. They are not in trailer_skipped, though the peer may
+  // still name each in a skip event.
+  bool trailer_seen = false;
+  uint32_t trailer_succeeded = 0;
+  uint32_t trailer_skipped = 0;
+  uint32_t items_failed = 0;
+  // Pictures a job selected whose inline pixels (a data: URI) did not
+  // decode, so they were never sent.
+  int pictures_undecodable = 0;
+  // In the order raised. What this leg decides carries its code: an
+  // annotation it could not apply is WARNING_CODE_ENRICHMENT_NOT_APPLIED on
+  // the item, a trailer or selection count the events do not bear out is
+  // WARNING_CODE_COLLECTOR_COUNT_MISMATCH, a stream without its trailer is
+  // WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE, undecodable pixels are
+  // WARNING_CODE_ENRICHMENT_CROP_MISSING on the picture. The peer's own
+  // skip reasons and a failed call stay words.
+  std::vector<Warning> warnings;
 };
 
 // Runs the enrich leg over `document` through `channel`: selects, dials,

@@ -14,6 +14,8 @@
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/util/message_differencer.h>
+
 #include "grparse/document_geometry.h"
 #include "grparse/document_merge.h"
 #include "grparse/document_reading_order.h"
@@ -934,6 +936,96 @@ std::string joined_text(std::string_view head, std::string_view tail) {
   return joined;
 }
 
+// A meta sub-field's untyped bag joins the head's like the item's own:
+// the head's value stands where both name a key.
+template <typename Fields>
+void carry_custom_fields(const Fields& tail, Fields* head) {
+  for (const auto& [key, value] : tail) {
+    if (!head->contains(key)) (*head)[key] = value;
+  }
+}
+
+template <typename Values>
+void carry_distinct_values(const Values& tail, Values* head) {
+  for (const auto& value : tail) {
+    if (std::ranges::find(*head, value) == head->end()) *head->Add() = value;
+  }
+}
+
+// Whether every typed field of the tail's meta has an exact place on the
+// joined item. Mentions, keywords, topics and alternatives that name their
+// span do: they are lists, and a span moves with the text. A summary, a
+// language label and an alternative reading of the whole item each describe
+// one item's text and nothing wider, so the joined paragraph can carry the
+// tail's only when the head states the very same; otherwise absorbing the
+// tail would drop the field or stretch it over text it was never about, and
+// the pair is left as the two items the collector sent.
+bool meta_carries_over(const docv1::TextItemBase& head, const docv1::TextItemBase& tail) {
+  if (!tail.has_meta()) return true;
+  const docv1::BaseMeta& from = tail.meta();
+  const docv1::BaseMeta& onto = head.meta();
+  const auto same = [](const google::protobuf::Message& a, const google::protobuf::Message& b) {
+    return google::protobuf::util::MessageDifferencer::Equals(a, b);
+  };
+  if (from.has_summary() && !(onto.has_summary() && same(from.summary(), onto.summary()))) {
+    return false;
+  }
+  if (from.has_language() && !(onto.has_language() && same(from.language(), onto.language()))) {
+    return false;
+  }
+  if (from.has_alternatives()) {
+    const auto& readings = from.alternatives();
+    if (onto.has_alternatives() && readings.created_by() != onto.alternatives().created_by()) {
+      return false;
+    }
+    if (std::ranges::any_of(readings.hypotheses(), [](const docv1::Hypothesis& reading) {
+          return !reading.has_range();
+        })) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// Moves the tail's typed meta onto the head (meta_carries_over held): the
+// mentions' charspans and the alternatives' ranges count code points of the
+// item's text, so they take the shift the tail's spans take.
+void carry_meta(docv1::BaseMeta* from, int64_t shift, docv1::BaseMeta* onto) {
+  const auto shifted = [shift](docv1::IntSpan* span) {
+    span->set_start(static_cast<int32_t>(span->start() + shift));
+    span->set_end(static_cast<int32_t>(span->end() + shift));
+  };
+  if (from->has_entities()) {
+    auto* entities = onto->mutable_entities();
+    for (auto& mention : *from->mutable_entities()->mutable_mentions()) {
+      if (mention.has_charspan()) shifted(mention.mutable_charspan());
+      *entities->add_mentions() = std::move(mention);
+    }
+    carry_custom_fields(from->entities().custom_fields(), entities->mutable_custom_fields());
+  }
+  if (from->has_keywords()) {
+    auto* keywords = onto->mutable_keywords();
+    carry_distinct_values(from->keywords().values(), keywords->mutable_values());
+    carry_custom_fields(from->keywords().custom_fields(), keywords->mutable_custom_fields());
+  }
+  if (from->has_topics()) {
+    auto* topics = onto->mutable_topics();
+    carry_distinct_values(from->topics().values(), topics->mutable_values());
+    carry_custom_fields(from->topics().custom_fields(), topics->mutable_custom_fields());
+  }
+  if (from->has_alternatives()) {
+    auto* alternatives = onto->mutable_alternatives();
+    if (from->alternatives().has_created_by()) {
+      alternatives->set_created_by(from->alternatives().created_by());
+    }
+    for (auto& reading : *from->mutable_alternatives()->mutable_hypotheses()) {
+      shifted(reading.mutable_range());
+      *alternatives->add_hypotheses() = std::move(reading);
+    }
+  }
+  carry_custom_fields(from->custom_fields(), onto->mutable_custom_fields());
+}
+
 void absorb(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
   const std::string head_text = head->text();
   const std::string joined = joined_text(head_text, tail->text());
@@ -970,12 +1062,7 @@ void absorb(docv1::TextItemBase* head, docv1::TextItemBase* tail) {
     });
     if (!known) *head->add_source() = source;
   }
-  if (tail->has_meta()) {
-    auto& fields = *head->mutable_meta()->mutable_custom_fields();
-    for (const auto& [key, value] : tail->meta().custom_fields()) {
-      if (!fields.contains(key)) fields[key] = value;
-    }
-  }
+  if (tail->has_meta()) carry_meta(tail->mutable_meta(), shift, head->mutable_meta());
 }
 
 template <typename Node>
@@ -1124,7 +1211,7 @@ int merge_continuations(docv1::Document* document, const RepairOptions& options)
       continue;
     }
     if (anchor != nullptr && merges < options.maximum_continuation_merges &&
-        continues(*anchor, *base, heights)) {
+        continues(*anchor, *base, heights) && meta_carries_over(*anchor, *base)) {
       absorb(anchor, base);
       absorbed_by[base->self_ref().empty() ? body->children(index).ref() : base->self_ref()] =
           anchor_ref;

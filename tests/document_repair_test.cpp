@@ -7,6 +7,7 @@
 // pass.
 
 #include <cstdio>
+#include <functional>
 #include <print>
 #include <stdexcept>
 #include <string>
@@ -655,6 +656,118 @@ void verify_continuation_shifts_spans_by_code_points() {
           "a reference into the tail follows it to the survivor's body reference");
 }
 
+// A two-page paragraph split at the page break: the head at the foot of
+// page 1, its continuation at the top of page 2.
+docv1::Document split_paragraph() {
+  docv1::Document document = base_document();
+  add_pages(&document, 2);
+  add_prose(&document, "The committee decided that the", 1, 900.0, 920.0);
+  add_prose(&document, "budget would be approved.", 2, 100.0, 120.0);
+  return document;
+}
+
+docv1::BaseMeta* meta_of(docv1::Document* document, int index) {
+  return document->mutable_texts(index)->mutable_text()->mutable_base()->mutable_meta();
+}
+
+// The typed meta an enrichment attached to the second half survives the
+// merge: mentions and ranged alternatives move by the same shift as spans,
+// keywords and topics join the head's without repeats.
+void verify_continuation_carries_the_typed_meta_of_the_tail() {
+  docv1::Document document = split_paragraph();
+  docv1::BaseMeta* head_meta = meta_of(&document, 0);
+  auto* committee = head_meta->mutable_entities()->add_mentions();
+  committee->set_text("committee");
+  committee->mutable_charspan()->set_start(4);
+  committee->mutable_charspan()->set_end(13);
+  head_meta->mutable_keywords()->add_values("committee");
+  head_meta->mutable_keywords()->add_values("budget");
+  head_meta->mutable_language()->set_code_raw("en");
+  docv1::BaseMeta* tail_meta = meta_of(&document, 1);
+  auto* budget = tail_meta->mutable_entities()->add_mentions();
+  budget->set_text("budget");
+  budget->set_label("TOPIC");
+  budget->mutable_charspan()->set_start(0);
+  budget->mutable_charspan()->set_end(6);
+  tail_meta->mutable_entities()->add_mentions()->set_text("approval");
+  tail_meta->mutable_keywords()->add_values("budget");
+  tail_meta->mutable_keywords()->add_values("approval");
+  tail_meta->mutable_topics()->add_values("finance");
+  tail_meta->mutable_language()->set_code_raw("en");
+  tail_meta->mutable_alternatives()->set_created_by("vlm");
+  auto* reading = tail_meta->mutable_alternatives()->add_hypotheses();
+  reading->set_text("budged");
+  reading->mutable_range()->set_start(0);
+  reading->mutable_range()->set_end(6);
+
+  require(grparse::merge_continuations(&document, {}) == 1, "the continuation merges");
+  const docv1::BaseMeta& merged = document.texts(0).text().base().meta();
+  require(merged.entities().mentions_size() == 3 &&
+              merged.entities().mentions(0).text() == "committee" &&
+              merged.entities().mentions(0).charspan().start() == 4 &&
+              merged.entities().mentions(1).text() == "budget" &&
+              merged.entities().mentions(1).label() == "TOPIC" &&
+              merged.entities().mentions(1).charspan().start() == 31 &&
+              merged.entities().mentions(1).charspan().end() == 37 &&
+              merged.entities().mentions(2).text() == "approval" &&
+              !merged.entities().mentions(2).has_charspan(),
+          "the tail's mentions follow the head's, on their words in the joined text: " +
+              merged.entities().ShortDebugString());
+  require(std::vector<std::string>(merged.keywords().values().begin(),
+                                   merged.keywords().values().end()) ==
+              std::vector<std::string>{"committee", "budget", "approval"},
+          "the tail's keywords join the head's once each: " +
+              merged.keywords().ShortDebugString());
+  require(merged.topics().values_size() == 1 && merged.topics().values(0) == "finance",
+          "the tail's topics carry over: " + merged.topics().ShortDebugString());
+  require(merged.alternatives().created_by() == "vlm" &&
+              merged.alternatives().hypotheses_size() == 1 &&
+              merged.alternatives().hypotheses(0).text() == "budged" &&
+              merged.alternatives().hypotheses(0).range().start() == 31 &&
+              merged.alternatives().hypotheses(0).range().end() == 37,
+          "the tail's ranged alternative lands on its word in the joined text: " +
+              merged.alternatives().ShortDebugString());
+  require(merged.language().code_raw() == "en", "the language both halves share stays");
+}
+
+// A field that describes exactly one item's text (a summary, a language
+// label, an alternative reading of the whole item) has no place on the
+// joined paragraph unless the head says the same. Such a pair stays two
+// items, as the collector sent them, rather than merge and lose the field.
+void verify_continuation_whose_meta_cannot_be_carried_stays_apart() {
+  const auto stays_apart = [](const std::string& what,
+                              const std::function<void(docv1::Document*)>& annotate) {
+    docv1::Document document = split_paragraph();
+    annotate(&document);
+    const docv1::Document before = document;
+    require(grparse::merge_continuations(&document, {}) == 0,
+            "a tail with " + what + " must not be absorbed");
+    require(same(before, document), "a pair left apart for " + what + " is left untouched");
+  };
+  stays_apart("a summary of its own", [](docv1::Document* document) {
+    meta_of(document, 1)->mutable_summary()->set_text("The budget passes.");
+  });
+  stays_apart("a language label the head lacks", [](docv1::Document* document) {
+    meta_of(document, 1)->mutable_language()->set_code_raw("en");
+  });
+  stays_apart("a language label unlike the head's", [](docv1::Document* document) {
+    meta_of(document, 0)->mutable_language()->set_code_raw("en");
+    meta_of(document, 1)->mutable_language()->set_code_raw("de");
+  });
+  stays_apart("an alternative reading of the whole item", [](docv1::Document* document) {
+    meta_of(document, 1)->mutable_alternatives()->add_hypotheses()->set_text(
+        "budget would be improved.");
+  });
+  stays_apart("alternatives from another engine than the head's", [](docv1::Document* document) {
+    meta_of(document, 0)->mutable_alternatives()->set_created_by("engine-a");
+    auto* tail = meta_of(document, 1)->mutable_alternatives();
+    tail->set_created_by("engine-b");
+    auto* reading = tail->add_hypotheses();
+    reading->set_text("budged");
+    reading->mutable_range()->set_end(6);
+  });
+}
+
 void set_column(docv1::Document* document, int index, double left, double right) {
   auto* box = document->mutable_texts(index)->mutable_text()->mutable_base()->mutable_prov(0)->mutable_bbox();
   box->set_l(left);
@@ -889,6 +1002,8 @@ int main() {
       verify_continuation_applies_hyphen_rule,
       verify_continuation_keeps_suspended_hyphen,
       verify_continuation_shifts_spans_by_code_points,
+      verify_continuation_carries_the_typed_meta_of_the_tail,
+      verify_continuation_whose_meta_cannot_be_carried_stays_apart,
       verify_continuation_merges_within_a_page,
       verify_side_by_side_captions_do_not_merge,
       verify_next_page_caption_does_not_merge,

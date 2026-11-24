@@ -1909,7 +1909,12 @@ class SourceStreamReactor final
       std::lock_guard<std::mutex> lock(mutex_);
       queue_status_locked(pipestream::parse::v1::StreamStatus::PHASE_QUEUED, std::nullopt);
     }
-    if (!executor.submit([this] { run(); })) {
+    // run() catches what a parse throws, but it also builds, measures and
+    // queues envelopes outside those catches; a throw there (an allocation,
+    // say) reaches the executor, which hands it to abandon() so the call is
+    // still finished.
+    if (!executor.submit([this] { run(); },
+                         [this](std::exception_ptr failure) { abandon(std::move(failure)); })) {
       {
         std::lock_guard<std::mutex> lock(mutex_);
         envelopes_.clear();
@@ -1965,6 +1970,7 @@ class SourceStreamReactor final
       *single.add_sources() = convert.sources(index);
       *single.mutable_options() = convert.options();
       const auto started = std::chrono::steady_clock::now();
+      source_open_ = true;
       SourceParse parsed;
       grpc::Status status;
       try {
@@ -2006,9 +2012,11 @@ class SourceStreamReactor final
       }
       if (stopped()) {
         record_source_completion(parsed, grpc::Status(grpc::StatusCode::CANCELLED, ""), started);
+        source_open_ = false;
         break;
       }
       record_source_completion(parsed, status, started);
+      source_open_ = false;
       pipestream::parse::v1::StreamSourceResult result;
       result.set_source_index(source_index);
       // A source that failed before it was named keeps the name it was sent
@@ -2082,6 +2090,28 @@ class SourceStreamReactor final
     }
     Finish(cancelled ? grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled")
                      : grpc::Status::OK);
+  }
+
+  // The call's end when run() exited by exception: the status the throw
+  // maps to, in place of the envelopes run() had still to produce. Called by
+  // the executor on the worker run() was on, so nothing else is queueing.
+  // What was queued behind the write in flight is dropped (a failed call's
+  // partial feed is not worth holding the charge for); that one write is
+  // waited for, as before every Finish here.
+  void abandon(std::exception_ptr failure) {
+    grpc::Status status = status_from_exception(std::move(failure));
+    // A source whose completion run() had not yet counted is a failure.
+    if (std::exchange(source_open_, false)) {
+      record_document_completion("other", DocumentCompletionStatus::kFailure, 0);
+    }
+    {
+      std::unique_lock<std::mutex> lock(mutex_);
+      if (envelopes_.size() > (write_in_flight_ ? 1U : 0U)) {
+        envelopes_.erase(envelopes_.begin() + (write_in_flight_ ? 1 : 0), envelopes_.end());
+      }
+      wait_drained(lock);
+    }
+    Finish(std::move(status));
   }
 
   bool stopped() {
@@ -2193,6 +2223,9 @@ class SourceStreamReactor final
   uint32_t succeeded_ = 0;
   uint32_t partially_succeeded_ = 0;
   uint32_t failed_ = 0;
+  // The worker's own: a source is being converted and its completion has
+  // not been counted yet.
+  bool source_open_ = false;
 };
 
 }  // namespace

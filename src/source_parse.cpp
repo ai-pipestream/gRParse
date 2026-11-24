@@ -2362,7 +2362,7 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
                       [call] { return call.cancelled(); }, std::move(item_crops.crops));
-  for (const std::string& warning : derendered.warnings) {
+  for (const Warning& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
 }
@@ -2638,10 +2638,7 @@ grpc::Status parse_source(const ParseCall& call,
       if (call.cancelled()) {
         return grpc::Status(grpc::StatusCode::CANCELLED, "request cancelled");
       }
-      const bool repaired_text =
-          repair.has_value() &&
-          run_repair_pass(&result.document, *repair).changed_text_or_arenas();
-      (void)repaired_text;
+      if (repair.has_value()) run_repair_pass(&result.document, *repair);
       derender_charts_if_configured(collectors, call, inputs.inbound_deadline, inputs,
                                     &result);
       // The VLM body gets AcroForm widgets only when the request asks:
@@ -2662,6 +2659,11 @@ grpc::Status parse_source(const ParseCall& call,
       const grpc::Status structure_status = check_structure(
           result.document, structure, surface, &parsed->structure_findings);
       if (!structure_status.ok()) return structure_status;
+      // The offset table, as on the collector path below: derived from the
+      // final document, so the response's rows and the chunker's spans name
+      // the items this document carries. The CV collector did not run, so
+      // there are no per-item read sources to lay over it.
+      parsed->offsets = chunking::derive_offsets(result.document);
       stamp_collector_warnings(&result);
       parsed->filename = requested_name;
       parsed->result = std::move(result);
