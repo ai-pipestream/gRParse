@@ -209,9 +209,12 @@ int main(int argc, char** argv) {
                    event.page().pictures_size(), picture_images, barcodes, last_page_ms);
       if (dump_items) {
         const auto& image = event.page().page_meta().image();
-        if (!image.uri().empty()) {
+        // The preview is the image's bytes (ImageRef.data) or, from a
+        // producer that still spells them so, a data: URI.
+        if (!image.data().empty() || !image.uri().empty()) {
           std::println("  raster {}x{} preview_fnv1a64={:016x}", image.size().width(),
-                       image.size().height(), fingerprint(image.uri()));
+                       image.size().height(),
+                       fingerprint(image.data().empty() ? image.uri() : image.data()));
         }
         dump_page_items(event.page());
       }

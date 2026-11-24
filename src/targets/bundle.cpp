@@ -13,7 +13,7 @@
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <google/protobuf/util/json_util.h>
 
-#include "grparse/base64.h"
+#include "grparse/image_ref.h"
 #include "grparse/content_sniff.h"
 #include "grparse/document_render.h"
 #include "sha256.h"
@@ -33,8 +33,6 @@ namespace {
 #endif
 constexpr std::string_view kGenerator = "grparse/" GRPARSE_VERSION;
 
-constexpr std::string_view kDataUriPrefix = "data:";
-constexpr std::string_view kBase64Suffix = ";base64";
 
 // What a member holding bytes of a type the bundle cannot name is called.
 // It claims nothing about the bytes, which is the point.
@@ -99,19 +97,6 @@ std::string_view image_extension(std::string_view mimetype) {
   return found == kImageTypes.end() ? std::string_view() : found->extension;
 }
 
-// A declared media type as kImageTypes spells it: its parameters dropped
-// ("image/svg+xml;charset=utf-8"), blanks trimmed, lower case.
-std::string media_type_name(std::string_view declared) {
-  declared = declared.substr(0, declared.find(';'));
-  const auto blank = [](char c) { return std::isspace(static_cast<unsigned char>(c)) != 0; };
-  while (!declared.empty() && blank(declared.front())) declared.remove_prefix(1);
-  while (!declared.empty() && blank(declared.back())) declared.remove_suffix(1);
-  std::string name(declared);
-  std::ranges::transform(name, name.begin(),
-                         [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
-  return name;
-}
-
 // What one ImageRef gives the bundle: the bytes and the extension of the
 // member to write, or the reason there is none.
 struct ImageMember {
@@ -125,47 +110,33 @@ struct ImageMember {
   std::string declared_mimetype;
 };
 
-// Reads the image behind `image`.  Only a "data:<type>;base64,<payload>" URI
-// holds bytes; a reference (a path, an http or epub: URI) or an empty uri
-// holds none, and a payload that does not decode cannot be written.  The
-// extension is what the bytes' own signature says, else what the document
-// declares (the data URI's media type before the ImageRef's), and never a
-// guess: bytes neither can name are written as kUnknownTypeExtension.
+// Reads the image behind `image`.  The bytes are ImageRef.data, or the
+// payload of a "data:<type>;base64,<payload>" URI from a producer that still
+// spells them that way; a reference (a path, an http or epub: URI) or an
+// empty ref holds none, and a payload that does not decode cannot be
+// written.  The extension is what the bytes' own signature says, else what
+// the document declares (a data URI's media type before the ImageRef's),
+// and never a guess: bytes neither can name are written as
+// kUnknownTypeExtension.
 ImageMember read_image(const docv1::ImageRef& image) {
   ImageMember member;
+  HeldImage held = held_image(image);
+  member.declared_mimetype = held.mimetype;
+  switch (held.hold) {
+    case ImageHold::kNothing:
+    case ImageHold::kReference:
+      member.reason = parsev1::BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED;
+      return member;
+    case ImageHold::kUndecodable:
+      member.reason = parsev1::BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE;
+      return member;
+    case ImageHold::kBytes:
+      break;
+  }
+  member.bytes = std::move(held.bytes);
   const std::string referenced_type = media_type_name(image.mimetype());
-  member.declared_mimetype = referenced_type;
-  const std::string& uri = image.uri();
-  if (!uri.starts_with(kDataUriPrefix)) {
-    member.reason = parsev1::BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED;
-    return member;
-  }
-  // data:[<media type>][;base64],<payload>: the header ends at the first
-  // comma, so a payload that happens to hold ";base64," is never the marker.
-  const size_t comma = uri.find(',', kDataUriPrefix.size());
-  std::string_view header = std::string_view(uri).substr(
-      kDataUriPrefix.size(),
-      comma == std::string::npos ? std::string::npos : comma - kDataUriPrefix.size());
-  const bool base64 = comma != std::string::npos && header.ends_with(kBase64Suffix);
-  if (base64) header.remove_suffix(kBase64Suffix.size());
-  const std::string embedded_type = media_type_name(header);
-  if (!embedded_type.empty()) member.declared_mimetype = embedded_type;
-  if (base64) {
-    try {
-      member.bytes = decode_base64(uri.substr(comma + 1));
-    } catch (const std::exception&) {
-      member.bytes.clear();
-    }
-  }
-  // A payload that is not base64 (the percent-encoded form, which nothing
-  // in this server writes), malformed base64 and an empty payload all leave
-  // no bytes to write.
-  if (member.bytes.empty()) {
-    member.reason = parsev1::BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE;
-    return member;
-  }
   for (const std::string& mimetype :
-       {sniff_mimetype(member.bytes), embedded_type, referenced_type}) {
+       {sniff_mimetype(member.bytes), held.mimetype, referenced_type}) {
     if (const std::string_view extension = image_extension(mimetype); !extension.empty()) {
       member.extension = extension;
       return member;

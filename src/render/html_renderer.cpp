@@ -7,6 +7,7 @@
 #include <vector>
 
 #include "grparse/document_render.h"
+#include "grparse/image_ref.h"
 #include "renderer_base.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -74,7 +75,7 @@ class HtmlRenderer : RendererBase {
       const auto page_item = document_.pages().find(page);
       const std::string uri =
           page_item != document_.pages().end() && page_item->second.has_image()
-              ? page_item->second.image().uri()
+              ? image_uri(page_item->second.image())
               : std::string();
       if (uri.empty()) {
         // docling's exact placeholder when the page carries no image.
@@ -413,7 +414,7 @@ class HtmlRenderer : RendererBase {
     if (excluded_layer(picture.content_layer())) return;
     note_page(picture.prov());
     const std::vector<std::string> captions = caption_texts(picture.captions());
-    const std::string& uri = picture.has_image() ? picture.image().uri() : std::string();
+    const std::string uri = picture.has_image() ? image_uri(picture.image()) : std::string();
     std::string out = "<figure>";
     if (uri.empty()) {
       out.append("<!-- image -->");

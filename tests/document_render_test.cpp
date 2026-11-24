@@ -580,11 +580,21 @@ void verify_image_uris_are_never_dereferenced() {
   for (const std::string uri : {"file:///etc/hostname", "file://localhost/etc/hostname",
                                 "/etc/hostname", "../../etc/hostname", "images/a.png",
                                 "https://example.org/a.png"}) {
-    require(!grparse::render::decode_image_data_uri(uri).has_value(),
+    docv1::ImageRef reference;
+    reference.set_uri(uri);
+    require(!grparse::render::held_encoded_image(reference).has_value(),
             "not decoded as image bytes: " + uri);
   }
-  require(grparse::render::decode_image_data_uri("data:image/png;base64,iVBORw0KGgo=").has_value(),
+  docv1::ImageRef embedded;
+  embedded.set_uri("data:image/png;base64,iVBORw0KGgo=");
+  require(grparse::render::held_encoded_image(embedded).has_value(),
           "a data URI still decodes");
+  docv1::ImageRef held;
+  held.set_mimetype("image/png");
+  held.set_data(std::string("\x89PNG\r\n\x1a\n", 8));
+  const auto encoded = grparse::render::held_encoded_image(held);
+  require(encoded.has_value() && encoded->extension == "png" && encoded->bytes == held.data(),
+          "bytes in the data field are the image, under their declared type");
 }
 
 // docling-core 2.102 header-row rule (#767). Each expected string is what

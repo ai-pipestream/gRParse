@@ -9,6 +9,7 @@
 
 #include "doclang_markup.h"
 #include "grparse/document_render.h"
+#include "grparse/image_ref.h"
 #include "picture_image.h"
 #include "renderer_base.h"
 
@@ -563,16 +564,19 @@ std::string render_doclang(const docv1::Document& document, const DoclangOptions
       // No source on the picture element.
       break;
     case Mode::kReferenced:
-      // The picture's existing image uri, whatever it is.
+      // The picture's existing image uri, whatever it is; bytes it holds
+      // in ImageRef.data are spelled as a data: URI.
       picture_uri = [](const docv1::PictureItem& picture) {
-        return picture.has_image() ? picture.image().uri() : std::string();
+        return picture.has_image() ? image_uri(picture.image()) : std::string();
       };
       break;
     case Mode::kEmbedded:
       // The existing uri when there is one (docling writes it as is, data
       // URI or not), otherwise the picture cropped out of its page image.
       picture_uri = [&document](const docv1::PictureItem& picture) {
-        if (picture.has_image() && !picture.image().uri().empty()) return picture.image().uri();
+        if (picture.has_image()) {
+          if (std::string uri = image_uri(picture.image()); !uri.empty()) return uri;
+        }
         const auto png = render::crop_picture_png(document, picture);
         return png.has_value() ? render::png_data_uri(*png) : std::string();
       };

@@ -20,6 +20,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "canonical_json_labels.h"
+#include "grparse/image_ref.h"
 #include "canonical_json_writer.h"
 #include "renderer_base.h"
 
@@ -167,7 +168,9 @@ class CanonicalJsonParts {
     writer_.member_int("dpi", image.dpi());
     writer_.key("size");
     emit_size(image.size());
-    writer_.member_string("uri", normalized_uri(image.uri()));
+    // The dialect holds an image in `uri` alone: bytes kept in
+    // ImageRef.data are spelled as the data: URI they are.
+    writer_.member_string("uri", normalized_uri(image_uri(image)));
     writer_.end_object();
   }
 

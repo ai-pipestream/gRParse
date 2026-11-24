@@ -40,6 +40,7 @@
 #include <google/protobuf/struct.pb.h>
 
 #include "grparse/document_render.h"
+#include "grparse/image_ref.h"
 #include "load_normalization.h"
 #include "markdown_text.h"
 #include "markdown_walk.h"
@@ -672,13 +673,16 @@ class MarkdownRenderer : public MarkdownWalk {
 
   std::string picture_image_markdown(const docv1::PictureItem& picture) const {
     if (image_export_mode_ == MarkdownOptions::ImageExportMode::kPlaceholder ||
-        !picture.has_image() || picture.image().uri().empty()) {
+        !picture.has_image()) {
       return std::string(kImagePlaceholder);
     }
     // Both EMBEDDED and REFERENCED use the ImageRef uri: ConvertSource has
     // no sidecar file tree for referenced paths, so a data URI is the
-    // honest embedded form and a path uri is the referenced form.
-    return "![](" + markdown_link_destination(picture.image().uri()) + ")";
+    // honest embedded form and a path uri is the referenced form. Bytes the
+    // ref holds in its data field are spelled as that data URI.
+    const std::string uri = image_uri(picture.image());
+    if (uri.empty()) return std::string(kImagePlaceholder);
+    return "![](" + markdown_link_destination(uri) + ")";
   }
 
   // -- meta -----------------------------------------------------------------

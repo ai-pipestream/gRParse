@@ -34,6 +34,7 @@
 #include "../targets/zip_writer.h"
 #include "doclang_markup.h"
 #include "grparse/document_render.h"
+#include "grparse/image_ref.h"
 #include "picture_image.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -103,14 +104,14 @@ std::string render_dclx(const docv1::Document& document, const DoclangOptions& o
       // docling counts every picture it walks, stored or not.
       const int index = picture_index++;
       std::optional<render::EncodedImage> image;
-      if (picture.has_image() && !picture.image().uri().empty()) {
-        const std::string& uri = picture.image().uri();
-        auto decoded = render::decode_image_data_uri(uri);
+      if (picture.has_image() &&
+          (!picture.image().uri().empty() || !picture.image().data().empty())) {
+        auto decoded = render::held_encoded_image(picture.image());
         // An image that cannot be loaded keeps the uri it has, as in
         // docling (an http or relative reference stays a reference).
-        if (!decoded.has_value()) return uri;
+        if (!decoded.has_value()) return image_uri(picture.image());
         image = render::archive_image(std::move(*decoded));
-        if (!image.has_value()) return uri;
+        if (!image.has_value()) return image_uri(picture.image());
       } else {
         auto png = render::crop_picture_png(document, picture);
         if (!png.has_value()) return std::string();
@@ -136,7 +137,7 @@ std::string render_dclx(const docv1::Document& document, const DoclangOptions& o
   for (const auto& [page_no, page] : pages) {
     // The packager accepts positive page numbers only.
     if (page_no < 1 || !page->has_image()) continue;
-    auto decoded = render::decode_image_data_uri(page->image().uri());
+    auto decoded = render::held_encoded_image(page->image());
     if (!decoded.has_value()) continue;
     auto image = render::archive_image(std::move(*decoded));
     if (!image.has_value()) continue;
