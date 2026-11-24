@@ -8,9 +8,12 @@
 // adopt_calamine_cells swaps the cells of each libreoffice sheet table for
 // calamine's reading of the same sheet, keeps the merged areas libreoffice
 // saw where calamine reported none (ODS, XLSB), and marks the header band
-// again over the cells that stayed. The libreoffice TableItem itself stays,
-// so every ref into it (a chart's bound table, a picture anchored on the
-// sheet) still resolves.
+// again over the cells that stayed. Both tables are cut to their used
+// ranges and the two readers need not agree where a range starts, so cells
+// are paired by sheet address (grid position plus TableData.origin) and
+// the adopted table is cut again to the cells it holds. The libreoffice
+// TableItem itself stays, so every ref into it (a chart's bound table, a
+// picture anchored on the sheet) still resolves.
 //
 // Only a sheet calamine read to its end is adopted. A calamine leg that
 // stops part way is still a successful leg, but the part it holds of a
@@ -26,7 +29,7 @@
 
 namespace grparse {
 
-// One merged area of a sheet, in absolute zero-based cell coordinates.
+// One merged area of a sheet, in zero-based sheet addresses.
 struct MergedArea {
   int row = 0;
   int column = 0;
@@ -36,13 +39,16 @@ struct MergedArea {
 
 // Gives the top-left cell of every merged area the area's spans and drops
 // the other cells inside it. An area whose top-left cell holds nothing
-// stays unplaced: a blank merge is layout, not content.
+// stays unplaced: a blank merge is layout, not content. The cells of `data`
+// sit at their sheet addresses here: the table is not cut yet.
 void apply_merged_areas(ai::pipestream::document::v1::TableData* data,
                         const std::vector<MergedArea>& areas);
 
 // Marks a sheet table's section row and header band (the labels-over-data
 // rule, office_fold/sheet_header_band.h) after clearing any earlier marks.
-// Returns the number of cells marked column_header.
+// A declared table's range is in sheet addresses and is matched against
+// each cell's (grid position plus TableData.origin). Returns the number of
+// cells marked column_header.
 int mark_sheet_header(ai::pipestream::document::v1::TableData* data);
 
 // One sheet a workbook reader did not read to its end: its read failed, or

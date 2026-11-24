@@ -42,6 +42,32 @@ bool label_cell(const docv1::TableCell& cell);
 docv1::TableCell* place_cell(docv1::TableData* data, int row, int column,
                              const std::string& text);
 
+// Where grid cell (0, 0) of a table sits in its source's own grid.
+struct GridOrigin {
+  int row = 0;
+  int column = 0;
+};
+
+// TableData.origin, or the source's first row and column when it is unset.
+GridOrigin origin_of(const docv1::TableData& data);
+
+// Cuts a sheet table whose cells sit at their sheet addresses down to its
+// used range, the schema's shape for a sheet: the first row and the first
+// column that hold a cell become row 0 and column 0, num_rows and num_cols
+// shrink by as much, and TableData.origin says where grid cell (0, 0) sits
+// in the sheet (unset when that is A1). A cell's sheet address stays its
+// grid position plus the origin. Everything that names sheet addresses in
+// its own right (row provenance, declared tables, ranges) is left alone.
+//
+// The column schema, when the table has one, keeps one entry per column
+// from the new first column on. `schema_column` is the sheet column its
+// first entry describes; a schema that begins after the table's first
+// column describes another table and is dropped.
+//
+// A table that already states an origin, holds no cells or carries a
+// materialized grid is left as it is.
+void cut_to_used_range(docv1::TableData* data, int schema_column = 0);
+
 // Materializes data->grid from table_cells for grids under kMaxGridCells:
 // one slot per base position, the first cell placed at a slot keeping it.
 void fill_grid_from_cells(docv1::TableData* data);

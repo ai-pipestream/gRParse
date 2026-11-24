@@ -464,9 +464,12 @@ void ChartFold::name_corner(const officev1::SheetChart& chart,
   const docv1::TableData* sheet = sheets_.sheet_data(chart.sheet_index());
   if (sheet == nullptr) return;
   const officev1::SheetRangeRef& range = chart.ranges(0);
+  // The range is in sheet addresses: a cell's is its grid position plus the
+  // table's origin.
+  const GridOrigin origin = origin_of(*sheet);
   for (const docv1::TableCell& cell : sheet->table_cells()) {
-    if (cell.start_row_offset_idx() != range.start_row() ||
-        cell.start_col_offset_idx() != range.start_column()
+    if (cell.start_row_offset_idx() + origin.row != range.start_row() ||
+        cell.start_col_offset_idx() + origin.column != range.start_column()
         || cell.text().empty()) {
       continue;
     }
@@ -500,18 +503,21 @@ bool ChartFold::fold_sheet_range(const officev1::SheetChart& chart,
   if (bottom < top || right < left) return false;
   data->set_num_rows(bottom - top + 1);
   data->set_num_cols(right - left + 1);
+  // The ranges are in sheet addresses: a cell's is its grid position plus
+  // the table's origin.
+  const GridOrigin origin = origin_of(*sheet);
   for (const docv1::TableCell& cell : sheet->table_cells()) {
-    const int row = cell.start_row_offset_idx();
-    const int column = cell.start_col_offset_idx();
+    const int row = cell.start_row_offset_idx() + origin.row;
+    const int column = cell.start_col_offset_idx() + origin.column;
     if (row < top || row > bottom || column < left || column > right) continue;
     docv1::TableCell* out = data->add_table_cells();
     *out = cell;
     out->set_start_row_offset_idx(row - top);
     out->set_end_row_offset_idx(
-        std::min(cell.end_row_offset_idx(), bottom + 1) - top);
+        std::min(cell.end_row_offset_idx() + origin.row, bottom + 1) - top);
     out->set_start_col_offset_idx(column - left);
     out->set_end_col_offset_idx(
-        std::min(cell.end_col_offset_idx(), right + 1) - left);
+        std::min(cell.end_col_offset_idx() + origin.column, right + 1) - left);
     out->set_row_span(out->end_row_offset_idx() - out->start_row_offset_idx());
     out->set_col_span(out->end_col_offset_idx() - out->start_col_offset_idx());
     if (chart.has_column_headers() && row == top) out->set_column_header(true);

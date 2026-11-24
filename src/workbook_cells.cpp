@@ -22,6 +22,20 @@ Position position_of(const docv1::TableCell& cell) {
   return {cell.start_row_offset_idx(), cell.start_col_offset_idx()};
 }
 
+// The cell's sheet address: its grid position plus its table's origin.
+Position address_of(const docv1::TableCell& cell, const office_fold::GridOrigin& origin) {
+  return {cell.start_row_offset_idx() + origin.row,
+          cell.start_col_offset_idx() + origin.column};
+}
+
+// Moves a cell from its place in a cut table to its sheet address.
+void move_to_address(docv1::TableCell* cell, const office_fold::GridOrigin& origin) {
+  cell->set_start_row_offset_idx(cell->start_row_offset_idx() + origin.row);
+  cell->set_end_row_offset_idx(cell->end_row_offset_idx() + origin.row);
+  cell->set_start_col_offset_idx(cell->start_col_offset_idx() + origin.column);
+  cell->set_end_col_offset_idx(cell->end_col_offset_idx() + origin.column);
+}
+
 void set_spans(docv1::TableCell* cell, int rows, int columns) {
   cell->set_row_span(rows);
   cell->set_col_span(columns);
@@ -136,35 +150,43 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
 }
 
 // Replaces the cells of `libre` with calamine's reading of the same sheet,
-// keeping libreoffice's merged areas where calamine reported none.
+// keeping libreoffice's merged areas where calamine reported none. Each
+// table is cut to its own used range, so the two are laid over each other
+// at their sheet addresses, and the result is cut to the cells it holds.
 void adopt_table(const docv1::TableData& calamine, docv1::TableData* libre) {
+  const office_fold::GridOrigin calamine_origin = office_fold::origin_of(calamine);
+  const office_fold::GridOrigin libre_origin = office_fold::origin_of(*libre);
   std::map<Position, const docv1::TableCell*> libre_cells;
   std::vector<MergedArea> libre_merges;
   for (const docv1::TableCell& cell : libre->table_cells()) {
-    libre_cells.emplace(position_of(cell), &cell);
+    const Position address = address_of(cell, libre_origin);
+    libre_cells.emplace(address, &cell);
     if (cell.row_span() > 1 || cell.col_span() > 1) {
-      libre_merges.push_back({cell.start_row_offset_idx(), cell.start_col_offset_idx(),
-                              std::max(1, cell.row_span()), std::max(1, cell.col_span())});
+      libre_merges.push_back({address.first, address.second, std::max(1, cell.row_span()),
+                              std::max(1, cell.col_span())});
     }
   }
   const bool calamine_merges = std::ranges::any_of(
       calamine.table_cells(),
       [](const docv1::TableCell& cell) { return cell.row_span() > 1 || cell.col_span() > 1; });
 
+  // The adopted cells, at their sheet addresses.
   docv1::TableData adopted;
   for (const docv1::TableCell& cell : calamine.table_cells()) {
-    const auto found = libre_cells.find(position_of(cell));
-    *adopted.add_table_cells() =
-        adopted_cell(cell, found == libre_cells.end() ? nullptr : found->second);
+    const auto found = libre_cells.find(address_of(cell, calamine_origin));
+    docv1::TableCell* placed = adopted.add_table_cells();
+    *placed = adopted_cell(cell, found == libre_cells.end() ? nullptr : found->second);
+    move_to_address(placed, calamine_origin);
   }
   // A libreoffice cell with no text of its own still matters when it anchors
   // something (a picture or a control placed in the cell).
   std::set<Position> placed;
   for (const docv1::TableCell& cell : adopted.table_cells()) placed.insert(position_of(cell));
   for (const docv1::TableCell& cell : libre->table_cells()) {
-    if (cell.has_ref() && !placed.contains(position_of(cell))) {
+    if (cell.has_ref() && !placed.contains(address_of(cell, libre_origin))) {
       docv1::TableCell* kept = adopted.add_table_cells();
       *kept = cell;
+      move_to_address(kept, libre_origin);
       kept->set_column_header(false);
       kept->set_row_header(false);
       kept->set_row_section(false);
@@ -174,8 +196,9 @@ void adopt_table(const docv1::TableData& calamine, docv1::TableData* libre) {
   // format calamine reads no merges from (ODS, XLSB).
   if (!calamine_merges) apply_merged_areas(&adopted, libre_merges);
 
-  int rows = calamine.num_rows();
-  int columns = calamine.num_cols();
+  // The sheet's extent, in sheet rows and columns.
+  int rows = calamine.num_rows() + calamine_origin.row;
+  int columns = calamine.num_cols() + calamine_origin.column;
   for (const docv1::TableCell& cell : adopted.table_cells()) {
     rows = std::max(rows, cell.end_row_offset_idx());
     columns = std::max(columns, cell.end_col_offset_idx());
@@ -184,10 +207,12 @@ void adopt_table(const docv1::TableData& calamine, docv1::TableData* libre) {
   libre->set_num_rows(rows);
   libre->set_num_cols(columns);
   libre->clear_grid();
+  libre->clear_origin();
   *libre->mutable_declared_tables() = calamine.declared_tables();
-  // A column schema describes libreoffice's columns; it no longer fits when
-  // calamine's sheet is a different width.
-  if (libre->columns_size() != columns) libre->clear_columns();
+  // A column schema describes libreoffice's columns, from its origin column
+  // on; it no longer fits when calamine's sheet is a different width.
+  if (libre->columns_size() + libre_origin.column != columns) libre->clear_columns();
+  office_fold::cut_to_used_range(libre, libre_origin.column);
 }
 
 }  // namespace
@@ -222,8 +247,11 @@ void apply_merged_areas(docv1::TableData* data, const std::vector<MergedArea>& a
 
 int mark_sheet_header(docv1::TableData* data) {
   if (!data->declared_tables().empty()) {
+    // A declared range is in sheet addresses; the cells are the cut table's.
+    const office_fold::GridOrigin origin = office_fold::origin_of(*data);
     int marked = 0;
     for (auto& cell : *data->mutable_table_cells()) {
+      const auto [row, column] = address_of(cell, origin);
       cell.set_column_header(false);
       cell.set_row_section(false);
       for (const auto& table : data->declared_tables()) {
@@ -232,10 +260,8 @@ int mark_sheet_header(docv1::TableData* data) {
         const int64_t header_end = std::min<int64_t>(
             static_cast<int64_t>(last.row()) + 1,
             static_cast<int64_t>(first.row()) + table.header_row_count());
-        if (cell.start_row_offset_idx() >= first.row()
-            && cell.start_row_offset_idx() < header_end
-            && cell.start_col_offset_idx() >= first.col()
-            && cell.start_col_offset_idx() <= last.col()) {
+        if (row >= first.row() && row < header_end && column >= first.col()
+            && column <= last.col()) {
           cell.set_column_header(true);
           ++marked;
           break;
@@ -246,8 +272,9 @@ int mark_sheet_header(docv1::TableData* data) {
     // width-spanning declaration describes the sheet table's whole schema.
     if (data->declared_tables_size() == 1) {
       const auto& table = data->declared_tables(0);
-      if (table.range().start().col() == 0
-          && static_cast<int64_t>(table.range().end().col()) + 1 == data->num_cols()
+      if (table.range().start().col() == origin.column
+          && static_cast<int64_t>(table.range().end().col()) + 1
+                 == static_cast<int64_t>(origin.column) + data->num_cols()
           && table.columns_size() == data->num_cols()) {
         while (data->columns_size() < data->num_cols()) data->add_columns();
         for (int i = 0; i < table.columns_size(); ++i) {
@@ -327,9 +354,11 @@ int adopt_calamine_cells(const docv1::Document& calamine,
     }
     if (held_back.contains(sheet)) continue;
     docv1::TableItem* table = merged->mutable_tables(target->second);
+    // Kept by sheet address: the adoption can move the table's origin.
     std::set<Position> libre_header;
+    const office_fold::GridOrigin before = office_fold::origin_of(table->data());
     for (const docv1::TableCell& cell : table->data().table_cells()) {
-      if (cell.column_header()) libre_header.insert(position_of(cell));
+      if (cell.column_header()) libre_header.insert(address_of(cell, before));
     }
     adopt_table(calamine.tables(calamine_index).data(), table->mutable_data());
     // The calamine fold already named the inference when it marked a band
@@ -338,8 +367,9 @@ int adopt_calamine_cells(const docv1::Document& calamine,
     // range can declare a header the rule would not infer.
     if (mark_sheet_header(table->mutable_data()) == 0
         && table->data().declared_tables().empty()) {
+      const office_fold::GridOrigin after = office_fold::origin_of(table->data());
       for (docv1::TableCell& cell : *table->mutable_data()->mutable_table_cells()) {
-        if (libre_header.contains(position_of(cell))) cell.set_column_header(true);
+        if (libre_header.contains(address_of(cell, after))) cell.set_column_header(true);
       }
     }
     // The cells are calamine's now; the item keeps libreoffice's account of

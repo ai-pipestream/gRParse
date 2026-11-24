@@ -94,11 +94,15 @@ void DoclingMapper::on_status(const officev1::RenderStatus& status) {
   // Charts and objects whose placing event never came still belong to
   // their sheet or slide, and a slide's items read in its geometric order
   // once all of them are in; sheet header rows need every row in before the first can be
-  // judged against the second.
+  // judged against the second. The charts read their source ranges out of
+  // the sheet tables first, and the tables are cut to their used ranges
+  // before the header rows are judged, so a title across the used width is
+  // measured against that width.
   charts_.flush(shapes_);
   objects_.flush(shapes_);
   shapes_.order_slides();
   sheets_.size_empty_tables();
+  sheets_.cut_tables_to_used_ranges();
   sheets_.mark_header_rows();
   writer_.anchor_trailing_pictures();
   writer_.place_headers_footers();
