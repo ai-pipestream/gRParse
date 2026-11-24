@@ -685,19 +685,30 @@ in-flight budget, collectors, merge and repair), one source after another
 on a pool sized like the unary one (`GRPARSE_UNARY_WORKERS`,
 `GRPARSE_UNARY_QUEUE`). The stream is `status` `PHASE_QUEUED`, then
 `PHASE_STARTED`; per source in request order a `PHASE_PROCESSING` status,
-then either the merged `final_document` and a successful `source_result`,
-or an `error` (typed `code` and `failure`) and a failed `source_result`,
-after which the next source runs; and last `PHASE_COMPLETED` when any
-source converted, else `PHASE_FAILED`. The call then finishes OK. Every
+then either a `PHASE_EXPORTING` status, the merged `final_document`, its
+`source_outputs` and a successful `source_result`, or an `error` (typed
+`code` and `failure`) and a failed `source_result`, after which the next
+source runs; and last `PHASE_COMPLETED` when any source converted, else
+`PHASE_FAILED`. The call then finishes OK. `source_outputs`
+(`StreamSourceOutputs`) carries the rest of the conversion as
+`ConvertDocumentResponse` does for the same request, filled by the same
+code: the `exports` `to_formats` asked for, the `chunks`, the
+`structure_findings`, the `confidence` and the `text_offsets`. It is sent
+for every converted source, so an empty field means the conversion
+produced nothing for it. A source whose outputs fail to render, or whose
+`final_document` or `source_outputs` is past the message limit, fails as a
+whole. Every
 envelope echoes `request_id` and carries `sequence_number`, counting from 1
 with no gaps, and `timestamp_ms`; source-scoped envelopes set
 `source_index`. The `part` arm is not sent: what streams is each source's
 result, not its pages (`StreamProcessDocument` streams pages). A request
-with no source, a `target` to deliver to, invalid options, or no room in
-the budget or the pool is refused with its status and no envelope; a
-client that cancels or stops reading ends the call `CANCELLED`. The server
-writes one source's envelopes before it parses the next, so a slow reader
-holds at most one finished `Document`.
+with no source, a `target` to deliver to (a typed `OptionRejection` on
+`target`: the stream has no envelope for a delivery result), invalid
+options, or no room in the budget or the pool is refused with its status
+and no envelope; a client that cancels or stops reading ends the call
+`CANCELLED`. The server writes one source's envelopes before it parses the
+next, so a slow reader holds at most one finished `Document` and its
+outputs.
 
 ## Collector scatter-gather
 
@@ -1076,6 +1087,24 @@ under the `s3` profile for a stack that brings its own.
 The server registers standard gRPC health checking and reflection in addition
 to the contract's `Health` RPC. SIGINT and SIGTERM initiate a bounded graceful
 shutdown.
+
+Both health surfaces report what the process holds, not that the port is
+bound. `Health` answers a typed `state` (`SERVING_STATE_NOT_SERVING` until
+startup has built everything the settings ask for, then `SERVING`, or
+`SERVING_DEGRADED` when a part is missing) and one `ComponentHealth` per
+in-process engine (loaded, disabled by its setting, or allowed and not
+built), per `GRPARSE_PDF_BACKEND` target, and per collector and peer target
+(not configured, configured, connected or unreachable, with the connectivity
+state of each channel a parse has already opened). Nothing is probed for the
+answer: `Health` never creates a channel or makes one connect, so a target no
+parse has needed yet reads `COMPONENT_STATE_CONFIGURED`. Degraded means an
+engine was allowed and not built, a configured target's last connection
+attempt failed, or no PDF backend is configured; a switched-off engine and an
+unset collector are deployment choices and do not count. The `status` string
+is the text form of `state` (`starting`, `ready`, `degraded`). `grpc.health.v1`
+answers for the server (`""`) and for `ai.pipestream.parse.v1.ParseService`
+and `ai.pipestream.parse.v1.ParseStreamingService` by name: `NOT_SERVING`
+until startup completes and `SERVING` after, degraded included.
 
 Every `GRPARSE_METRICS_INTERVAL_SECONDS` (default 60, `0` disables) the server
 prints one pipeline metrics line to stdout: document and page counters, queue
