@@ -107,5 +107,17 @@ if(BUILD_TESTING)
       ENVIRONMENT
         "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     add_dependencies(grparse-tests level-zero-table-decoder-test)
+    # The OCR nets on the graph runtime against ONNX Runtime on CPU, same gate.
+    add_executable(level-zero-ocr-test tests/level_zero_ocr_test.cpp)
+    target_include_directories(level-zero-ocr-test PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(level-zero-ocr-test SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
+    target_link_libraries(level-zero-ocr-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+    add_test(NAME level-zero-ocr-test COMMAND level-zero-ocr-test)
+    set_tests_properties(level-zero-ocr-test PROPERTIES
+      LABELS "grparse;models" TIMEOUT ${GRPARSE_TEST_TIMEOUT} SKIP_RETURN_CODE 77
+      ENVIRONMENT
+        "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    add_dependencies(grparse-tests level-zero-ocr-test)
   endif()
 endif()

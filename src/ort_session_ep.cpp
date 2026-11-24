@@ -1,5 +1,7 @@
 #include "grparse_session_ep.h"
 
+#include "grparse_inference_model.h"
+
 #include <atomic>
 #include <chrono>
 #include <cstdlib>
@@ -238,7 +240,10 @@ OvCompileGate::OvCompileGate() {
 
 OvCompileGate::~OvCompileGate() = default;
 
-size_t ocr_batch_size() {
+namespace {
+
+// GRPARSE_OCR_BATCH when set, 1 to 256; 0 when it is not.
+size_t configured_ocr_batch() {
   static const size_t configured = [] {
     const char* value = std::getenv("GRPARSE_OCR_BATCH");
     if (value == nullptr || *value == '\0') return size_t{0};
@@ -249,8 +254,21 @@ size_t ocr_batch_size() {
     }
     return static_cast<size_t>(parsed);
   }();
+  return configured;
+}
+
+}  // namespace
+
+size_t ocr_batch_size() {
+  const size_t configured = configured_ocr_batch();
   if (configured != 0) return configured;
   return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
+}
+
+size_t ocr_direction_batch_size() {
+  const size_t configured = configured_ocr_batch();
+  if (configured != 0) return configured;
+  return level_zero_ocr() ? 256 : ocr_batch_size();
 }
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
