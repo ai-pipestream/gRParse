@@ -562,6 +562,85 @@ void verify_slide_reads_in_geometric_order() {
 
 }  // namespace
 
+// An image the office service sent as bytes stays bytes on the Document:
+// ImageRef.data holds them and ImageRef.uri, which is for a reference to an
+// image held elsewhere, stays unset. Covers every place the fold carries
+// one: a page render, a picture in the text, a slide picture filling its
+// shape, and an embedded object's replacement graphic.
+void verify_images_are_held_as_bytes_not_data_uris() {
+  const auto holds = [](const docv1::ImageRef& image, const std::string& bytes,
+                        const std::string& mimetype, const std::string& what) {
+    require(image.data() == bytes,
+            what + ": ImageRef.data must hold the bytes the service sent, got " +
+                std::to_string(image.data().size()) + " bytes");
+    require(image.uri().empty(),
+            what + ": no URI for bytes the document holds, got '" + image.uri() + "'");
+    require(image.mimetype() == mimetype, what + ": the media type rides beside the bytes");
+  };
+  // Bytes no text encoding would carry unchanged.
+  const std::string raw("\x89PNG\x00\xFF\x0A", 7);
+  {
+    std::vector<officev1::StreamPagesResponse> events{text_info(1)};
+    officev1::StreamPagesResponse page = page_image(0, "Standard");
+    page.mutable_page_image()->set_png(raw);
+    events.push_back(page);
+    officev1::StreamPagesResponse image;
+    officev1::EmbeddedImage* picture = image.mutable_embedded_image();
+    picture->set_page_index(0);
+    picture->set_name("Figure");
+    picture->set_mime_type("image/jpeg");
+    picture->set_data(raw);
+    picture->set_width_twips(4000);
+    picture->set_height_twips(3000);
+    picture->mutable_anchor()->set_x(1440);
+    picture->mutable_anchor()->set_y(2000);
+    events.push_back(image);
+    officev1::StreamPagesResponse object;
+    officev1::EmbeddedObject* ole = object.mutable_embedded_object();
+    ole->set_kind(officev1::EMBEDDED_OBJECT_KIND_OLE_OTHER);
+    ole->set_page_index(0);
+    ole->set_name("Signature");
+    ole->mutable_anchor()->set_x(1440);
+    ole->mutable_anchor()->set_y(9000);
+    ole->set_width_twips(3000);
+    ole->set_height_twips(900);
+    ole->set_replacement_mime_type("image/png");
+    ole->set_replacement_image(raw);
+    events.push_back(object);
+    events.push_back(status_event());
+    const docv1::Document document = fold(events);
+    require(document.pages().contains(1) && document.pages().at(1).has_image(),
+            "the page render attaches to its page");
+    holds(document.pages().at(1).image(), raw, "image/png", "page render");
+    require(document.pictures_size() == 2 && document.pictures(0).has_image() &&
+                document.pictures(1).has_image(),
+            "the picture and the object's replacement graphic are both pictures with images");
+    holds(document.pictures(0).image(), raw, "image/jpeg", "picture in the text");
+    holds(document.pictures(1).image(), raw, "image/png", "object replacement graphic");
+  }
+  {
+    std::vector<officev1::StreamPagesResponse> events{deck_info(1), slide(0)};
+    events.push_back(slide_shape(0, 0, "com.sun.star.drawing.GraphicObjectShape",
+                                 officev1::PLACEHOLDER_ROLE_NONE, 1076, 5918, 6404, 2489, {""}));
+    officev1::StreamPagesResponse image;
+    officev1::EmbeddedImage* picture = image.mutable_embedded_image();
+    picture->set_page_index(0);
+    picture->set_name("Photo");
+    picture->set_mime_type("image/jpeg");
+    picture->set_data(raw);
+    picture->set_width_twips(6404);
+    picture->set_height_twips(2489);
+    picture->mutable_anchor()->set_x(1076);
+    picture->mutable_anchor()->set_y(5918);
+    events.push_back(image);
+    events.push_back(status_event());
+    const docv1::Document document = fold(events);
+    require(document.pictures_size() == 1 && document.pictures(0).has_image(),
+            "the slide picture carries its image");
+    holds(document.pictures(0).image(), raw, "image/jpeg", "slide picture");
+  }
+}
+
 int main() {
   return grparse_test::run_test_main("docling_map_office_layout_test", "ok", {
       verify_headers_sit_on_the_pages_of_their_style,
@@ -579,5 +658,6 @@ int main() {
       verify_header_anchored_picture_is_furniture,
       verify_writer_object_reads_where_it_sits,
       verify_picture_in_table_cell_takes_no_blank_paragraph,
+      verify_images_are_held_as_bytes_not_data_uris,
   });
 }
