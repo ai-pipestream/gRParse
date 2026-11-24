@@ -234,8 +234,9 @@ void verify_structured_cells_override_geometry() {
   require(header.text() == "Region" && header.col_span() == 2 && header.column_header() &&
               header.start_col_offset_idx() == 0 && header.end_col_offset_idx() == 2,
           "header cell keeps its span and thead flag");
-  require(header.bbox().t() == 290 && header.bbox().r() == 500,
-          "structured cell bbox is the model box");
+  require(header.bbox().l() == 10 && header.bbox().t() == 300 && header.bbox().r() == 90 &&
+              header.bbox().b() == 310,
+          "a structured cell with text takes its words' box, not the model box");
   require(table_data.table_cells(1).text() == "North" && !table_data.table_cells(1).column_header(),
           "body cell binds its line and stays unflagged");
   require(table_data.grid_size() == 2 && table_data.grid(0).cells_size() == 2,
