@@ -831,6 +831,33 @@ message BundleImageIssue {
   optional string path = 5;
 }
 
+// BundleMember is one member of a result bundle as its manifest lists it.
+message BundleMember {
+  // The member's relative slash-separated path: its name in the archive and
+  // the suffix appended to an object key prefix.
+  string path = 1;
+  // The SHA-256 of the member's bytes: 64 lowercase hexadecimal characters.
+  string sha256 = 2;
+  // The member's length in bytes.
+  uint64 size_bytes = 3;
+}
+
+// BundleManifest is the index of a result bundle: the member manifest.pb,
+// deterministically serialized. It lists every member of the bundle except
+// its own two forms, manifest.pb and manifest.json, which cannot carry
+// their own digests. manifest.json is this message in protobuf's JSON
+// mapping with proto field names, for people; it is rendered from the
+// message and holds nothing the message does not.
+message BundleManifest {
+  // Every other member, in the bundle's own sorted path order.
+  repeated BundleMember files = 1;
+  // What built the bundle: "grparse/" and the server's version.
+  string generator = 2;
+  // The manifest's own shape. It changes when this message's meaning does,
+  // never for a change in which members a conversion happens to produce.
+  uint32 schema_version = 3;
+}
+
 // TargetResult carries what a non-inbody Target produced. Targets are an
 // additive delivery of the same conversion, never a replacement: a response
 // that carries a TargetResult still carries its DocumentResponse in full.

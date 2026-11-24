@@ -11,6 +11,7 @@
 
 #include <google/protobuf/io/coded_stream.h>
 #include <google/protobuf/io/zero_copy_stream_impl_lite.h>
+#include <google/protobuf/util/json_util.h>
 
 #include "grparse/base64.h"
 #include "grparse/content_sniff.h"
@@ -220,60 +221,43 @@ parsev1::ConvertDocumentResponse bundled_response(
   return response;
 }
 
-// JSON string escaping for the manifest.  The manifest holds generated file
-// names and hex digests, but escaping is not conditional on that: a document
-// name reaching a path would otherwise be able to break the JSON.
-std::string json_escape(std::string_view value) {
-  std::string escaped;
-  escaped.reserve(value.size() + 2);
-  for (const char character : value) {
-    const auto byte = static_cast<unsigned char>(character);
-    switch (character) {
-      case '"': escaped += "\\\""; break;
-      case '\\': escaped += "\\\\"; break;
-      case '\b': escaped += "\\b"; break;
-      case '\f': escaped += "\\f"; break;
-      case '\n': escaped += "\\n"; break;
-      case '\r': escaped += "\\r"; break;
-      case '\t': escaped += "\\t"; break;
-      default:
-        if (byte < 0x20) {
-          static constexpr char kDigits[] = "0123456789abcdef";
-          escaped += "\\u00";
-          escaped.push_back(kDigits[byte >> 4]);
-          escaped.push_back(kDigits[byte & 0x0f]);
-        } else {
-          escaped.push_back(character);
-        }
-        break;
-    }
+// The manifest of `files`, which the caller has sorted: every member with its
+// digest and size, the generator and the schema version.  No timestamp:
+// everything that could make two identical conversions disagree byte for
+// byte is deliberately absent.
+parsev1::BundleManifest manifest_of(const std::vector<BundleFile>& files) {
+  parsev1::BundleManifest manifest;
+  for (const auto& file : files) {
+    parsev1::BundleMember* member = manifest.add_files();
+    member->set_path(file.path);
+    member->set_sha256(sha256_hex(file.bytes));
+    member->set_size_bytes(file.bytes.size());
   }
-  return escaped;
+  manifest.set_generator(std::string(kGenerator));
+  manifest.set_schema_version(kManifestSchemaVersion);
+  return manifest;
 }
 
-// The manifest: object keys in sorted order, no whitespace, no timestamp, no
-// trailing newline.  Everything that could make two identical conversions
-// disagree byte for byte is deliberately absent.
-std::string render_manifest(const std::vector<BundleFile>& files) {
-  std::string manifest = "{\"files\":[";
-  bool first = true;
-  for (const auto& file : files) {
-    if (!first) manifest += ',';
-    first = false;
-    manifest += "{\"path\":\"";
-    manifest += json_escape(file.path);
-    manifest += "\",\"sha256\":\"";
-    manifest += sha256_hex(file.bytes);
-    manifest += "\",\"size_bytes\":";
-    manifest += std::to_string(file.bytes.size());
-    manifest += '}';
+// manifest.json: the manifest in protobuf's own JSON mapping, for people.
+// The printer does the escaping and the structure, so the text is JSON
+// whatever a path holds, and it can only say what manifest.pb says.  The
+// three options keep the bytes manifest.json has always had: the proto's
+// field names as keys (which are also in sorted order, being the field
+// order), a member of no bytes still stating "size_bytes":0, and a size
+// written as a JSON number instead of the quoted form the mapping gives
+// 64-bit integers.  No whitespace and no trailing newline.
+std::string render_manifest_json(const parsev1::BundleManifest& manifest) {
+  google::protobuf::util::JsonPrintOptions options;
+  options.preserve_proto_field_names = true;
+  options.always_print_fields_with_no_presence = true;
+  options.unquote_int64_if_possible = true;
+  std::string json;
+  const auto status = google::protobuf::util::MessageToJsonString(manifest, &json, options);
+  if (!status.ok()) {
+    throw std::runtime_error("bundle could not render the manifest as JSON: " +
+                             std::string(status.message()));
   }
-  manifest += "],\"generator\":\"";
-  manifest += json_escape(kGenerator);
-  manifest += "\",\"schema_version\":";
-  manifest += std::to_string(kManifestSchemaVersion);
-  manifest += '}';
-  return manifest;
+  return json;
 }
 
 // The exports the bundle carries, each under the name of the output format
@@ -350,12 +334,17 @@ std::vector<BundleFile> build_bundle(const parsev1::ConvertDocumentResponse& con
   files.push_back({"response.pb", serialize(bundled_response(converted, *result), "response")});
 
   std::ranges::sort(files, {}, &BundleFile::path);
-  // The manifest describes every other member, so it is hashed last and
-  // never describes itself.  Sorted order puts it after "exports/" and
-  // "document.*" and before "pages/", which is where a reader finds it.
-  BundleFile manifest{"manifest.json", render_manifest(files)};
-  files.insert(std::ranges::upper_bound(files, manifest.path, {}, &BundleFile::path),
-               std::move(manifest));
+  // The manifest describes every other member, so it is built last and
+  // describes neither of its own two forms: manifest.pb, the typed message a
+  // program reads, and manifest.json, the same message rendered for people.
+  // Sorted order puts both after "exports/" and "document.*" and before
+  // "pages/", which is where a reader finds them.
+  const parsev1::BundleManifest manifest = manifest_of(files);
+  for (BundleFile form : {BundleFile{"manifest.json", render_manifest_json(manifest)},
+                          BundleFile{"manifest.pb", serialize(manifest, "manifest")}}) {
+    files.insert(std::ranges::upper_bound(files, form.path, {}, &BundleFile::path),
+                 std::move(form));
+  }
   return files;
 }
 
