@@ -407,6 +407,31 @@ void verify_pages_without_usable_images_are_skipped() {
                 warning.message);
   }
 
+  // A render that decodes on a page that states no size: a box found on it
+  // has no page coordinates to convert to, so the page is not searched. That
+  // is the same loss as a render that does not decode, and is told the same
+  // way.
+  for (const bool sized_zero : {false, true}) {
+    docv1::Document unsized = office_document_with_qr_page(222, 2220);
+    docv1::PageItem& page = (*unsized.mutable_pages())[1];
+    if (sized_zero) {
+      page.mutable_size()->set_width(0);
+    } else {
+      page.clear_size();
+    }
+    const int calls_before = detector.calls;
+    const grparse::OfficeCvReport report = grparse::enrich_office_document(enrichment, &unsized);
+    require(unsized.pictures_size() == 0 && detector.calls == calls_before,
+            "a render on a page with no size is not searched");
+    require_equal(report.pages_unreadable, 1,
+                  "a render on a page with no size counts as one page not read");
+    require_equal(report.warnings.size(), size_t{1},
+                  "a render on a page with no size raises one warning");
+    require(report.warnings[0].code == docv1::WARNING_CODE_PAGE_RENDER_UNREADABLE &&
+                report.warnings[0].page_no == std::optional<int32_t>(1),
+            "and the warning is typed and names the page: " + report.warnings[0].message);
+  }
+
   // Beside readable pages, only the unreadable one is named, and the others
   // are still read.
   docv1::Document mixed = office_document_with_qr_page(222, 2220);

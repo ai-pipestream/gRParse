@@ -220,11 +220,11 @@ def placement(ctx: ObjectContext) -> list[Failure]:
     return failures
 
 
-@check("custom_field_keys", "no custom_fields key contains ':' except the pinned cell:? escape (collector "
-                            "warnings are judged by warnings_typed)")
+@check("custom_field_keys", "no custom_fields key contains ':' (collector warnings are judged by "
+                            "warnings_typed)")
 def custom_field_keys(ctx: ObjectContext) -> list[Failure]:
     offenders = [f"{path}[{key}]" for path, key in ctx.view.custom_field_keys()
-                 if ":" in key and key != "cell:?" and not key.startswith("collector_warnings:")]
+                 if ":" in key and not key.startswith("collector_warnings:")]
     if not offenders:
         return []
     return [_fail("custom_field_keys", "colon-keyed custom field: " +

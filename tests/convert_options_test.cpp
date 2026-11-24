@@ -224,6 +224,15 @@ void verify_unread_options_are_rejected_unless_default() {
     (*o->mutable_ocr_custom_config())["lang"].set_string_value("en");
     (*o->mutable_ocr_custom_config())["det_limit_side_len"].set_int_value(960);
   });
+  // threshold is the one key of this map anything reads (it gets a notice
+  // saying which stage). Any other key used to be accepted and read by
+  // nothing; it is turned down by name, first key in name order.
+  rejects("picture_classification_custom_config.batch_size",
+          [](parsev1::ConvertDocumentOptions* o) {
+            (*o->mutable_picture_classification_custom_config())["threshold"].set_double_value(0.5);
+            (*o->mutable_picture_classification_custom_config())["top_k"].set_int_value(3);
+            (*o->mutable_picture_classification_custom_config())["batch_size"].set_int_value(8);
+          });
   {
     // The VLM pipeline does stop at the first failed page.
     parsev1::ConvertDocumentOptions options;

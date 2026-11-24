@@ -1024,6 +1024,17 @@ grpc::Status validate_unread_options(const pipestream::parse::v1::ConvertDocumen
     }
     return rejected("ocr_custom_config." + key);
   }
+  // The figure classifier has no settings either. threshold is the one key
+  // of its map that anything reads (option_notices says which stage); any
+  // other key is turned down the same way.
+  std::vector<std::string> classification_keys;
+  for (const auto& entry : options.picture_classification_custom_config()) {
+    if (entry.first != "threshold") classification_keys.push_back(entry.first);
+  }
+  if (!classification_keys.empty()) {
+    return rejected("picture_classification_custom_config." +
+                    *std::ranges::min_element(classification_keys));
+  }
   return grpc::Status::OK;
 }
 

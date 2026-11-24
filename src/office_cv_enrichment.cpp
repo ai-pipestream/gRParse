@@ -253,7 +253,19 @@ OfficeCvReport enrich_office_document(const OfficeCvEnrichment& enrichment,
     // The page's coordinate space (twips for office documents) and the
     // render's pixel space share only their aspect ratio; every typed item's
     // provenance is in the former, so detected boxes convert on the way in.
-    if (page.size().width() <= 0 || raster.cols <= 0) continue;
+    if (page.size().width() <= 0) {
+      // The render is readable and still cannot be used: without the
+      // page's size a box found on it converts to nothing. The same loss
+      // as an unreadable render, told the same way.
+      ++report.pages_unreadable;
+      report.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAGE_RENDER_UNREADABLE,
+                  "office CV enrichment: page " + std::to_string(page_number) +
+                      " states no size, so nothing found on its render could be placed; "
+                      "the page was not searched for figures")
+              .on_page(page_number));
+      continue;
+    }
     const double scale = page.size().width() / static_cast<double>(raster.cols);
 
     std::vector<LayoutRegion> regions = enrichment.detector->detect_regions(raster);
