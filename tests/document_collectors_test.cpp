@@ -1154,13 +1154,14 @@ void verify_epub_book_folds_chapters_and_images() {
   require(picture.parent().ref() == "#/groups/0",
           "the image sits in the chapter that references it, not at the body");
   require(picture.image().mimetype() == "image/jpeg" &&
-              picture.image().uri().starts_with("data:image/jpeg;base64,"),
-          "the image is inlined under the manifest's media type");
+              !picture.image().data().empty() && picture.image().uri().empty(),
+          "the image's bytes are held under the manifest's media type, with no URI");
   // The image spine item is a picture of the bytes its chapter event
   // carried; no resource event ever named it.
   const auto& plate = book.pictures(1);
   require(plate.parent().ref() == "#/groups/2" &&
-              plate.image().uri() == "data:image/svg+xml;base64,PHN2Zy8+" &&
+              plate.image().data() == "<svg/>" && plate.image().mimetype() == "image/svg+xml" &&
+              plate.image().uri().empty() &&
               plate.source_size() == 1 && plate.source(0).collector().collector() == "epub",
           "the image spine item becomes its chapter's picture, inlined from the chapter event");
   require(book.body().children_size() == 3,

@@ -113,8 +113,9 @@ struct ChartCandidate {
 
 // The pictures worth derendering: a classifier verdict (top predicted class)
 // of bar_chart, line_chart or pie_chart, or the CHART label, with no
-// tabular-chart annotation yet and inline pixels on the image reference
-// (data: URI, base64). Pure; the order is arena order.
+// tabular-chart annotation yet and pixels held on the image reference
+// (ImageRef.data, or a base64 data: URI from a producer that still spells
+// them so). Pure; the order is arena order.
 std::vector<ChartCandidate> chart_derender_candidates(
     const ai::pipestream::document::v1::Document& document);
 
@@ -196,8 +197,8 @@ struct ChartDerenderReport {
   uint32_t trailer_succeeded = 0;
   uint32_t trailer_skipped = 0;
   uint32_t items_failed = 0;
-  // Pictures a job selected whose inline pixels (a data: URI) did not
-  // decode, so they were never sent.
+  // Pictures a job selected whose held pixels did not decode, so they
+  // were never sent.
   int pictures_undecodable = 0;
   // In the order raised. What this leg decides carries its code: an
   // annotation it could not apply is WARNING_CODE_ENRICHMENT_NOT_APPLIED on

@@ -56,8 +56,9 @@ void verify_previews_attach_to_every_page() {
     const auto& page = document.pages().at(page_no);
     require(page.page_no() == page_no, "the entry names its page");
     require(page.has_image() && page.image().mimetype() == "image/png" &&
-                page.image().uri().starts_with("data:image/png;base64,"),
-            "the preview is an embedded PNG");
+                page.image().data().starts_with("\x89PNG\r\n\x1a\n") &&
+                page.image().uri().empty(),
+            "the preview is a PNG held as bytes, with no URI");
     const int longest = std::max(page.image().size().width(), page.image().size().height());
     require(longest > 0 && longest <= grparse::kPagePreviewMaxSide,
             "the preview is bounded like the CV path's: " + std::to_string(longest));

@@ -43,8 +43,8 @@ struct OfficeCvReport {
 };
 
 // Runs layout detection, figure classification, and barcode decoding over a
-// mapped office document's page images (the PNG data URIs the LibreOffice
-// collector stores on each PageItem) and adds the detected figures as
+// mapped office document's page images (the renders the LibreOffice
+// collector stores on each PageItem, as bytes in ImageRef.data) and adds the detected figures as
 // source-tagged PictureItem entries, boxes converted from render pixels into
 // the document's page coordinate space (twips).  Native office text and
 // tables are exact already, so this adds only what the office core cannot

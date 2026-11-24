@@ -11,7 +11,6 @@
 #include <string>
 #include <vector>
 
-#include "grparse/base64.h"
 #include "grparse/epub_book.h"
 #include "support/check.h"
 
@@ -196,8 +195,9 @@ void verify_images_are_placed_and_inlined() {
   const auto& cover = book.pictures(0);
   require(cover.parent().ref() == "#/body" && cover.self_ref() == "#/pictures/0",
           "the unplaced cover stays at the body as picture 0");
-  require(cover.image().uri() == "data:image/png;base64," + grparse::encode_base64("PNGBYTES", 8),
-          "the cover's bytes are inlined under its manifest media type");
+  require(cover.image().data() == "PNGBYTES" && cover.image().mimetype() == "image/png" &&
+              cover.image().uri().empty(),
+          "the cover's bytes are held under its manifest media type, with no URI");
 
   // The chapter's picture carries the bytes and the manifest facts.
   const auto& chapter = *group_named(book, "OPS/ch01.xhtml");
@@ -205,8 +205,9 @@ void verify_images_are_placed_and_inlined() {
           "the chapter's picture is its third child, renumbered after the cover");
   const auto& placed = book.pictures(1);
   require(placed.parent().ref() == "#/groups/0", "the placed picture's parent is the chapter");
-  require(placed.image().uri() == "data:image/jpeg;base64," + grparse::encode_base64("JPEGBYTES", 9),
-          "the placed picture's bytes are inlined");
+  require(placed.image().data() == "JPEGBYTES" && placed.image().mimetype() == "image/jpeg" &&
+              placed.image().uri().empty(),
+          "the placed picture holds its bytes, with no URI");
   const auto& fields = placed.meta().custom_fields();
   require(placed.image().source_ref() == "images/a.jpg",
           "the author's relative src is the image's source_ref, got '" +
@@ -256,14 +257,15 @@ void verify_degradations_are_reported() {
   bool remote_untouched = false;
   for (const auto& picture : book.pictures()) {
     if (picture.image().uri() == "https://example.org/x.png") remote_untouched = true;
-    require(!picture.image().uri().starts_with("data:") ||
-                picture.image().uri().find("huge") == std::string::npos,
-            "an oversized image is never inlined");
+    require(!picture.image().uri().starts_with("data:"),
+            "no picture spells its bytes as a data URI");
   }
   require(remote_untouched, "a remote image keeps its URL");
-  require(book.pictures(0).image().uri() == "epub:OPS/images/huge.jpg",
-          "the oversized image keeps its reference");
-  require(book.pictures(1).image().uri() == "epub:OPS/images/missing.jpg",
+  require(book.pictures(0).image().uri() == "epub:OPS/images/huge.jpg" &&
+              !book.pictures(0).image().has_data(),
+          "the oversized image keeps its reference and holds no bytes");
+  require(book.pictures(1).image().uri() == "epub:OPS/images/missing.jpg" &&
+              !book.pictures(1).image().has_data(),
           "an image whose bytes never arrived keeps its reference");
 
   int stray = 0;
@@ -293,14 +295,16 @@ void verify_inlining_is_once_per_image_and_budgeted() {
   std::vector<grparse::Warning> warnings;
   grparse::fold_epub_book({}, resources, &book, &warnings);
 
-  require(book.pictures(0).image().uri().starts_with("data:image/png;base64,") &&
+  require(book.pictures(0).image().data() == "LOGO" && book.pictures(0).image().uri().empty() &&
               book.pictures(1).image().uri() == "epub:OPS/logo.png" &&
-              book.pictures(2).image().uri() == "epub:OPS/logo.png",
-          "a repeated image is inlined on its first picture only");
+              !book.pictures(1).image().has_data() &&
+              book.pictures(2).image().uri() == "epub:OPS/logo.png" &&
+              !book.pictures(2).image().has_data(),
+          "a repeated image is held on its first picture only");
   size_t inlined = 0;
   size_t kept = 0;
   for (int index = 3; index < book.pictures_size(); ++index) {
-    if (book.pictures(index).image().uri().starts_with("data:")) ++inlined;
+    if (book.pictures(index).image().data().size() == kImage) ++inlined;
     if (book.pictures(index).image().uri().starts_with("epub:")) ++kept;
   }
   require(inlined * kImage <= grparse::kEpubInlineTotalCap && inlined + kept == 5 && kept >= 1,

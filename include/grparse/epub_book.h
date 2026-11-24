@@ -49,7 +49,7 @@ struct ParsedChapter {
 std::string resolve_epub_href(const std::string& chapter_href,
                               const std::string& reference);
 
-// The largest image that is inlined as a data URI; a resource above this
+// The largest image whose bytes a picture holds; a resource above this
 // keeps its `epub:` reference and the fold says so in a warning, because a
 // Document that carries a 60 MB TIFF inline serves nobody.
 inline constexpr size_t kEpubInlineImageCap = 16 * 1024 * 1024;
@@ -68,8 +68,8 @@ inline constexpr size_t kEpubInlineTotalCap = 64 * 1024 * 1024;
 // - each chapter Document's content merges into the book, and the items
 //   its body held become the children of the chapter group named by its
 //   href, so reading order is the spine order the groups already encode;
-// - every remaining `epub:` reference whose bytes arrived becomes a
-//   `data:<media type>;base64,...` URI, with the manifest's media type
+// - every remaining `epub:` reference whose bytes arrived gives way to the
+//   bytes themselves, in ImageRef.data, with the manifest's media type
 //   winning over whatever the XHTML implied: once per image, on its first
 //   picture (later pictures of the same image keep the reference), and
 //   within kEpubInlineTotalCap for the whole book.

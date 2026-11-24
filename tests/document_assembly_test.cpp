@@ -317,8 +317,10 @@ void verify_captured_figure_bytes_become_image_refs() {
   require(image.mimetype() == "image/png", "image mimetype");
   require(image.size().width() == 300 && image.size().height() == 200,
           "image size comes from the PNG header");
-  require(image.uri() == "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAASwAAADI",
-          "image URI must be the base64 PNG data URI");
+  require(image.data() == std::string(page.regions[0].image_png.begin(),
+                                      page.regions[0].image_png.end()),
+          "the crop's PNG bytes are held in ImageRef.data");
+  require(image.uri().empty(), "bytes the document holds get no URI, got '" + image.uri() + "'");
   require(data.pictures(0).annotations_size() == 0, "no classes means no annotations");
 
   grparse::AssemblyCursor classified_cursor;
@@ -354,8 +356,9 @@ void verify_page_preview_becomes_page_image() {
   require(image.mimetype() == "image/png", "preview mimetype");
   require(image.size().width() == 300 && image.size().height() == 200,
           "preview pixel size comes from the PNG header");
-  require(image.uri().starts_with("data:image/png;base64,"),
-          "preview URI must be a base64 PNG data URI");
+  require(image.data() == std::string(page.preview_png.begin(), page.preview_png.end()),
+          "the preview's PNG bytes are held in ImageRef.data");
+  require(image.uri().empty(), "bytes the document holds get no URI, got '" + image.uri() + "'");
   require(data.page_meta().size().width() == 612 && data.page_meta().size().height() == 792,
           "the page size keeps the page's own coordinate space");
 

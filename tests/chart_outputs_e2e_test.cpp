@@ -19,7 +19,6 @@
 #include <grpcpp/grpcpp.h>
 
 #include "../src/source_parse.h"
-#include "grparse/base64.h"
 #include "grparse/chart_derender.h"
 #include "grparse/chart_extraction_policy.h"
 #include "support/check.h"
@@ -53,8 +52,7 @@ docv1::Document chart_document(const std::string& png) {
   top->set_class_name("bar_chart");
   top->set_confidence(0.95);
   picture->mutable_image()->set_mimetype("image/png");
-  picture->mutable_image()->set_uri("data:image/png;base64," +
-                                    grparse::encode_base64(png.data(), png.size()));
+  picture->mutable_image()->set_data(png);
   return document;
 }
 

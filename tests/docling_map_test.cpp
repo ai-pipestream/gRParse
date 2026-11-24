@@ -1011,6 +1011,8 @@ void verify_sheet_chart_pairs_with_its_embedded_object() {
           "the chart sits under its sheet group");
   require(picture.has_image() && picture.image().mimetype() == "image/png",
           "the replacement graphic rides on the chart");
+  require(picture.image().data() == "\x89PNG-bytes" && picture.image().uri().empty(),
+          "the replacement graphic is held as the bytes the service sent, not as a data URI");
   require(picture.has_chart() && picture.chart().sources_size() == 1 &&
               picture.chart().sources(0).end().row() == 3 &&
               picture.chart().sources(0).start().sheet() == "Sales" &&

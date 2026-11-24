@@ -50,8 +50,9 @@ inline constexpr uint32_t kManifestSchemaVersion = 1;
 // response, so a partial conversion reads as one there too.  It repeats
 // neither the document nor the exports, and it carries no timing.
 //
-// Page and picture images come from the data URIs the document already
-// carries; a document that embeds none contributes none.  A member's
+// Page and picture images are the bytes the document already holds
+// (ImageRef.data, or a base64 data URI from a producer that still spells
+// them so); a document that holds none contributes none.  A member's
 // extension is what its bytes' signature says, else what the document
 // declares for it, and ".bin" when neither names a type the bundle knows.
 // Every image the document carries that did not become a member of a known

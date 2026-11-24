@@ -87,8 +87,7 @@ std::string ObjectFold::add_object_picture(
     ref->set_mimetype(object.replacement_mime_type());
     ref->mutable_size()->set_width(static_cast<double>(object.width_twips()));
     ref->mutable_size()->set_height(static_cast<double>(object.height_twips()));
-    ref->set_uri(data_uri(object.replacement_mime_type(),
-                          object.replacement_image()));
+    ref->set_data(object.replacement_image());
   }
   arena_.add_prov(picture->mutable_prov(), object.page_index(), box.page_local,
                   box.l, box.t, box.r, box.b, 0, 0);

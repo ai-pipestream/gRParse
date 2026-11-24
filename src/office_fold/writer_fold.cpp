@@ -275,7 +275,7 @@ std::string WriterFold::place_embedded_image(
       ref->mutable_size()->set_width(static_cast<double>(image.width_twips()));
       ref->mutable_size()->set_height(
           static_cast<double>(image.height_twips()));
-      ref->set_uri(data_uri(image.mime_type(), image.data()));
+      ref->set_data(image.data());
     }
     return picture_ref;
   }
@@ -322,7 +322,7 @@ std::string WriterFold::place_embedded_image(
     ref->set_mimetype(image.mime_type());
     ref->mutable_size()->set_width(static_cast<double>(image.width_twips()));
     ref->mutable_size()->set_height(static_cast<double>(image.height_twips()));
-    ref->set_uri(data_uri(image.mime_type(), image.data()));
+    ref->set_data(image.data());
   }
   if (image.has_anchor()) {
     arena_.add_prov(picture->mutable_prov(), image.page_index(), page_local,
