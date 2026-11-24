@@ -428,6 +428,24 @@ void folds_from_the_configured_backends() {
   require_equal(document.body().children(2).ref(), std::string("#/field_regions/0"),
                 "page two's region after page two's text");
 
+  // The two halves apart, as the stream runs them: the answer first, with
+  // nothing folded, then the fold, to the same Document.
+  const grparse::PdfFormWidgetAnswer answer =
+      grparse::fetch_pdf_form_widgets_from_backend("%PDF-fake", soon());
+  require(answer.answered && answer.warnings.empty() && !answer.pages.empty(),
+          "the fetch alone answers with the widgets and folds nothing");
+  docv1::Document folded_later = cv_document();
+  grparse::fold_pdf_form_widgets(answer.pages, answer.engine, &folded_later);
+  require(same(folded_later, document), "fetch then fold is the one-step fold");
+
+  // A caller that is gone before a backend is asked gets an unread form,
+  // never an empty one that would pass for a document without widgets.
+  const grparse::PdfFormWidgetAnswer cancelled = grparse::fetch_pdf_form_widgets_from_backend(
+      "%PDF-fake", soon(), {}, grparse::CollectorCancelled([] { return true; }));
+  require(!cancelled.answered && cancelled.warnings.size() == 1 &&
+              cancelled.warnings[0].code == docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+          "a cancelled fetch is an unread form, typed");
+
   // Every target failing leaves the document alone and says why.
   ::setenv("GRPARSE_PDF_BACKEND", "127.0.0.1:1", 1);
   docv1::Document untouched = cv_document();

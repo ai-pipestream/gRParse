@@ -8,6 +8,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+#include "grparse/collector_cancel.h"
 #include "grparse/warning.h"
 
 namespace grparse {
@@ -112,8 +113,35 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // setting counts as configured: the fold then names the failure.
 bool pdf_form_widget_backend_configured();
 
+// What the configured backends answered for the form-field family, with
+// nothing folded yet: the half of the step that calls another service. A
+// caller that has the bytes before it has the finished body (the stream,
+// whose legs make their calls off the reactor and fold once the pages are
+// whole) asks here and folds later with fold_pdf_form_widgets.
+struct PdfFormWidgetAnswer {
+  // A backend that reads form fields answered: `pages` is the document's
+  // form as that backend sent it, empty when it said the document has none.
+  // False when no backend is configured, when none of them reads the family
+  // and when none could be asked; `warnings` then says which, and there is
+  // nothing to fold.
+  bool answered = false;
+  // The answering backend's engine name, the model the folded items name.
+  std::string engine;
+  std::vector<PdfPageWidgets> pages;
+  // The warnings fold_pdf_form_widgets_from_backend documents above.
+  std::vector<Warning> warnings;
+};
+
 // `precomputed_sha256`, when non-empty, is the hex SHA-256 of `bytes` a
 // caller already has (the CV leg's), used in place of hashing them again.
+// `cancelled` ends the backend call with the inbound call that asked for
+// it; the answer is then an unread form, for a caller that is gone.
+// Never throws.
+PdfFormWidgetAnswer fetch_pdf_form_widgets_from_backend(
+    const std::string& bytes, std::chrono::system_clock::time_point deadline,
+    const std::string& precomputed_sha256 = {}, CollectorCancelled cancelled = {});
+
+// The fetch above, then the fold when a backend answered.
 std::vector<Warning> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     ai::pipestream::document::v1::Document* document,

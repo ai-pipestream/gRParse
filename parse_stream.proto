@@ -148,9 +148,11 @@ message DocumentStreamEvent {
     // page events above keep streaming while collectors run.
     CollectorDocument collector_document = 5;
     // What the whole-document passes changed in the document the page
-    // events above carry, sent once after a collector's last page and
-    // before its collector_document (for the CV pipeline's pages, before
-    // the complete event). Absent when the passes changed nothing.
+    // events above carry, and what the steps that need the whole document
+    // added to it (a PDF's form fields), sent once after a collector's
+    // last page and before its collector_document (for the CV pipeline's
+    // pages, before the complete event). Absent when the passes changed
+    // nothing and the steps added nothing.
     DocumentRepairDelta repair = 6;
   }
 }
@@ -159,7 +161,9 @@ message DocumentStreamEvent {
 // up to the server's whole-document result: the repair pass (running
 // headers and footers demoted to furniture, paragraphs split across a page
 // break rejoined, empty groups removed, and the rest of RepairOptions),
-// plus, for the CV pipeline's pages, the list grouping the unary path does.
+// plus, for the CV pipeline's pages, the list grouping the unary path does,
+// plus the AcroForm widgets of a PDF, which ConvertSource folds into the
+// finished Document as field items and no page event carries.
 //
 // Folding page events: each item in PageData texts, tables, pictures and
 // groups lands at the arena index its self_ref names (#/texts/N at texts
@@ -176,8 +180,9 @@ message DocumentStreamEvent {
 // pass; rebuild each arena at its count, taking index N from the upserted
 // item whose self_ref names N, else from the folded item that now carries
 // that self_ref; then replace whichever children lists and page entries
-// the delta carries. The result equals the collector_document's Document
-// in those fields.
+// the delta carries, and set the field region and field item arenas to the
+// delta's. The result equals the collector_document's Document in those
+// fields.
 message DocumentRepairDelta {
   // The collector whose page events this completes; COLLECTOR_GRPARSE_CV
   // for the CV pipeline's pages (and an inspector-streamed prefix ahead of
@@ -205,6 +210,17 @@ message DocumentRepairDelta {
   // carry, and page numbers the collector's Document has no entry for.
   map<int32, ai.pipestream.document.v1.PageItem> pages = 13;
   repeated int32 dropped_pages = 14;
+  // The document's form subtree, whole: every field region (each a body
+  // child, so body_children is set beside it) and every field item, at the
+  // arena index its self_ref names. The texts a field item's children name
+  // (its key, its value) ride `texts` like any other text. Page events
+  // carry neither arena, so a client sets both to these lists as they are;
+  // both empty says the document has no form subtree. On a PDF they hold
+  // the AcroForm widgets a PDF backend read once the pages were whole,
+  // unless DocumentComplete.omitted_steps names STREAM_OMITTED_STEP_FORM_
+  // FIELDS.
+  repeated ai.pipestream.document.v1.FieldRegionItem field_regions = 15;
+  repeated ai.pipestream.document.v1.FieldItem field_items = 16;
 }
 
 message RefList {
@@ -359,23 +375,31 @@ message DocumentComplete {
   optional ai.pipestream.document.v1.DocumentMeta source_meta = 9;
   // The steps ConvertSource runs on this document under its default options
   // that this stream did not run, in enum order. What they add is absent
-  // from the page events for that reason alone; the document itself may or
-  // may not have had any of it. Empty when the stream left no step out.
+  // from the stream's events for that reason alone; the document itself may
+  // or may not have had any of it. Empty when the stream left no step out.
+  // A step the stream ran and that failed is not named here: its typed
+  // warning says so (WARNING_CODE_FORM_FIELDS_UNREADABLE for the widgets).
   repeated StreamOmittedStep omitted_steps = 10;
 }
 
-// A step ConvertSource runs on the finished Document and
-// StreamProcessDocument does not run at all: each needs the whole document
-// and a call to another service, after the pages are already on the wire.
+// A step ConvertSource runs on the finished Document that this stream did
+// not run: each needs the whole document and a call to another service.
 // DocumentComplete.omitted_steps names each one this deployment is
-// configured for, so a reader of the stream knows a difference from the
-// unary result is the surface's and not the document's.
+// configured for and this stream left out, so a reader of the stream knows
+// a difference from the unary result is the surface's and not the
+// document's.
 enum StreamOmittedStep {
   STREAM_OMITTED_STEP_UNSPECIFIED = 0;
   // The AcroForm widgets of a PDF. ConvertSource asks the PDF backend
   // (GRPARSE_PDF_BACKEND) for them and folds them in as field items unless
-  // extract_form_fields is false; the stream's events carry no field item,
-  // whether or not the PDF has a form.
+  // extract_form_fields is false. The stream asks the same backend and
+  // delivers the same field items: on the repair event
+  // (DocumentRepairDelta.field_regions and field_items), and in the PDF
+  // collector's own collector_document when one stands for the pages. The
+  // step is named here only when the stream had no event to deliver it on:
+  // the client turned the repair event off (DocumentChunk.repair_delta
+  // false) and no whole collector Document stands for the pages, or
+  // neither the PDF collector's Document nor the CV pipeline produced them.
   STREAM_OMITTED_STEP_FORM_FIELDS = 1;
   // The enrichment leg (GRPARSE_ENRICH_TARGET): the tables of raster
   // charts, and the picture, code and formula annotations a ConvertSource
