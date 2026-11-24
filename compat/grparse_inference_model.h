@@ -4,7 +4,9 @@
 // with an ONNX Runtime session (exactly the session make_session and
 // make_rapidocr_session build); the cuda flavor backs it with native TensorRT
 // (src/tensorrt/): one engine per model, built at startup with explicit
-// optimization profiles, and no ONNX Runtime session anywhere.
+// optimization profiles, and no ONNX Runtime session anywhere; the openvino
+// flavor backs it with native OpenVINO: one compiled model per static input
+// shape, an infer-request pool per shape, and no CPU device anywhere.
 
 #include <cstddef>
 #include <cstdint>
@@ -49,7 +51,9 @@ struct Tensor {
 };
 
 // Thrown when the device fails an inference (a lost CUDA context, a failed
-// enqueue): the request fails with UNAVAILABLE naming the device.
+// enqueue, an OpenVINO GPU reset): the request fails with UNAVAILABLE naming
+// the device.  A native OpenVINO model also drops every compiled shape, so
+// the next call rebuilds them.
 class InferenceDeviceError : public std::runtime_error {
  public:
   using std::runtime_error::runtime_error;
@@ -83,6 +87,11 @@ struct ModelShapePolicy {
   // are all static needs none; a shape no profile covers fails the call.
   // Ignored by ONNX Runtime.
   std::vector<ShapeProfile> profiles;
+  // Native OpenVINO: false keeps the model's own (dynamic) input shapes, one
+  // compiled model for every call, never reshaped.  For a model with one
+  // input shape that the GPU plugin only computes correctly as exported
+  // (heron at FP32).
+  bool static_shapes = true;
 };
 
 struct ModelSpec {
@@ -103,7 +112,9 @@ class InferenceModel {
   // Inputs in the model's input order; outputs in its output order.
   virtual std::vector<Tensor> run(std::span<const TensorView> inputs) = 0;
   // Runs once every listed input set, so no first-use setup happens under
-  // load.  A no-op for ONNX Runtime.
+  // load.  Native OpenVINO compiles (or loads from the kernel cache) each
+  // set here; a shape compiled later is counted
+  // (openvino_runtime_compile_count).  A no-op for ONNX Runtime.
   virtual void prewarm(std::span<const std::vector<TensorSpec>> input_sets) = 0;
   virtual const std::vector<std::string>& input_names() const = 0;
   virtual const std::vector<std::string>& output_names() const = 0;
@@ -114,10 +125,11 @@ class InferenceModel {
 
 // Builds the model on the process selection (set_ort_ep_selection): native
 // TensorRT when the selection is CUDA in a build that carries TensorRT
-// (native_tensorrt_build), an ONNX Runtime session (make_session's policy)
-// otherwise.  Native TensorRT never falls back: a model that will not build
-// as an engine throws ep_refusal's error with the builder's message, and no
-// ONNX Runtime session is built in its place.
+// (native_tensorrt_build), native OpenVINO when the selection is OpenVINO in
+// a build that carries it, an ONNX Runtime session (make_session's policy)
+// otherwise.  Neither native backend falls back: a model that will not build
+// throws ep_refusal's error with the builder's message, and no ONNX Runtime
+// session and no CPU device runs in its place.
 std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec);
 
 // Whether CUDA device `cuda_device` exists and initializes, in a build that
@@ -135,17 +147,21 @@ enum class OcrNet { kDetection, kDirection, kRecognition };
 std::string_view ocr_net_name(OcrNet net);
 
 // How a net's shapes are fixed under the process selection: on native
-// TensorRT the optimization profiles of src/tensorrt/ocr_profiles.cpp; ONNX
-// Runtime leaves shapes as they come.
+// TensorRT the optimization profiles of src/tensorrt/ocr_profiles.cpp; under
+// native OpenVINO the direction and recognition nets run fixed batches (see
+// ocr_batch_size); ONNX Runtime leaves shapes as they come.
 ModelShapePolicy ocr_net_shapes(OcrNet net);
 
-// Every input set a net is warmed with at startup; empty when the backend
-// has nothing to warm (ONNX Runtime).
+// Every input set a net is warmed with at startup: under native OpenVINO
+// every shape the buckets allow (detector ladder squared, recognizer width
+// ladder at the fixed batch, the direction net's one shape).  Empty when the
+// backend has nothing to warm (ONNX Runtime).
 std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net);
 
 // The ONNX Runtime-backed model the RapidOCR nets used before (built through
-// make_rapidocr_session's retry policy), or native TensorRT under a CUDA
-// selection in a TensorRT build.
+// make_rapidocr_session's retry policy), native TensorRT under a CUDA
+// selection in a TensorRT build, or native OpenVINO under an OpenVINO
+// selection in a build that carries it.
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread);
 
@@ -163,5 +179,29 @@ int ocr_rec_max_width();
 // initialize, so the detector's TensorRT profiles cover every input the
 // configuration can produce.
 void set_ocr_detector_side_limit(int max_side_len, int padding);
+
+// The native OpenVINO half of ocr_net_shapes and ocr_prewarm_sets
+// (src/ocr_shape_buckets.cpp): empty unless the selection is OpenVINO in a
+// native OpenVINO build.
+ModelShapePolicy openvino_ocr_net_shapes(OcrNet net);
+std::vector<std::vector<TensorSpec>> openvino_ocr_prewarm_sets(OcrNet net);
+
+// GRPARSE_OPENVINO_ISOLATION=process (default) runs native OpenVINO in a
+// supervised child process (src/inference_host.cpp) so a device loss or a
+// crash inside the GPU stack fails calls with UNAVAILABLE instead of taking
+// the server down; =none runs it in the server process.
+bool openvino_process_isolation();
+
+// Runs the inference host when argv is `--grparse-inference-host <fd>`
+// (main() calls it first) and never returns in that case; false otherwise.
+bool maybe_run_inference_host(int argc, char** argv);
+
+// Inference host restarts since start (grparse_openvino_host_restarts_total).
+uint64_t openvino_host_restart_count();
+
+// Device failures counted since start (grparse_openvino_device_errors_total)
+// and shapes compiled after startup prewarm (grparse_openvino_runtime_compiles_total).
+uint64_t openvino_device_error_count();
+uint64_t openvino_runtime_compile_count();
 
 }  // namespace grparse

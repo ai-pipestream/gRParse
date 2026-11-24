@@ -85,6 +85,9 @@ bool native_tensorrt_build();
 // provider and to native TensorRT alike.  Any other value throws
 // std::invalid_argument.
 bool cuda_tf32_enabled();
+// True when this build runs the openvino flavor's models on native OpenVINO
+// (src/inference_model.cpp) instead of ONNX Runtime's OpenVINO provider.
+bool native_openvino_build();
 
 // Fixed input shapes for the OCR nets (patches/rapidocr-shape-buckets.patch,
 // src/ocr_shape_buckets.cpp).  The OpenVINO GPU plugin compiles the network
@@ -97,13 +100,15 @@ bool cuda_tf32_enabled();
 // off.
 bool ocr_shape_buckets();
 // The smallest detector bucket (a multiple of GRPARSE_OCR_DET_STEP, default
-// 64) at least `side` pixels.
+// 64; on native OpenVINO the 320..1600 side ladder) at least `side` pixels.
 int ocr_det_bucket(int side);
-// The detector's longest side: `configured` on every backend of this build.
+// The detector's longest side: `configured`, capped at 1600 on native
+// OpenVINO.
 int ocr_det_max_side(int configured);
 // The detector input shape (width, height) a `width` x `height` resize is
-// padded to: unchanged without buckets, each side bucketed on its own
-// otherwise.
+// padded to: unchanged without buckets, each side bucketed on its own for
+// ONNX Runtime's OpenVINO provider, one of twelve letterbox buckets on native
+// OpenVINO (GRPARSE_OCR_DET_LADDER=letterbox, or =grid for 7 x 7).
 std::pair<int, int> ocr_det_bucket_shape(int width, int height);
 // The smallest recognizer width bucket at least `width` pixels.
 int ocr_rec_bucket(int width);
@@ -165,8 +170,9 @@ struct OrtPlacement {
 };
 
 // Records one model built on the selection's native backend (TensorRT under
-// a CUDA selection, src/inference_model.cpp) in the same placements as the
-// ONNX Runtime sessions, so grparse_ort_sessions shows every model.
+// a CUDA selection, native OpenVINO under an OpenVINO selection,
+// src/inference_model.cpp) in the same placements as the ONNX Runtime
+// sessions, so grparse_ort_sessions shows every model.
 void record_native_placement(std::string_view what);
 
 // Every placement recorded so far, one entry per (model, requested, actual,

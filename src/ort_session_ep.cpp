@@ -233,6 +233,14 @@ OvCompileGate::OvCompileGate() {
 
 OvCompileGate::~OvCompileGate() = default;
 
+bool native_openvino_build() {
+#ifdef GRPARSE_NATIVE_OPENVINO
+  return true;
+#else
+  return false;
+#endif
+}
+
 size_t ocr_batch_size() {
   static const size_t configured = [] {
     const char* value = std::getenv("GRPARSE_OCR_BATCH");
@@ -245,7 +253,10 @@ size_t ocr_batch_size() {
     return static_cast<size_t>(parsed);
   }();
   if (configured != 0) return configured;
-  return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
+  const OrtEp ep = ort_ep_selection().ep;
+  if (ep == OrtEp::kCuda) return 16;
+  // Native OpenVINO runs fixed batches of 8 (ocr_net_shapes).
+  return ep == OrtEp::kOpenVino && native_openvino_build() ? 8 : 1;
 }
 
 void set_ort_intra_op_threads(int threads) { intra_op_threads.store(threads > 0 ? threads : 0); }
@@ -254,10 +265,12 @@ int ort_intra_op_threads() { return intra_op_threads.load(); }
 
 void append_execution_provider(Ort::SessionOptions& options, int legacy_gpu_index) {
   // Only the patched RapidOCR nets' setGpuIndex calls this overload, on
-  // session options they no longer build from: under native TensorRT the
-  // nets run through src/inference_model.cpp, so the hook counts and appends
-  // nothing, and ONNX Runtime's CUDA provider is never loaded.
-  if (native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda) {
+  // session options they no longer build from: under native TensorRT and
+  // under native OpenVINO the nets run through src/inference_model.cpp, so
+  // the hook counts and appends nothing, and ONNX Runtime's provider for
+  // that device is never loaded.
+  if ((native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda) ||
+      (native_openvino_build() && ort_ep_selection().ep == OrtEp::kOpenVino)) {
     hook_invocations.fetch_add(1);
     return;
   }

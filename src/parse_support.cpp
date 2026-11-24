@@ -397,8 +397,9 @@ grpc::Status status_from_exception(std::exception_ptr failure) {
   } catch (const SchedulerShuttingDown& error) {
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, error.what());
   } catch (const InferenceDeviceError& error) {
-    // The accelerator failed an inference (a lost CUDA context): retryable
-    // once the service is back on its device.
+    // The accelerator failed an inference (a lost CUDA context, an OpenVINO
+    // GPU reset): retryable once the service is back on its device; native
+    // OpenVINO models rebuild on the next call.
     return grpc::Status(grpc::StatusCode::UNAVAILABLE, error.what());
   } catch (const std::bad_alloc& error) {
     return grpc::Status(grpc::StatusCode::RESOURCE_EXHAUSTED, error.what());

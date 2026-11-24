@@ -48,7 +48,14 @@ OcrDetectOptions detect_options_from_env() {
   const OcrDetectOptions defaults;
   OcrDetectOptions options;
   options.padding = env_int("GRPARSE_OCR_PADDING", defaults.padding, 0, 4096);
-  options.max_side_len = env_int("GRPARSE_OCR_MAX_SIDE", defaults.max_side_len, 32, 16384);
+  // Native OpenVINO caps the detector input at its bucket ladder's top
+  // (1600).  RapidOCR resizes the page to max_side_len plus the padding on
+  // both sides, so a capped side leaves room for it.
+  const int configured_side = env_int("GRPARSE_OCR_MAX_SIDE", defaults.max_side_len, 32, 16384);
+  const int capped_side = ocr_det_max_side(configured_side);
+  options.max_side_len = capped_side == configured_side
+                             ? configured_side
+                             : std::max(32, capped_side - 2 * options.padding);
   options.box_score_thresh = env_float("GRPARSE_OCR_BOX_SCORE", defaults.box_score_thresh, 0.0F, 1.0F);
   options.rescue_box_score =
       env_float("GRPARSE_OCR_RESCUE_BOX_SCORE", defaults.rescue_box_score, 0.0F, 1.0F);
@@ -101,8 +108,9 @@ OcrEngine::OcrEngine(const std::filesystem::path& model_directory, int gpu_index
     // false here means the model wiring itself failed.
     throw std::runtime_error("RapidOCR failed to initialize its models");
   }
-  // A backend that sets up per shape does it now: boot fails here, naming
-  // the net, rather than on a page.
+  // A backend that sets up per shape does it now (native OpenVINO compiles
+  // every bucketed shape): boot fails here, naming the net, rather than on a
+  // page.
   engine_->prewarm();
 }
 

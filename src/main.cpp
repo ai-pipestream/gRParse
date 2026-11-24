@@ -21,6 +21,7 @@
 #include <grpcpp/grpcpp.h>
 #include <grpcpp/health_check_service_interface.h>
 
+#include "grparse_inference_model.h"
 #include "grparse/document_parser_service.h"
 #include "grparse/office_cv_enrichment.h"
 #include "grparse/page_scheduler.h"
@@ -281,10 +282,12 @@ void serve_until_signal(grpc::Server& server, const int* signal_pipe, MetricsLog
 
 }  // namespace
 
-int main() {
+int main(int argc, char** argv) {
   // Container stdout is a pipe (fully buffered); line-buffer it explicitly so
   // the old endl-flushing behaviour survives println, which does not flush.
   std::setvbuf(stdout, nullptr, _IOLBF, 0);
+  // The openvino flavor's supervised inference host is this binary too.
+  if (grparse::maybe_run_inference_host(argc, argv)) return 0;
   const grparse::ProcessConfig process = grparse::read_process_config();
   try {
     int signal_pipe[2];

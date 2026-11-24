@@ -94,8 +94,9 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-ocr-copies.patch"
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-shape-buckets.patch"
         # The nets run through grparse::InferenceModel: an ONNX Runtime
-        # session on the cpu flavor, native TensorRT on the cuda flavor; a
-        # startup prewarm for backends that need one.
+        # session on the cpu flavor, native TensorRT on the cuda flavor,
+        # native OpenVINO (IR, static shapes) on the openvino flavor; bucketed
+        # batches and a startup prewarm for backends that need one.
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-model-backend.patch"
         # A line narrower or wider than the recognizer's shape range is
         # padded or resized into it (grparse::ocr_rec_min_width and
@@ -124,7 +125,7 @@ unset(GRPARSE_NET_SOURCE)
 # first provider failure.  Fail the configure instead, same remedy.
 file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
 # make_rapidocr_model (patches/rapidocr-model-backend.patch) builds through
-# that retrying builder on ONNX Runtime and natively on TensorRT.
+# that retrying builder on ONNX Runtime and natively on TensorRT and OpenVINO.
 string(FIND "${GRPARSE_DBNET_SOURCE}" "grparse::make_rapidocr_model" GRPARSE_DBNET_BUILDER_AT)
 if(GRPARSE_DBNET_BUILDER_AT EQUAL -1)
   message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
@@ -414,7 +415,7 @@ target_link_options(grparse_curl INTERFACE "LINKER:--exclude-libs,ALL")
 # engine cache's naming, the OCR profiles) and build in every flavor, and
 # cmake/TensorRt.cmake adds the ones that do under GRPARSE_NATIVE_TENSORRT.
 add_library(grparse_ort_ep STATIC src/ort_session_ep.cpp src/ocr_shape_buckets.cpp
-  src/inference_model.cpp
+  src/inference_model.cpp src/inference_host.cpp
   src/tensorrt/engine_cache.cpp
   src/tensorrt/ocr_profiles.cpp
   src/tensorrt/onnx_dim_names.cpp
