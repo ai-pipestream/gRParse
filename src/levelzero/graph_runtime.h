@@ -112,6 +112,7 @@ class GraphModel {
   std::vector<HostTensor> execute(const Plan& plan, const void* input, std::span<const int> valid_widths = {});
   void build_fp16_weights();
   void build_plane_weights();
+  void build_pointwise_weights();
 
   Device& device_;
   IrGraph ir_;
@@ -127,6 +128,8 @@ class GraphModel {
   std::vector<size_t> xmx_offsets_;  // per node, halves into xmx_, or SIZE_MAX
   uint16_t* planes_ = nullptr;     // FP16: weights laid out for conv_planes_xmx
   std::vector<size_t> planes_offsets_;  // per node, halves into planes_, or SIZE_MAX
+  float* pointwise_ = nullptr;     // FP32: pointwise weights laid out for conv_pointwise
+  std::vector<size_t> pointwise_offsets_;  // per node, floats into pointwise_, or SIZE_MAX
   char* arena_ = nullptr;
   size_t arena_elements_ = 0;
   char* io_in_ = nullptr;          // float staging for the input and the outputs, host memory

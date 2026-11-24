@@ -80,6 +80,10 @@ uint16_t half_bits(float value) {
 // after the bytes, on a 4-byte boundary.
 size_t image_widths_at(const Shape& shape) { return (numel(shape) + 3) / 4 * 4; }
 
+// The outputs a conv_pointwise sub-group sums at once: the narrowest of
+// its three tiles that holds them all, 64 for a wider layer.
+size_t pointwise_tile(int outputs) { return outputs <= 16 ? 16 : outputs <= 32 ? 32 : 64; }
+
 uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + group - 1) / group); }
 
 }  // namespace
@@ -90,7 +94,7 @@ struct GraphModel::Kernels {
       pack_patches, pack_tokens;
   // kernels_detector.cl
   ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1, conv_planes_xmx,
-      shift_copy, conv_few_terms, image_to_real;
+      shift_copy, conv_few_terms, image_to_real, conv_pointwise_16, conv_pointwise_32, conv_pointwise_64;
   // kernels_mobile.cl
   ze_kernel_handle_t channel_scale, binary_same;
   ze_kernel_handle_t reduce_rows;
@@ -130,12 +134,14 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
       k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
       fp16_ ? k("conv_planes_xmx", 64, 1) : nullptr, fp16_ ? k("shift_copy", 256, 1) : nullptr,
-      k("conv_few_terms", 16, 4), k("image_to_real", 256, 1),
+      k("conv_few_terms", 16, 4), k("image_to_real", 256, 1), fp16_ ? nullptr : k("conv_pointwise_16", 16, 1), fp16_ ? nullptr : k("conv_pointwise_32", 16, 1),
+      fp16_ ? nullptr : k("conv_pointwise_64", 16, 1),
       k("channel_scale", 16, 16), k("binary_same", 256, 1), k("reduce_rows", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   if (fp16_) build_fp16_weights();
   if (fp16_) build_plane_weights();
+  if (!fp16_) build_pointwise_weights();
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
   queue_desc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
   ze_check(zeCommandQueueCreate(device_.context(), device_.device(), &queue_desc, &queue_), "command queue");
@@ -201,6 +207,31 @@ void GraphModel::build_plane_weights() {
   }
   planes_ = static_cast<uint16_t*>(device_.allocate(std::max<size_t>(packed.size(), 32) * sizeof(uint16_t)));
   device_.upload(planes_, packed.data(), packed.size() * sizeof(uint16_t));
+}
+
+// Every pointwise convolution's weights as its conv_pointwise kernel reads
+// them: [ci][co padded to the node's tile], zero filled, so the weights one
+// input channel contributes to a tile of outputs are one run.
+void GraphModel::build_pointwise_weights() {
+  std::vector<float> packed;
+  pointwise_offsets_.assign(ir_.nodes.size(), SIZE_MAX);
+  for (size_t index = 0; index < ir_.nodes.size(); ++index) {
+    const IrNode& node = ir_.nodes[index];
+    if (node.op != IrOp::kConv || node.groups != 1 || node.kernel_h != 1 || node.kernel_w != 1 ||
+        node.stride_h != 1 || node.stride_w != 1 || node.pad_h != 0 || node.pad_w != 0) {
+      continue;
+    }
+    const size_t ci = size_t(node.k), co = size_t(node.out_channels), tile = pointwise_tile(node.out_channels);
+    const size_t cop = (co + tile - 1) / tile * tile;
+    pointwise_offsets_[index] = packed.size();
+    packed.resize(packed.size() + ci * cop, 0.0F);
+    float* wt = packed.data() + pointwise_offsets_[index];
+    for (size_t o = 0; o < co; ++o) {
+      for (size_t i = 0; i < ci; ++i) wt[i * cop + o] = ir_.weights[node.weights + o * ci + i];
+    }
+  }
+  pointwise_ = static_cast<float*>(device_.allocate(std::max<size_t>(packed.size(), 64) * sizeof(float)));
+  device_.upload(pointwise_, packed.data(), packed.size() * sizeof(float));
 }
 
 GraphModel::~GraphModel() {
@@ -625,6 +656,8 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
             const bool pointwise = node.op == IrOp::kConv && c.kh == 1 && c.kw == 1 && c.sh == 1 && c.sw == 1 &&
                                    c.ph == 0 && c.pw == 0 && c.groups == 1;
             const bool depthwise = node.op == IrOp::kConv && c.groups == c.ci && c.groups == c.co;
+            // In float a pointwise convolution reads its input planes and its transposed weights in place.
+            const size_t direct = !fp16_ && pointwise && !a.in_weights ? pointwise_offsets_[index] : SIZE_MAX;
             const int max_pool = node.op == IrOp::kMaxPool, include_pad = node.count_include_pad;
             // A size-keeping dense convolution over whole runs reads its input planes in place.
             const size_t planes = fp16_ && node.op == IrOp::kConv && !a.in_weights && c.oh == c.ih && c.ow == c.iw &&
@@ -698,6 +731,15 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
                                 (c.co - 1) * positions, positions, c.act, c.alpha, c.beta};
                 args(kernels_->gemm_xmx, {P(a), P(packed), P(dst), P(bp), P(x)});
                 launch(kernels_->gemm_xmx, {uint32_t(pack.colsp / 64), groups_for(size_t(c.co), 64), 1});
+              } else if (direct != SIZE_MAX) {
+                const float* wt = pointwise_ + direct;
+                const int tile = int(pointwise_tile(c.co)), cop = (c.co + tile - 1) / tile * tile;
+                const ze_kernel_handle_t kernel = tile == 16   ? kernels_->conv_pointwise_16
+                                                  : tile == 32 ? kernels_->conv_pointwise_32
+                                                               : kernels_->conv_pointwise_64;
+                args(kernel, {P(src), P(dst), P(wt), P(bp), P(c), P(cop)});
+                launch(kernel, {groups_for(size_t(c.ih) * size_t(c.iw), 16), groups_for(size_t(c.co), uint32_t(tile)),
+                                uint32_t(c.n)});
               } else if (pointwise) {
                 const int hw = c.ih * c.iw;
                 GemmArgs g{c.co, hw, c.ci, 0, c.ci, 1, c.ci * hw, hw, 1, c.co * hw, hw, 1, 1, c.act, c.alpha, c.beta};
