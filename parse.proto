@@ -299,12 +299,15 @@ message StreamChunksSummary {
   // collector failed.
   repeated Document documents = 2;
   double processing_time = 3;
-  map<string, ScalarValue> chunking_info = 4;
+  // As ChunkDocumentResponse.chunking_info; read `chunker_settings`.
+  map<string, ScalarValue> chunking_info = 4 [deprecated = true];
   // As ChunkDocumentResponse.chunk_omissions, for the chunk messages that
   // preceded this summary.
   optional RenderOmissions chunk_omissions = 5;
   // As ChunkDocumentResponse.option_notices.
   repeated OptionNotice option_notices = 6;
+  // As ChunkDocumentResponse.chunker_settings.
+  optional ChunkerSettings chunker_settings = 7;
 }
 
 message ChunkHierarchicalSourceAsyncRequest {

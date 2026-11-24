@@ -2357,15 +2357,24 @@ enum ChunkTextSource {
   CHUNK_TEXT_SOURCE_MIXED = 3;
 }
 
+// The chunker a chunk response was produced by and the options it ran
+// with, every default the request left unset filled in.
+message ChunkerSettings {
+  oneof chunker {
+    HierarchicalChunkerOptions hierarchical = 1;
+    HybridChunkerOptions hybrid = 2;
+  }
+}
+
 // ChunkDocumentResponse mirrors the REST chunk response body.
-// chunking_info is the jobkit ChunkedDocumentResult dump of the active
-// chunker options (Optional[dict] on the Python side). REST omits it;
-// ScalarValue leaves match docling-serve.
 message ChunkDocumentResponse {
   repeated Chunk chunks = 1;
   repeated Document documents = 2;
   double processing_time = 3;
-  map<string, ScalarValue> chunking_info = 4;
+  // The jobkit ChunkedDocumentResult dump of the active chunker options
+  // (Optional[dict] on the Python side), kept for callers that mirror
+  // docling-serve. `chunker_settings` states the same typed; read that.
+  map<string, ScalarValue> chunking_info = 4 [deprecated = true];
   // What `chunks` left out of the document (see
   // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
   // everything the chunker serializes.
@@ -2373,6 +2382,8 @@ message ChunkDocumentResponse {
   // The convert_options this request set that were accepted and not applied
   // as named (see ConvertDocumentResponse.option_notices).
   repeated OptionNotice option_notices = 6;
+  // The chunker that produced `chunks` and the options it ran with.
+  optional ChunkerSettings chunker_settings = 7;
 }
 
 // TaskStatusPollRequest mirrors GET /v1/status/poll/{taskId}

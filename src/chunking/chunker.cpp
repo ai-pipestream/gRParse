@@ -1273,40 +1273,59 @@ void put_int(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
 
 }  // namespace
 
-void fill_chunking_info(
-    const parsev1::HierarchicalChunkerOptions& options,
-    google::protobuf::Map<std::string, parsev1::ScalarValue>* out) {
+void fill_chunker_settings(const parsev1::HierarchicalChunkerOptions& options,
+                           parsev1::ChunkerSettings* out) {
   if (out == nullptr) return;
-  put_string(out, "chunker", "hierarchical");
-  put_bool(out, "use_markdown_tables", options.use_markdown_tables());
-  put_bool(out, "include_raw_text", options.include_raw_text());
-  // Match jobkit model_dump defaults when the optional wire fields are unset.
-  put_bool(out, "use_markdown_images",
-           options.has_use_markdown_images() ? options.use_markdown_images() : false);
-  put_string(out, "image_placeholder",
-             options.has_image_placeholder() ? options.image_placeholder() : "![IMAGE]");
+  parsev1::HierarchicalChunkerOptions* ran_with = out->mutable_hierarchical();
+  *ran_with = options;
+  // The jobkit model_dump defaults for what the request left unset.
+  if (!ran_with->has_use_markdown_images()) ran_with->set_use_markdown_images(false);
+  if (!ran_with->has_image_placeholder()) ran_with->set_image_placeholder("![IMAGE]");
 }
 
-void fill_chunking_info(const parsev1::HybridChunkerOptions& options,
+void fill_chunker_settings(const parsev1::HybridChunkerOptions& options,
+                           parsev1::ChunkerSettings* out) {
+  if (out == nullptr) return;
+  parsev1::HybridChunkerOptions* ran_with = out->mutable_hybrid();
+  *ran_with = options;
+  if (!ran_with->has_use_markdown_images()) ran_with->set_use_markdown_images(false);
+  if (!ran_with->has_image_placeholder()) ran_with->set_image_placeholder("![IMAGE]");
+  // jobkit's default tokenizer is a model name; gRParse counts with
+  // wordish/1 unless told otherwise.
+  if (!ran_with->has_tokenizer()) ran_with->set_tokenizer("wordish/1");
+  if (!ran_with->has_merge_peers()) ran_with->set_merge_peers(true);
+}
+
+void fill_chunking_info(const parsev1::ChunkerSettings& settings,
                         google::protobuf::Map<std::string, parsev1::ScalarValue>* out) {
   if (out == nullptr) return;
-  put_string(out, "chunker", "hybrid");
-  put_bool(out, "use_markdown_tables", options.use_markdown_tables());
-  put_bool(out, "include_raw_text", options.include_raw_text());
-  put_bool(out, "use_markdown_images",
-           options.has_use_markdown_images() ? options.use_markdown_images() : false);
-  put_string(out, "image_placeholder",
-             options.has_image_placeholder() ? options.image_placeholder() : "![IMAGE]");
-  if (options.has_max_tokens()) {
-    put_int(out, "max_tokens", options.max_tokens());
-  }
-  // jobkit default tokenizer when unset; gRParse defaults the counter to wordish/1.
-  put_string(out, "tokenizer",
-             options.has_tokenizer() ? options.tokenizer() : "wordish/1");
-  put_bool(out, "merge_peers",
-           options.has_merge_peers() ? options.merge_peers() : true);
-  if (options.has_tokenizer_path()) {
-    put_string(out, "tokenizer_path", options.tokenizer_path());
+  switch (settings.chunker_case()) {
+    case parsev1::ChunkerSettings::kHierarchical: {
+      const parsev1::HierarchicalChunkerOptions& options = settings.hierarchical();
+      put_string(out, "chunker", "hierarchical");
+      put_bool(out, "use_markdown_tables", options.use_markdown_tables());
+      put_bool(out, "include_raw_text", options.include_raw_text());
+      put_bool(out, "use_markdown_images", options.use_markdown_images());
+      put_string(out, "image_placeholder", options.image_placeholder());
+      return;
+    }
+    case parsev1::ChunkerSettings::kHybrid: {
+      const parsev1::HybridChunkerOptions& options = settings.hybrid();
+      put_string(out, "chunker", "hybrid");
+      put_bool(out, "use_markdown_tables", options.use_markdown_tables());
+      put_bool(out, "include_raw_text", options.include_raw_text());
+      put_bool(out, "use_markdown_images", options.use_markdown_images());
+      put_string(out, "image_placeholder", options.image_placeholder());
+      if (options.has_max_tokens()) put_int(out, "max_tokens", options.max_tokens());
+      put_string(out, "tokenizer", options.tokenizer());
+      put_bool(out, "merge_peers", options.merge_peers());
+      if (options.has_tokenizer_path()) {
+        put_string(out, "tokenizer_path", options.tokenizer_path());
+      }
+      return;
+    }
+    case parsev1::ChunkerSettings::CHUNKER_NOT_SET:
+      return;
   }
 }
 
