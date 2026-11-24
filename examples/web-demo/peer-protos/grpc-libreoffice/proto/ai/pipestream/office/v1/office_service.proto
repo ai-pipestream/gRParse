@@ -1385,6 +1385,10 @@ message EmbeddedObject {
   // Every non-empty sheet of an embedded spreadsheet, in sheet order; set
   // only when kind is EMBEDDED_OBJECT_KIND_SPREADSHEET.
   repeated EmbeddedSheet inner_sheets = 17;
+  // The object's storage name inside the document ("Object 1"), which can
+  // differ from its shape name. On a spreadsheet it is the name the sheet's
+  // chart list reports, so it joins a chart object to its SheetChart.
+  string persist_name = 18;
 }
 
 // SheetCellType is the office core's cell content classification, mirroring
