@@ -7,6 +7,12 @@
 #ifdef GRPARSE_NATIVE_TENSORRT
 #include "tensorrt/tensorrt_model.h"
 #endif
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+#include <cstdlib>
+#include <cstring>
+
+#include "levelzero/graph_runtime.h"
+#endif
 
 namespace grparse {
 namespace {
@@ -117,6 +123,30 @@ size_t tensor_element_size(TensorElement element) {
 
 size_t Tensor::element_count() const { return element_count_of(shape); }
 
+std::vector<Tensor> InferenceModel::run_image(const uint8_t* pixels, int count, int height, int width,
+                                              const float mean[3], const float norm[3],
+                                              std::span<const int> valid_widths) {
+  if (!valid_widths.empty() && valid_widths.size() != static_cast<size_t>(count)) {
+    throw std::invalid_argument("run_image takes one valid width per image");
+  }
+  const size_t plane = static_cast<size_t>(height) * static_cast<size_t>(width);
+  std::vector<float> values(static_cast<size_t>(count) * plane * 3, 0.0F);
+  for (size_t image = 0; image < static_cast<size_t>(count); ++image) {
+    const uint8_t* from = pixels + image * plane * 3;
+    float* to = values.data() + image * plane * 3;
+    const size_t valid = valid_widths.empty() ? static_cast<size_t>(width) : static_cast<size_t>(valid_widths[image]);
+    for (size_t pixel = 0; pixel < plane; ++pixel) {
+      if (pixel % static_cast<size_t>(width) >= valid) continue;  // padding stays 0.0
+      for (size_t channel = 0; channel < 3; ++channel) {
+        to[channel * plane + pixel] =
+            static_cast<float>(from[pixel * 3 + channel] * norm[channel] - mean[channel] * norm[channel]);
+      }
+    }
+  }
+  const TensorView view{TensorElement::kFloat32, values.data(), {count, 3, height, width}};
+  return run(std::span(&view, 1));
+}
+
 const float* Tensor::floats() const {
   if (element != TensorElement::kFloat32) throw std::logic_error("tensor is not float32");
   return reinterpret_cast<const float*>(bytes.data());
@@ -160,9 +190,104 @@ std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec) {
       make_session(env, spec.path, spec.what, spec.precision, spec.intra_op_threads));
 }
 
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+namespace {
+
+// The Level Zero GPU an OpenVINO device names: GPU is 0, GPU.<n> is n; -1 for any other device.
+int level_zero_gpu(const std::string& device) {
+  if (device == "GPU") return 0;
+  if (device.starts_with("GPU.") && device.size() > 4) return std::atoi(device.c_str() + 4);
+  return -1;
+}
+
+// GRPARSE_OCR_FP16 names the nets whose activations are stored as half and
+// whose GEMM-shaped layers run on the matrix engines: a comma list of det,
+// cls and rec, or all.  Unset, every net computes in float.
+bool ocr_net_fp16(OcrNet net) {
+  const char* value = std::getenv("GRPARSE_OCR_FP16");
+  if (value == nullptr || *value == '\0') return false;
+  const std::string list = std::string(",") + value + ",";
+  if (list == ",all,") return true;
+  const char* name = net == OcrNet::kDetection ? ",det," : net == OcrNet::kDirection ? ",cls," : ",rec,";
+  return list.find(name) != std::string::npos;
+}
+
+// A model on the Level Zero graph runtime (src/levelzero/graph_runtime.h).
+class LevelZeroModel final : public InferenceModel {
+ public:
+  LevelZeroModel(const std::filesystem::path& path, int gpu, bool fp16, bool reduce_rows)
+      : graph_(levelzero::Device::shared(gpu), path,
+               levelzero::graph::GraphOptions{.fp16 = fp16, .reduce_rows = reduce_rows}) {
+    const auto& ir = graph_.ir();
+    input_names_.push_back(ir.values[static_cast<size_t>(ir.input)].name);
+    for (const int output : ir.outputs) output_names_.push_back(ir.values[static_cast<size_t>(output)].name);
+  }
+
+  std::vector<Tensor> run(std::span<const TensorView> inputs) override {
+    if (inputs.size() != 1 || inputs[0].element != TensorElement::kFloat32) {
+      throw std::invalid_argument("a Level Zero model takes one float input");
+    }
+    return tensors(graph_.run(static_cast<const float*>(inputs[0].data), inputs[0].shape));
+  }
+
+  // The device normalizes: the bytes are uploaded as they are.
+  std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
+                                const float norm[3], std::span<const int> valid_widths) override {
+    return tensors(graph_.run_image(pixels, count, height, width, mean, norm, valid_widths));
+  }
+
+  void prewarm(std::span<const std::vector<TensorSpec>>) override {}
+  const std::vector<std::string>& input_names() const override { return input_names_; }
+  const std::vector<std::string>& output_names() const override { return output_names_; }
+  std::string_view backend_name() const override { return "LevelZero"; }
+
+ private:
+  static std::vector<Tensor> tensors(std::vector<levelzero::graph::HostTensor> outputs) {
+    std::vector<Tensor> result;
+    result.reserve(outputs.size());
+    for (levelzero::graph::HostTensor& output : outputs) {
+      Tensor tensor;
+      tensor.element = TensorElement::kFloat32;
+      tensor.shape = std::move(output.shape);
+      tensor.bytes = std::move(output.bytes);
+      result.push_back(std::move(tensor));
+    }
+    return result;
+  }
+
+  levelzero::graph::GraphModel graph_;
+  std::vector<std::string> input_names_;
+  std::vector<std::string> output_names_;
+};
+
+}  // namespace
+
+bool level_zero_ocr() {
+  const OrtEpSelection selection = ort_ep_selection();
+  return selection.ep == OrtEp::kOpenVino && level_zero_gpu(selection.openvino_device) >= 0;
+}
+#else
+bool level_zero_ocr() { return false; }
+#endif
+
+bool ocr_rec_reduced() { return level_zero_ocr(); }
+
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread) {
   const std::string what(ocr_net_name(net));
+#ifdef GRPARSE_TABLE_LEVEL_ZERO
+  if (level_zero_ocr()) {
+    std::unique_ptr<InferenceModel> model;
+    try {
+      model = std::make_unique<LevelZeroModel>(path, level_zero_gpu(ort_ep_selection().openvino_device),
+                                               ocr_net_fp16(net), net == OcrNet::kRecognition);
+    } catch (const std::exception& error) {
+      throw ep_refusal(what, path, error.what());
+    }
+    record_level_zero_placement(what);
+    return model;
+  }
+#endif
 #ifdef GRPARSE_NATIVE_TENSORRT
   if (ort_ep_selection().ep == OrtEp::kCuda) {
     return tensorrt_model(path, what, ocr_net_shapes(net).profiles);
@@ -170,14 +295,6 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
 #endif
   return std::make_unique<OrtModel>(make_rapidocr_session(env, path, what, num_thread));
 }
-
-#ifndef GRPARSE_NATIVE_OPENVINO
-bool native_openvino_build() { return false; }
-
-std::unique_ptr<InferenceModel> make_openvino_model(const ModelSpec& spec) {
-  throw std::runtime_error(std::string(spec.what) + ": this build carries no native OpenVINO");
-}
-#endif
 
 bool tensorrt_device_present(int cuda_device, std::string* detail) {
 #ifdef GRPARSE_NATIVE_TENSORRT

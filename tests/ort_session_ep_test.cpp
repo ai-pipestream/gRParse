@@ -11,6 +11,7 @@
 #include <vector>
 #include <unistd.h>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 #include "support/check.h"
 #include "support/tiny_onnx_model.h"
@@ -105,10 +106,32 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::OrtEpSelection other = kept;
   other.ep = grparse::OrtEp::kOpenVino;
   grparse::set_ort_ep_selection(other);
-  require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO reads one crop per call");
+  // On a GPU device the Intel image runs the nets on the Level Zero runtime,
+  // which batches as CUDA does; the OpenVINO provider reads one crop per call.
+  require_equal(grparse::ocr_batch_size(), grparse::level_zero_ocr() ? size_t{16} : size_t{1},
+                "OpenVINO on a GPU reads 16 crops per call on Level Zero and one on the provider");
+  other.openvino_device = "CPU";
+  grparse::set_ort_ep_selection(other);
+  require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO on its CPU device reads one crop per call");
   other.ep = grparse::OrtEp::kCuda;
   grparse::set_ort_ep_selection(other);
   require_equal(grparse::ocr_batch_size(), size_t{16}, "CUDA reads 16 crops per call");
+  grparse::set_ort_ep_selection(kept);
+}
+
+// The direction net's batch is the line batch on backends that run through
+// ONNX Runtime or TensorRT; the Level Zero runtime, which these selections
+// do not place the nets on, is the one that raises it.
+void verify_direction_batch_follows_line_batch() {
+  require(std::getenv("GRPARSE_OCR_BATCH") == nullptr, "the test runs without GRPARSE_OCR_BATCH");
+  const grparse::OrtEpSelection kept = grparse::ort_ep_selection();
+  grparse::OrtEpSelection other = kept;
+  for (const grparse::OrtEp ep : {grparse::OrtEp::kCpu, grparse::OrtEp::kCuda}) {
+    other.ep = ep;
+    grparse::set_ort_ep_selection(other);
+    require_equal(grparse::ocr_direction_batch_size(), grparse::ocr_batch_size(),
+                  "the direction batch is the line batch off Level Zero");
+  }
   grparse::set_ort_ep_selection(kept);
 }
 
@@ -424,6 +447,7 @@ int main() {
       verify_explicit_cpu_overrides_legacy_gpu_index,
       verify_latest_selection_wins,
       verify_ocr_batch_size_follows_provider,
+      verify_direction_batch_follows_line_batch,
       verify_make_session_refuses_and_counts,
       verify_cpu_selection_failure_does_not_count,
       verify_make_session_retries_on_openvino_then_refuses,

@@ -1,14 +1,15 @@
 #pragma once
 
-// The float initializers of an ONNX model file, read straight from its
-// protobuf wire format: ModelProto.graph (7) -> GraphProto.initializer (5) ->
-// TensorProto name (8), dims (1), data_type (2), float_data (4) or raw_data
-// (9).  Enough for a native runtime to take a model's weights from the file
-// the models image already ships, without an ONNX library.
+// An ONNX model file read straight from its protobuf wire format, enough for
+// a native runtime to take a model's weights and graph from the file the
+// models image already ships, without an ONNX library: the graph's nodes
+// (op type, inputs, outputs, attributes), its initializers and its Constant
+// nodes' tensors, FLOAT, INT64 and INT32 elements.
 
 #include <cstdint>
 #include <filesystem>
 #include <map>
+#include <optional>
 #include <string>
 #include <vector>
 
@@ -16,14 +17,43 @@ namespace grparse::levelzero {
 
 struct OnnxTensor {
   std::vector<int64_t> dims;
-  std::vector<float> values;
+  int data_type = 0;            // TensorProto.DataType: 1 FLOAT, 6 INT32, 7 INT64
+  std::vector<float> values;    // FLOAT
+  std::vector<int64_t> ints;    // INT64 and INT32
 };
 
-// Every FLOAT initializer of the model by name.  Throws naming the file on a
-// malformed file or an initializer of another element type.
-std::map<std::string, OnnxTensor> read_onnx_initializers(const std::filesystem::path& path);
+struct OnnxAttribute {
+  float f = 0.0F;
+  int64_t i = 0;
+  std::string s;
+  std::vector<float> floats;
+  std::vector<int64_t> ints;
+  std::optional<OnnxTensor> t;
+};
 
-// The same from the file's bytes, for tests.
+struct OnnxNode {
+  std::string op_type;
+  std::vector<std::string> inputs;
+  std::vector<std::string> outputs;
+  std::map<std::string, OnnxAttribute> attributes;
+
+  // The attribute, or nullptr.
+  const OnnxAttribute* attribute(const std::string& name) const;
+};
+
+struct OnnxGraph {
+  std::vector<OnnxNode> nodes;  // Constant nodes included, in file order
+  std::map<std::string, OnnxTensor> constants;  // initializers and Constant outputs
+  std::vector<std::string> inputs;   // graph inputs that are not initializers
+  std::vector<std::string> outputs;
+};
+
+// The model's graph.  Throws naming the file on a malformed file.
+OnnxGraph read_onnx_graph(const std::filesystem::path& path);
+OnnxGraph parse_onnx_graph(const std::string& bytes, const std::string& what);
+
+// Every FLOAT tensor of the model (initializers and Constant outputs) by name.
+std::map<std::string, OnnxTensor> read_onnx_initializers(const std::filesystem::path& path);
 std::map<std::string, OnnxTensor> parse_onnx_initializers(const std::string& bytes,
                                                          const std::string& what);
 

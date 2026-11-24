@@ -1,0 +1,122 @@
+diff --git a/src/CrnnNet.cpp b/src/CrnnNet.cpp
+index 8f2bcc4..faf9011 100644
+--- a/src/CrnnNet.cpp
++++ b/src/CrnnNet.cpp
+@@ -6,6 +6,8 @@
+ #include <algorithm>
+ #include <fstream>
+ #include <numeric>
++#include <stdexcept>
++#include <cstdint>
+ 
+ void CrnnNet::setGpuIndex(int gpuIndex) {
+     // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
+@@ -117,41 +119,30 @@ TextLine CrnnNet::getTextLine(const cv::Mat &src) {
+             cv::copyMakeBorder(srcResize, srcResize, 0, 0, 0, bucket - realWidth, cv::BORDER_REPLICATE);
+         }
+     }
+-    std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+-    int tensorWidth = srcResize.cols;
++    // gRParse: the line goes to the model as bytes with its valid width, and
++    // the model normalizes it where its device can
++    // (patches/rapidocr-recognition-bytes.patch).  Columns past the valid
++    // width are the zeros a batch pads its short lines with: up to a bucket
++    // width on a provider that compiles per shape (unless the edge pixels
++    // were repeated above), and up to the narrowest line a backend reads.
++    if (srcResize.channels() != 3) {
++        throw std::invalid_argument("text recognition takes 3-channel crops");
++    }
++    const int validWidth = srcResize.cols;
++    int tensorWidth = validWidth;
+     if (grparse::ocr_shape_buckets() && !grparse::ocr_pad_replicate()) {
+-        tensorWidth = grparse::ocr_rec_bucket(srcResize.cols);
+-        if (tensorWidth != srcResize.cols) {
+-            const size_t channels = srcResize.channels();
+-            std::vector<float> padded(channels * dstHeight * tensorWidth, 0.0F);
+-            for (size_t ch = 0; ch < channels; ++ch) {
+-                for (int row = 0; row < dstHeight; ++row) {
+-                    const float *from = inputTensorValues.data() + (ch * dstHeight + row) * srcResize.cols;
+-                    std::copy(from, from + srcResize.cols, padded.data() + (ch * dstHeight + row) * tensorWidth);
+-                }
+-            }
+-            inputTensorValues.swap(padded);
+-        }
++        tensorWidth = grparse::ocr_rec_bucket(validWidth);
+     }
+-    // gRParse: and no narrower one: a short crop is padded with zeros, as a
+-    // batch pads its short lines, and decodes only the steps over itself.
+-    if (tensorWidth < grparse::ocr_rec_min_width()) {
+-        const int paddedWidth = grparse::ocr_rec_min_width();
+-        const size_t channels = srcResize.channels();
+-        std::vector<float> padded(channels * dstHeight * paddedWidth, 0.0F);
+-        for (size_t line = 0; line < channels * dstHeight; ++line) {
+-            const float *from = inputTensorValues.data() + line * tensorWidth;
+-            std::copy(from, from + tensorWidth, padded.data() + line * paddedWidth);
+-        }
+-        inputTensorValues.swap(padded);
+-        tensorWidth = paddedWidth;
++    tensorWidth = (std::max)(tensorWidth, grparse::ocr_rec_min_width());
++    const size_t rowBytes = static_cast<size_t>(tensorWidth) * 3;
++    std::vector<uint8_t> pixels(static_cast<size_t>(dstHeight) * rowBytes, 0);
++    for (int row = 0; row < dstHeight; ++row) {
++        std::copy_n(srcResize.ptr<uint8_t>(row), static_cast<size_t>(validWidth) * 3,
++                    pixels.data() + static_cast<size_t>(row) * rowBytes);
+     }
+-    std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, tensorWidth};
+-    // gRParse: one typed run through grparse::InferenceModel
+-    // (patches/rapidocr-model-backend.patch).
+-    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+-                                        {inputShape.begin(), inputShape.end()}};
+-    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    const std::vector<grparse::Tensor> outputTensor =
++        model->run_image(pixels.data(), 1, dstHeight, tensorWidth, meanValues, normValues,
++                         std::span<const int>(&validWidth, 1));
+     std::vector<int64_t> outputShape = outputTensor[0].shape;
+     int64_t outputCount = std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                                           std::multiplies<int64_t>());
+@@ -199,28 +190,27 @@ std::vector<TextLine> CrnnNet::getTextLineBatch(const std::vector<cv::Mat> &srcs
+     const bool bucketed = grparse::ocr_shape_buckets();
+     if (bucketed) batchWidth = grparse::ocr_rec_bucket(batchWidth);
+     const size_t channels = resized.front().channels();
+-    const size_t plane = static_cast<size_t>(dstHeight) * batchWidth;
+-    // Zero after normalization is mid-grey, the padding PaddleOCR's own
++    // gRParse: the lines go to the model as bytes, each with its valid
++    // width (patches/rapidocr-recognition-bytes.patch).  Past it the input
++    // is zero after normalization, mid-grey, the padding PaddleOCR's own
+     // batched recognizer uses.
+-    std::vector<float> inputTensorValues(count * channels * plane, 0.0f);
++    if (channels != 3) {
++        throw std::invalid_argument("text recognition takes 3-channel crops");
++    }
++    const size_t rowBytes = static_cast<size_t>(batchWidth) * channels;
++    const size_t imageBytes = static_cast<size_t>(dstHeight) * rowBytes;
++    std::vector<uint8_t> pixels(count * imageBytes, 0);
++    std::vector<int> validWidths(count);
+     for (size_t i = 0; i < count; ++i) {
+-        std::vector<float> values = substractMeanNormalize(resized[i], meanValues, normValues);
+-        const size_t width = resized[i].cols;
+-        for (size_t ch = 0; ch < channels; ++ch) {
+-            for (size_t row = 0; row < static_cast<size_t>(dstHeight); ++row) {
+-                const float *from = values.data() + ch * dstHeight * width + row * width;
+-                float *to = inputTensorValues.data() + (i * channels + ch) * plane + row * batchWidth;
+-                std::copy(from, from + width, to);
+-            }
++        validWidths[i] = resized[i].cols;
++        for (int row = 0; row < dstHeight; ++row) {
++            std::copy_n(resized[i].ptr<uint8_t>(row), static_cast<size_t>(resized[i].cols) * channels,
++                        pixels.data() + i * imageBytes + static_cast<size_t>(row) * rowBytes);
+         }
+     }
+-    std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+-                                      dstHeight, batchWidth};
+-    // gRParse: one typed run through grparse::InferenceModel
+-    // (patches/rapidocr-model-backend.patch).
+-    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+-                                        {inputShape.begin(), inputShape.end()}};
+-    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    const std::vector<grparse::Tensor> outputTensor =
++        model->run_image(pixels.data(), static_cast<int>(count), dstHeight, batchWidth, meanValues, normValues,
++                         validWidths);
+     std::vector<int64_t> outputShape = outputTensor[0].shape;
+     const size_t steps = static_cast<size_t>(outputShape[1]);
+     const size_t classes = static_cast<size_t>(outputShape[2]);

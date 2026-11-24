@@ -100,7 +100,23 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # A line narrower or wider than the recognizer's shape range is
         # padded or resized into it (grparse::ocr_rec_min_width and
         # ocr_rec_max_width; no limit on ONNX Runtime).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch"
+        # A backend that reduces the recognizer's scores on the device hands
+        # back each time step's best class and score; the decode reads those
+        # (grparse::ocr_rec_reduced).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch"
+        # The direction net batches by grparse::ocr_direction_batch_size: a
+        # page's crops per call where the backend takes any batch as it comes.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-batch.patch"
+        # The detector hands the model its page as bytes; a backend that
+        # normalizes on its device does, the others normalize on the host
+        # as before (grparse::InferenceModel::run_image).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-device-normalize.patch"
+        # The direction net hands its crops over as bytes the same way.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-bytes.patch"
+        # And the recognizer its lines, each with its valid width: the
+        # padding past it is zero after normalization.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-recognition-bytes.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -141,6 +157,22 @@ if(GRPARSE_CRNN_LIMITS_AT EQUAL -1)
     "patches/rapidocr-rec-width-limits.patch. Delete _deps/rapidocr-* from the build directory "
     "(or the docker build cache) and re-run CMake.")
 endif()
+# A tree cached before the reduced-scores patch would read a reduced output
+# as scores per class and decode garbage.
+# A tree cached before the recognition-bytes patch would normalize every
+# line on the host and upload the float tensor.
+string(FIND "${GRPARSE_CRNN_SOURCE}" "model->run_image" GRPARSE_CRNN_IMAGE_AT)
+if(GRPARSE_CRNN_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-recognition-bytes.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_reduced" GRPARSE_CRNN_REDUCED_AT)
+if(GRPARSE_CRNN_REDUCED_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-reduced-scores.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
 unset(GRPARSE_CRNN_SOURCE)
 # The geometry include is a separate patch; a tree cached before it existed
 # fails to compile DbNet.cpp with OpenCV 5.  Fail the configure instead.
@@ -155,6 +187,22 @@ if(GRPARSE_CRNN_BATCH_AT EQUAL -1)
 endif()
 unset(GRPARSE_CRNN_SOURCE)
 file(READ "${rapidocr_SOURCE_DIR}/src/AngleNet.cpp" GRPARSE_ANGLE_SOURCE)
+# A tree cached before the direction-batch patch would classify one crop per
+# call on the Level Zero runtime, paying its launch latency per crop.
+string(FIND "${GRPARSE_ANGLE_SOURCE}" "grparse::ocr_direction_batch_size" GRPARSE_ANGLE_BATCH_AT)
+if(GRPARSE_ANGLE_BATCH_AT EQUAL -1)
+  message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-direction-batch.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
+# A tree cached before the direction-bytes patch would normalize the crops
+# on the host and upload the float tensor.
+string(FIND "${GRPARSE_ANGLE_SOURCE}" "model->run_image" GRPARSE_ANGLE_IMAGE_AT)
+if(GRPARSE_ANGLE_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-direction-bytes.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
 string(FIND "${GRPARSE_ANGLE_SOURCE}" "kFlipScore" GRPARSE_ANGLE_VOTE_AT)
 if(GRPARSE_ANGLE_VOTE_AT EQUAL -1)
   message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
@@ -175,6 +223,16 @@ string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_pad_replicate" GRPARSE_DBNET_BUCKETS_
 if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
   message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_SOURCE)
+# A tree cached before the device-normalize patch would normalize every page
+# on the host and upload the float tensor.
+file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "model->run_image" GRPARSE_DBNET_IMAGE_AT)
+if(GRPARSE_DBNET_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-device-normalize.patch. Delete _deps/rapidocr-* from the build directory "
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)

@@ -116,6 +116,49 @@ void verify_device_probe_without_tensorrt() {
   require(detail.find("no TensorRT") != std::string::npos, "the detail says why");
 }
 
+// A model that keeps what run() was handed.
+class RecordingModel final : public grparse::InferenceModel {
+ public:
+  std::vector<grparse::Tensor> run(std::span<const grparse::TensorView> inputs) override {
+    shape = inputs[0].shape;
+    const auto* floats = static_cast<const float*>(inputs[0].data);
+    values.assign(floats, floats + shape[0] * shape[1] * shape[2] * shape[3]);
+    return {};
+  }
+  void prewarm(std::span<const std::vector<grparse::TensorSpec>>) override {}
+  const std::vector<std::string>& input_names() const override { return names; }
+  const std::vector<std::string>& output_names() const override { return names; }
+  std::string_view backend_name() const override { return "recording"; }
+
+  std::vector<int64_t> shape;
+  std::vector<float> values;
+  std::vector<std::string> names{"x"};
+};
+
+// A backend without device normalization gets the tensor RapidOCR's
+// substractMeanNormalize builds from the same bytes, bit for bit, image by
+// image.
+void verify_run_image_normalizes_on_the_host() {
+  const int count = 2, height = 2, width = 3;
+  uint8_t pixels[count * height * width * 3];
+  for (size_t i = 0; i < sizeof(pixels); ++i) pixels[i] = static_cast<uint8_t>(i * 37 + (i == 5 ? 255 : 0));
+  const float mean[3] = {0.485F * 255, 0.456F * 255, 0.406F * 255};
+  const float norm[3] = {1.0F / 0.229F / 255.0F, 1.0F / 0.224F / 255.0F, 1.0F / 0.225F / 255.0F};
+  RecordingModel model;
+  model.run_image(pixels, count, height, width, mean, norm);
+  require(model.shape == std::vector<int64_t>({count, 3, height, width}), "the input is [count, 3, height, width]");
+  const size_t plane = size_t{height} * width;
+  for (size_t image = 0; image < count; ++image) {
+    for (size_t pid = 0; pid < plane; ++pid) {
+      for (size_t ch = 0; ch < 3; ++ch) {
+        const float expected = (float)(pixels[(image * plane + pid) * 3 + ch] * norm[ch] - mean[ch] * norm[ch]);
+        require(model.values[(image * 3 + ch) * plane + pid] == expected,
+                std::format("image {} pixel {} channel {} is normalized as RapidOCR does", image, pid, ch));
+      }
+    }
+  }
+}
+
 }  // namespace
 
 int main() {
@@ -125,5 +168,6 @@ int main() {
       verify_static_profile,
       verify_shape_policy_follows_backend,
       verify_device_probe_without_tensorrt,
+      verify_run_image_normalizes_on_the_host,
   });
 }

@@ -1,0 +1,16 @@
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index 5807eef..be26a46 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -126,7 +126,10 @@ std::vector<Angle> AngleNet::getAngles(std::vector<cv::Mat> &partImgs, const cha
+                 readable.push_back(i);
+             }
+         }
+-        const size_t batch = (std::max)(size_t{1}, grparse::ocr_batch_size());
++        // gRParse: the direction net has a batch size of its own
++        // (patches/rapidocr-direction-batch.patch): a backend that takes any
++        // batch without compiling for it classifies a page's crops together.
++        const size_t batch = (std::max)(size_t{1}, grparse::ocr_direction_batch_size());
+         for (size_t first = 0; first < readable.size(); first += batch) {
+             const size_t last = (std::min)(readable.size(), first + batch);
+             std::vector<cv::Mat> angleImgs;

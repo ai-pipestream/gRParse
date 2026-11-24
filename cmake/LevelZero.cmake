@@ -1,35 +1,86 @@
-# The native table structure decoder for Intel GPUs (src/levelzero/): an
-# OpenCL C kernel compiled to SPIR-V by Intel's offline compiler at build
-# time, loaded and launched through the Level Zero loader at run time.  The
-# OpenVINO image turns it on; without it an OpenVINO selection refuses the
-# table structure model rather than run its decoder anywhere else.
-option(GRPARSE_TABLE_LEVEL_ZERO "Build the native Level Zero table structure decoder" OFF)
+# Native table structure for Intel GPUs (src/levelzero/): the encoder's and
+# decoder's OpenCL C kernels compiled to SPIR-V by Intel's offline compiler
+# at build time, loaded and launched through the Level Zero loader at run
+# time.  The OpenVINO image turns it on; without it an OpenVINO selection
+# refuses the table structure model rather than run it anywhere else.
+option(GRPARSE_TABLE_LEVEL_ZERO "Build native Level Zero table structure" OFF)
 
-# The ONNX initializer reader builds everywhere so its test runs in every flavor.
-target_sources(grparse_core PRIVATE src/levelzero/onnx_initializers.cpp)
+# The ONNX reader and the graph lowering have no device in them: they build
+# everywhere, so their tests run in every flavor, on a host with no GPU.
+target_sources(grparse_ort_ep PRIVATE src/levelzero/onnx_initializers.cpp src/levelzero/graph_ir.cpp
+  src/levelzero/graph_fuse.cpp)
+target_include_directories(grparse_ort_ep PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(grparse_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 if(GRPARSE_TABLE_LEVEL_ZERO)
   find_path(GRPARSE_LEVEL_ZERO_INCLUDE level_zero/ze_api.h REQUIRED)
   find_library(GRPARSE_LEVEL_ZERO_LIBRARY ze_loader REQUIRED)
   find_program(GRPARSE_OCLOC ocloc REQUIRED)
-  set(spirv "${CMAKE_CURRENT_BINARY_DIR}/levelzero/slanet_decoder.spv")
-  set(embedded "${CMAKE_CURRENT_BINARY_DIR}/levelzero/slanet_decoder_spirv.cpp")
-  set(kernel "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/slanet_decoder.cl")
-  # SPIR-V, not a device binary: the driver finalizes it for whichever Intel
-  # GPU the process opens.  -device only selects ocloc's front end.
-  add_custom_command(OUTPUT "${spirv}"
+  # Each kernel file to SPIR-V, not a device binary: the driver finalizes it
+  # for whichever Intel GPU the process opens (-device only selects ocloc's
+  # front end), embedded as a byte array.
+  set(embedded_kernels)
+  foreach(pair IN ITEMS "slanet_decoder:kSlanetDecoderSpirv")
+    string(REPLACE ":" ";" pair "${pair}")
+    list(GET pair 0 name)
+    list(GET pair 1 symbol)
+    set(source "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/${name}.cl")
+    set(spirv "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}.spv")
+    set(embedded "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}_spirv.cpp")
+    add_custom_command(OUTPUT "${spirv}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/levelzero"
+      COMMAND "${GRPARSE_OCLOC}" compile -file "${source}" -device bmg -spv_only
+        -options "-cl-std=CL3.0" -output ${name} -output_no_suffix
+        -out_dir "${CMAKE_CURRENT_BINARY_DIR}/levelzero" -q
+      DEPENDS "${source}"
+      COMMENT "Compiling ${name}.cl to SPIR-V")
+    add_custom_command(OUTPUT "${embedded}"
+      COMMAND ${CMAKE_COMMAND} -DINPUT=${spirv} -DOUTPUT=${embedded} -DSYMBOL=${symbol}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
+      DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
+    list(APPEND embedded_kernels "${embedded}")
+  endforeach()
+  # The graph runtime's kernels: kernels_real.h, graph_kernels.cl, then each
+  # kernels_*.cl in name order, joined into one source and compiled for
+  # float activations and again with -DGRAPH_FP16.
+  file(GLOB graph_kernel_parts CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/kernels_*.cl")
+  list(SORT graph_kernel_parts)
+  set(graph_kernel_sources "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/kernels_real.h"
+    "${CMAKE_CURRENT_SOURCE_DIR}/src/levelzero/graph_kernels.cl" ${graph_kernel_parts})
+  set(graph_source "${CMAKE_CURRENT_BINARY_DIR}/levelzero/graph_all.cl")
+  add_custom_command(OUTPUT "${graph_source}"
     COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_CURRENT_BINARY_DIR}/levelzero"
-    COMMAND "${GRPARSE_OCLOC}" compile -file "${kernel}" -device bmg -spv_only
-      -options "-cl-std=CL3.0" -output slanet_decoder -output_no_suffix
-      -out_dir "${CMAKE_CURRENT_BINARY_DIR}/levelzero" -q
-    DEPENDS "${kernel}"
-    COMMENT "Compiling the table structure decoder kernel to SPIR-V")
-  add_custom_command(OUTPUT "${embedded}"
-    COMMAND ${CMAKE_COMMAND} -DINPUT=${spirv} -DOUTPUT=${embedded}
-      -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
-    DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
-  target_sources(grparse_core PRIVATE src/levelzero/table_decoder.cpp "${embedded}")
+    COMMAND ${CMAKE_COMMAND} -E cat ${graph_kernel_sources} > "${graph_source}"
+    DEPENDS ${graph_kernel_sources}
+    COMMENT "Joining the graph runtime's kernel files")
+  foreach(flavor IN ITEMS "graph_kernels|kGraphKernelsSpirv|" "graph_kernels_fp16|kGraphKernelsFp16Spirv| -DGRAPH_FP16")
+    string(REPLACE "|" ";" flavor "${flavor}")
+    list(GET flavor 0 name)
+    list(GET flavor 1 symbol)
+    list(GET flavor 2 defines)
+    set(spirv "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}.spv")
+    set(embedded "${CMAKE_CURRENT_BINARY_DIR}/levelzero/${name}_spirv.cpp")
+    add_custom_command(OUTPUT "${spirv}"
+      COMMAND "${GRPARSE_OCLOC}" compile -file "${graph_source}" -device bmg -spv_only
+        -options "-cl-std=CL3.0${defines}" -output ${name} -output_no_suffix
+        -out_dir "${CMAKE_CURRENT_BINARY_DIR}/levelzero" -q
+      DEPENDS "${graph_source}"
+      COMMENT "Compiling the graph kernels to SPIR-V (${name})")
+    add_custom_command(OUTPUT "${embedded}"
+      COMMAND ${CMAKE_COMMAND} -DINPUT=${spirv} -DOUTPUT=${embedded} -DSYMBOL=${symbol}
+        -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
+      DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
+    list(APPEND embedded_graph_kernels "${embedded}")
+  endforeach()
+  # The device and the graph runtime sit in the model-interface library,
+  # under make_rapidocr_model (src/inference_model.cpp); table structure in
+  # the core library uses the same device.
+  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_runtime.cpp
+    ${embedded_graph_kernels})
+  target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
+  target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
+  target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
+  target_sources(grparse_core PRIVATE src/levelzero/table_gpu.cpp ${embedded_kernels})
   target_compile_definitions(grparse_core PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
@@ -43,6 +94,25 @@ if(BUILD_TESTING)
   add_test(NAME onnx-initializers-test COMMAND onnx-initializers-test)
   set_tests_properties(onnx-initializers-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
   add_dependencies(grparse-tests onnx-initializers-test)
+  # The graph lowering on hand-encoded graphs: no model, no device.
+  add_executable(graph-ir-test tests/graph_ir_test.cpp)
+  target_include_directories(graph-ir-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(graph-ir-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+  add_test(NAME graph-ir-test COMMAND graph-ir-test)
+  set_tests_properties(graph-ir-test PROPERTIES LABELS grparse TIMEOUT ${GRPARSE_TEST_TIMEOUT})
+  add_dependencies(grparse-tests graph-ir-test)
+  # What the lowering produces for the real models, pinned.  Needs the model
+  # files and nothing else; skips (77) without them.
+  add_executable(graph-lowering-model-test tests/graph_lowering_model_test.cpp)
+  target_include_directories(graph-lowering-model-test PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+  target_link_libraries(graph-lowering-model-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+  add_test(NAME graph-lowering-model-test COMMAND graph-lowering-model-test)
+  set_tests_properties(graph-lowering-model-test PROPERTIES
+    LABELS "grparse;models" TIMEOUT ${GRPARSE_TEST_TIMEOUT} SKIP_RETURN_CODE 77
+    ENVIRONMENT "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models")
+  add_dependencies(grparse-tests graph-lowering-model-test)
   if(GRPARSE_TABLE_LEVEL_ZERO)
     # The GPU path against the CPU path on real table crops.  Needs the
     # models and an Intel GPU; skips (77) without either, so the image build,
@@ -57,5 +127,17 @@ if(BUILD_TESTING)
       ENVIRONMENT
         "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
     add_dependencies(grparse-tests level-zero-table-decoder-test)
+    # The OCR nets on the graph runtime against ONNX Runtime on CPU, same gate.
+    add_executable(level-zero-ocr-test tests/level_zero_ocr_test.cpp)
+    target_include_directories(level-zero-ocr-test PRIVATE
+      "${CMAKE_CURRENT_SOURCE_DIR}/tests" "${CMAKE_CURRENT_SOURCE_DIR}/src")
+    target_include_directories(level-zero-ocr-test SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
+    target_link_libraries(level-zero-ocr-test PRIVATE grparse_core grparse_ort_ep grparse_flags)
+    add_test(NAME level-zero-ocr-test COMMAND level-zero-ocr-test)
+    set_tests_properties(level-zero-ocr-test PROPERTIES
+      LABELS "grparse;models" TIMEOUT ${GRPARSE_TEST_TIMEOUT} SKIP_RETURN_CODE 77
+      ENVIRONMENT
+        "GRPARSE_TEST_MODELS_DIR=${CMAKE_CURRENT_SOURCE_DIR}/models;GRPARSE_TEST_DATA_DIR=${CMAKE_CURRENT_SOURCE_DIR}/tests/data")
+    add_dependencies(grparse-tests level-zero-ocr-test)
   endif()
 endif()

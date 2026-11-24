@@ -102,6 +102,18 @@ class InferenceModel {
   virtual ~InferenceModel() = default;
   // Inputs in the model's input order; outputs in its output order.
   virtual std::vector<Tensor> run(std::span<const TensorView> inputs) = 0;
+  // Runs a model whose one input is [count, 3, height, width] float on
+  // `count` images of height x width x 3 bytes each, one after another,
+  // pixel by pixel: input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c]
+  // in float, RapidOCR's normalization.  Here the host computes that tensor
+  // and calls run(); a backend whose device normalizes overrides it and
+  // must return the same floats in FP32.  `valid_widths`, when given, has
+  // one entry per image: columns from that width on are padding, whatever
+  // their bytes, and the input holds 0.0 there (a batch of text lines of
+  // unequal width).
+  virtual std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width,
+                                        const float mean[3], const float norm[3],
+                                        std::span<const int> valid_widths = {});
   // Runs once every listed input set, so no first-use setup happens under
   // load.  A no-op for ONNX Runtime.
   virtual void prewarm(std::span<const std::vector<TensorSpec>> input_sets) = 0;
@@ -119,17 +131,6 @@ class InferenceModel {
 // as an engine throws ep_refusal's error with the builder's message, and no
 // ONNX Runtime session is built in its place.
 std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec);
-
-// Whether this build carries native OpenVINO (the Intel image:
-// src/openvino/openvino_model.cpp).
-bool native_openvino_build();
-
-// The model read and compiled by native OpenVINO on the selection's OpenVINO
-// device, with spec.precision honored as the plugin's precision hint and the
-// selection's cache directory as its compile cache.  A model the plugin will
-// not compile throws ep_refusal's error with OpenVINO's message, and nothing
-// is built in its place.  Throws in a build without native OpenVINO.
-std::unique_ptr<InferenceModel> make_openvino_model(const ModelSpec& spec);
 
 // Whether CUDA device `cuda_device` exists and initializes, in a build that
 // carries native TensorRT; `detail` gets CUDA's own words when it does not.
@@ -154,9 +155,24 @@ ModelShapePolicy ocr_net_shapes(OcrNet net);
 // has nothing to warm (ONNX Runtime).
 std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net);
 
-// The ONNX Runtime-backed model the RapidOCR nets used before (built through
-// make_rapidocr_session's retry policy), or native TensorRT under a CUDA
-// selection in a TensorRT build.
+// Whether the RapidOCR nets run natively through Level Zero under the
+// process selection: a build that carries the graph runtime (the Intel
+// image) with OpenVINO selected on a GPU device.  No shape is compiled in
+// there, so nothing is bucketed or warmed.
+bool level_zero_ocr();
+
+// Whether the recognition net's output arrives reduced on the device: per
+// line and time step four floats, the best class and its score over every
+// class and then over every class but the last, in place of a score per
+// class (patches/rapidocr-reduced-scores.patch decodes them).  True exactly
+// when level_zero_ocr().
+bool ocr_rec_reduced();
+
+// A RapidOCR net on the process selection: native TensorRT under a CUDA
+// selection in a TensorRT build; native Level Zero when level_zero_ocr();
+// otherwise the ONNX Runtime session the nets used before (built through
+// make_rapidocr_session's retry policy).  A native runtime never falls
+// back: a model it will not build throws ep_refusal's error.
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread);
 
