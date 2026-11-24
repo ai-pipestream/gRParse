@@ -164,7 +164,10 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // event: it reports WARC records as they parse, so this client folds the
 // record stream into a Document here — one group per record in stream
 // order, the record's metadata and (when it reads as text) its payload as
-// source-tagged text items. A non-recoverable framing error ends the fold
+// source-tagged text items. Payload text is the payload and nothing else: a
+// payload cut at the fold's cap raises WARNING_CODE_PAYLOAD_TRUNCATED on its
+// item, and a body still stored under a Content-Encoding is left out under
+// WARNING_CODE_PAYLOAD_NOT_DECODED on its record's group. A non-recoverable framing error ends the fold
 // but keeps the records already collected: a clipped archive is a partial
 // success under a WARNING_CODE_ARCHIVE_TRUNCATED warning, not a failure.
 // When no record was read before it there is nothing to keep, and the leg
