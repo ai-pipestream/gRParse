@@ -123,6 +123,24 @@ size_t tensor_element_size(TensorElement element) {
 
 size_t Tensor::element_count() const { return element_count_of(shape); }
 
+std::vector<Tensor> InferenceModel::run_image(const uint8_t* pixels, int count, int height, int width,
+                                              const float mean[3], const float norm[3]) {
+  const size_t plane = static_cast<size_t>(height) * static_cast<size_t>(width);
+  std::vector<float> values(static_cast<size_t>(count) * plane * 3);
+  for (size_t image = 0; image < static_cast<size_t>(count); ++image) {
+    const uint8_t* from = pixels + image * plane * 3;
+    float* to = values.data() + image * plane * 3;
+    for (size_t pixel = 0; pixel < plane; ++pixel) {
+      for (size_t channel = 0; channel < 3; ++channel) {
+        to[channel * plane + pixel] =
+            static_cast<float>(from[pixel * 3 + channel] * norm[channel] - mean[channel] * norm[channel]);
+      }
+    }
+  }
+  const TensorView view{TensorElement::kFloat32, values.data(), {count, 3, height, width}};
+  return run(std::span(&view, 1));
+}
+
 const float* Tensor::floats() const {
   if (element != TensorElement::kFloat32) throw std::logic_error("tensor is not float32");
   return reinterpret_cast<const float*>(bytes.data());
@@ -203,19 +221,13 @@ class LevelZeroModel final : public InferenceModel {
     if (inputs.size() != 1 || inputs[0].element != TensorElement::kFloat32) {
       throw std::invalid_argument("a Level Zero model takes one float input");
     }
-    std::vector<levelzero::graph::HostTensor> outputs =
-        graph_.run(static_cast<const float*>(inputs[0].data), inputs[0].shape);
-    std::vector<Tensor> result;
-    result.reserve(outputs.size());
-    for (levelzero::graph::HostTensor& output : outputs) {
-      Tensor tensor;
-      tensor.element = TensorElement::kFloat32;
-      tensor.shape = std::move(output.shape);
-      tensor.bytes.resize(output.data.size() * sizeof(float));
-      std::memcpy(tensor.bytes.data(), output.data.data(), tensor.bytes.size());
-      result.push_back(std::move(tensor));
-    }
-    return result;
+    return tensors(graph_.run(static_cast<const float*>(inputs[0].data), inputs[0].shape));
+  }
+
+  // The device normalizes: the bytes are uploaded as they are.
+  std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
+                                const float norm[3]) override {
+    return tensors(graph_.run_image(pixels, count, height, width, mean, norm));
   }
 
   void prewarm(std::span<const std::vector<TensorSpec>>) override {}
@@ -224,6 +236,19 @@ class LevelZeroModel final : public InferenceModel {
   std::string_view backend_name() const override { return "LevelZero"; }
 
  private:
+  static std::vector<Tensor> tensors(std::vector<levelzero::graph::HostTensor> outputs) {
+    std::vector<Tensor> result;
+    result.reserve(outputs.size());
+    for (levelzero::graph::HostTensor& output : outputs) {
+      Tensor tensor;
+      tensor.element = TensorElement::kFloat32;
+      tensor.shape = std::move(output.shape);
+      tensor.bytes = std::move(output.bytes);
+      result.push_back(std::move(tensor));
+    }
+    return result;
+  }
+
   levelzero::graph::GraphModel graph_;
   std::vector<std::string> input_names_;
   std::vector<std::string> output_names_;

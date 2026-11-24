@@ -215,11 +215,11 @@ std::vector<HostTensor> GraphModel::run(const float* input, const std::vector<in
   }
 }
 
-std::vector<HostTensor> GraphModel::run_image(const uint8_t* pixels, int height, int width, const float mean[3],
-                                              const float norm[3]) {
+std::vector<HostTensor> GraphModel::run_image(const uint8_t* pixels, int count, int height, int width,
+                                              const float mean[3], const float norm[3]) {
   std::lock_guard lock(mutex_);
   const ImageScale scale{{mean[0], mean[1], mean[2]}, {norm[0], norm[1], norm[2]}};
-  const Plan& plan = plan_for({1, 3, height, width}, scale);
+  const Plan& plan = plan_for({count, 3, height, width}, scale);
   try {
     return execute(plan, pixels);
   } catch (...) {
@@ -309,9 +309,8 @@ std::vector<HostTensor> GraphModel::execute(const Plan& plan, const void* input)
   std::vector<HostTensor> outputs(plan.output_shapes.size());
   for (size_t i = 0; i < outputs.size(); ++i) {
     outputs[i].shape = plan.output_shapes[i];
-    outputs[i].data.resize(numel(outputs[i].shape));
-    std::memcpy(outputs[i].data.data(), io_out_ + plan.output_floats[i] * sizeof(float),
-                outputs[i].data.size() * sizeof(float));
+    outputs[i].bytes.resize(numel(outputs[i].shape) * sizeof(float));
+    std::memcpy(outputs[i].bytes.data(), io_out_ + plan.output_floats[i] * sizeof(float), outputs[i].bytes.size());
   }
   return outputs;
 }
@@ -1041,10 +1040,13 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
     const int count = int(numel(input_shape));
     current_node_ = 0;
     if (plan->image) {
-      const int pixels = int(input_shape[2] * input_shape[3]);
+      if (input_shape.size() != 4 || input_shape[1] != 3) {
+        throw std::invalid_argument("an image input is [count, 3, height, width], got " + shown(input_shape));
+      }
+      const int images = int(input_shape[0]), pixels = int(input_shape[2] * input_shape[3]);
       const ImageScale scale = *plan->image;
-      args(kernels_->image_to_real, {P(src), P(dst), P(pixels), P(scale)});
-      launch(kernels_->image_to_real, {groups_for(size_t(pixels), 256), 1, 1});
+      args(kernels_->image_to_real, {P(src), P(dst), P(images), P(pixels), P(scale)});
+      launch(kernels_->image_to_real, {groups_for(size_t(images) * size_t(pixels), 256), 1, 1});
     } else {
       args(kernels_->to_real, {P(src), P(dst), P(count)});
       launch(kernels_->to_real, {groups_for(size_t(count), 256), 1, 1});

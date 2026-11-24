@@ -114,12 +114,13 @@ typedef struct {
   float mean[3], norm[3];
 } image_t;
 #pragma OPENCL FP_CONTRACT OFF
-__kernel void image_to_real(__global const uchar* in, __global real* out, int pixels, image_t p) {
-  const int index = get_global_id(0);
-  if (index >= pixels) return;
+__kernel void image_to_real(__global const uchar* in, __global real* out, int images, int pixels, image_t p) {
+  const size_t index = get_global_id(0);  // image * pixels + pixel
+  if (index >= (size_t)images * pixels) return;
+  const size_t image = index / pixels, pixel = index % pixels;
   for (int c = 0; c < 3; ++c) {
-    const float scaled = (float)in[(size_t)index * 3 + c] * p.norm[c], offset = p.mean[c] * p.norm[c];
-    RSTORE(out, (size_t)c * pixels + index, scaled - offset);
+    const float scaled = (float)in[index * 3 + c] * p.norm[c], offset = p.mean[c] * p.norm[c];
+    RSTORE(out, (image * 3 + c) * pixels + pixel, scaled - offset);
   }
 }
 #pragma OPENCL FP_CONTRACT DEFAULT

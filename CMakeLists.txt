@@ -104,7 +104,11 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # A backend that reduces the recognizer's scores on the device hands
         # back each time step's best class and score; the decode reads those
         # (grparse::ocr_rec_reduced).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch"
+        # The detector hands the model its page as bytes; a backend that
+        # normalizes on its device does, the others normalize on the host
+        # as before (grparse::InferenceModel::run_image).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-device-normalize.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -187,6 +191,16 @@ string(FIND "${GRPARSE_DBNET_SOURCE}" "ocr_pad_replicate" GRPARSE_DBNET_BUCKETS_
 if(GRPARSE_DBNET_BUCKETS_AT EQUAL -1)
   message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-shape-buckets.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+unset(GRPARSE_DBNET_SOURCE)
+# A tree cached before the device-normalize patch would normalize every page
+# on the host and upload the float tensor.
+file(READ "${rapidocr_SOURCE_DIR}/src/DbNet.cpp" GRPARSE_DBNET_SOURCE)
+string(FIND "${GRPARSE_DBNET_SOURCE}" "model->run_image" GRPARSE_DBNET_IMAGE_AT)
+if(GRPARSE_DBNET_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/DbNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-device-normalize.patch. Delete _deps/rapidocr-* from the build directory "
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_DBNET_SOURCE)

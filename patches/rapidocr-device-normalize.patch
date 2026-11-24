@@ -1,0 +1,32 @@
+diff --git a/src/DbNet.cpp b/src/DbNet.cpp
+index fc81051..236e2e9 100644
+--- a/src/DbNet.cpp
++++ b/src/DbNet.cpp
+@@ -1,3 +1,4 @@
++#include <stdexcept>
+ #include "DbNet.h"
+ #include "OcrUtils.h"
+ #include "grparse_session_ep.h"
+@@ -129,13 +130,15 @@ DbNet::getTextBoxes(cv::Mat &src, ScaleParam &s, float boxScoreThresh, float box
+             }
+         }
+     }
+-    std::vector<float> inputTensorValues = substractMeanNormalize(srcResize, meanValues, normValues);
+-    std::array<int64_t, 4> inputShape{1, srcResize.channels(), srcResize.rows, srcResize.cols};
+-    // gRParse: one typed run through grparse::InferenceModel
+-    // (patches/rapidocr-model-backend.patch).
+-    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+-                                        {inputShape.begin(), inputShape.end()}};
+-    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    // gRParse: the model takes the page as bytes and normalizes it where its
++    // device can (patches/rapidocr-device-normalize.patch); on every other
++    // backend run_image is substractMeanNormalize's expression and run().
++    if (srcResize.channels() != 3) {
++        throw std::invalid_argument("text detection takes a 3-channel image");
++    }
++    if (!srcResize.isContinuous()) srcResize = srcResize.clone();
++    const std::vector<grparse::Tensor> outputTensor =
++        model->run_image(srcResize.data, 1, srcResize.rows, srcResize.cols, meanValues, normValues);
+     std::vector<int64_t> outputShape = outputTensor[0].shape;
+     int64_t outputCount = std::accumulate(outputShape.begin(), outputShape.end(), 1,
+                                           std::multiplies<int64_t>());

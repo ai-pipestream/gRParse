@@ -22,9 +22,13 @@
 
 namespace grparse::levelzero::graph {
 
+// A graph output on the host: floats, held as bytes so a caller that keeps
+// its tensors as bytes takes them without a copy.
 struct HostTensor {
   std::vector<int64_t> shape;
-  std::vector<float> data;
+  std::vector<std::byte> bytes;
+  const float* floats() const { return reinterpret_cast<const float*>(bytes.data()); }
+  size_t count() const { return bytes.size() / sizeof(float); }
 };
 
 struct GraphOptions {
@@ -54,12 +58,13 @@ class GraphModel {
   // InferenceDeviceError; a shape the graph cannot take, std::invalid_argument.
   std::vector<HostTensor> run(const float* input, const std::vector<int64_t>& shape);
 
-  // Runs the graph on an image the device normalizes: `pixels` is height x
-  // width x 3 bytes, pixel by pixel, and the graph's input is [1, 3, height,
-  // width] with input[c][y][x] = pixel * norm[c] - mean[c] * norm[c] in
-  // float, the expression RapidOCR computes on the host.  The bytes are a
-  // quarter of the float tensor and no host pass touches the pixels.
-  std::vector<HostTensor> run_image(const uint8_t* pixels, int height, int width, const float mean[3],
+  // Runs the graph on images the device normalizes: `pixels` is `count`
+  // images of height x width x 3 bytes, one after another, pixel by pixel,
+  // and the graph's input is [count, 3, height, width] with
+  // input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c] in float, the
+  // expression RapidOCR computes on the host.  The bytes are a quarter of
+  // the float tensor and no host pass touches the pixels.
+  std::vector<HostTensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
                                     const float norm[3]);
 
   // The same, with each node's GPU time: per IR node, microseconds summed
