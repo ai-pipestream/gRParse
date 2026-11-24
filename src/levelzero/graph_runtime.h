@@ -61,6 +61,7 @@ class GraphModel {
   void record(const float* input, const std::vector<int64_t>& shape, std::vector<HostTensor>* outputs);
   void execute();
   void build_fp16_weights();
+  void build_plane_weights();
 
   Device& device_;
   IrGraph ir_;
@@ -72,6 +73,8 @@ class GraphModel {
   void* weights_real_ = nullptr;   // FP16: the same block as half, index for index
   uint16_t* xmx_ = nullptr;        // FP16: GEMM weights laid out for gemm_xmx
   std::vector<size_t> xmx_offsets_;  // per node, halves into xmx_, or SIZE_MAX
+  uint16_t* planes_ = nullptr;     // FP16: weights laid out for conv_planes_xmx
+  std::vector<size_t> planes_offsets_;  // per node, halves into planes_, or SIZE_MAX
   char* arena_ = nullptr;
   size_t arena_elements_ = 0;
   char* io_in_ = nullptr;          // float staging for the input and the outputs
