@@ -809,6 +809,8 @@ add_library(grparse_core STATIC
   src/office_fold/writer_fold.cpp
   src/document_merge.cpp
   src/workbook_cells.cpp
+  src/json_reader.cpp
+  src/structured_data.cpp
   src/warning.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
@@ -1472,6 +1474,7 @@ if(BUILD_TESTING)
     document-geometry-test
     html-renderer-test
     json-key-order-test
+    json-reader-test
     latex-renderer-test
     markdown-renderer-test
     load-normalization-test
@@ -1480,6 +1483,7 @@ if(BUILD_TESTING)
     render-map-order-test
     renderer-base-test
     server-config-test
+    structured-data-test
     target-step-test
     vtt-renderer-test
     warning-test)

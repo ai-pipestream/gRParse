@@ -157,3 +157,10 @@ add_executable(base64-differential-fuzzer
   base64_differential_fuzzer.cpp
   "${GRPARSE_ROOT}/src/base64.cpp")
 target_link_libraries(base64-differential-fuzzer PRIVATE simdutf::simdutf fuzz_flags)
+
+# ---- JSON-LD: the strict JSON reader and the structured data fold ----------
+add_executable(json-ld-fuzzer
+  json_ld_fuzzer.cpp
+  "${GRPARSE_ROOT}/src/json_reader.cpp"
+  "${GRPARSE_ROOT}/src/structured_data.cpp")
+target_link_libraries(json-ld-fuzzer PRIVATE simdutf::simdutf fuzz_protos fuzz_flags)

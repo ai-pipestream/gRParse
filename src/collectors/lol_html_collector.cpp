@@ -13,6 +13,7 @@
 
 #include "collector_support.h"
 #include "grparse/document_assembly.h"
+#include "grparse/structured_data.h"
 #include "lolhtml/v1/lolhtml_service.grpc.pb.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -611,9 +612,7 @@ class LolHtmlFold {
       meta->set_content(base->text());
     }
     if (instance.json_ld && !trim_ascii(base->text()).empty()) {
-      auto* data = document_.add_structured_data();
-      data->set_kind("json-ld");
-      data->set_json(std::string(trim_ascii(base->text())));
+      add_json_ld(base->text(), base->self_ref());
     }
     instance.closed = true;
   }
@@ -686,14 +685,7 @@ class LolHtmlFold {
     const bool is_json_ld =
         (active != element_by_rule_.end() && active->second.is_json_ld) ||
         (text_type == lolv1::TEXT_TYPE_SCRIPT_DATA && json_ld_rules_.contains(rule_id));
-    if (is_json_ld) {
-      const std::string_view trimmed = trim_ascii(text);
-      if (!trimmed.empty()) {
-        docv1::StructuredData* sd = document_.add_structured_data();
-        sd->set_kind("json-ld");
-        sd->set_json(std::string(trimmed));
-      }
-    }
+    if (is_json_ld && !trim_ascii(text).empty()) add_json_ld(text, base->self_ref());
 
     if (active == element_by_rule_.end() || active->second.lower_tag != "title" ||
         text.empty() || document_.source_meta().has_title()) {
@@ -722,6 +714,32 @@ class LolHtmlFold {
       found = groups_by_rule_.emplace(rule, index).first;
     }
     return found->second;
+  }
+
+  // One JSON-LD script, decoded into the things it describes. The script's
+  // own text is not copied: it is the text of the item at `item_ref`, and
+  // the entry points there. A block that does not parse keeps its entry
+  // (the document still says the page holds one) with no items, and a
+  // typed warning says so.
+  void add_json_ld(std::string_view text, const std::string& item_ref) {
+    docv1::StructuredData* data = document_.add_structured_data();
+    data->set_item_ref(item_ref);
+    const JsonLdDecode decode = decode_json_ld(text, data);
+    if (!decode.decoded) {
+      warnings_.push_back(Warning(docv1::WARNING_CODE_STRUCTURED_DATA_NOT_DECODED,
+                                  "lol-html: a JSON-LD block was not decoded: " + decode.error +
+                                      "; its text is in the document, its items are not")
+                              .on_item(item_ref));
+      return;
+    }
+    if (decode.inline_contexts > 0) {
+      warnings_.push_back(Warning(docv1::WARNING_CODE_SOURCE_CONSTRUCT_UNMAPPED,
+                                  "lol-html: a JSON-LD block defines its terms in an inline "
+                                  "@context, which is not decoded; the items keep the names "
+                                  "the block wrote")
+                              .on_item(item_ref)
+                              .times(decode.inline_contexts));
+    }
   }
 
   docv1::TextItemBase* add_text(const std::string& rule, std::string text,

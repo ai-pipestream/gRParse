@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
 
 #include "ai/pipestream/asr/v1/asr_service.grpc.pb.h"
@@ -2080,11 +2081,21 @@ void verify_lol_html_folds_full_api_surface() {
               ld_node.prov(0).byte_range().start() == 300 &&
               ld_node.prov(0).byte_range().end() == 355,
           "text node inherits active element origin and records its byte span");
+  // The script is decoded: the entry names the dialect, the vocabulary and
+  // the one thing the block describes, and points at the item that holds
+  // the script's text. It carries no JSON text of its own.
+  docv1::StructuredData expected_ld;
+  expected_ld.set_dialect(docv1::STRUCTURED_DATA_KIND_JSON_LD);
+  expected_ld.add_contexts("https://schema.org");
+  expected_ld.set_item_ref(ld_node.self_ref());
+  expected_ld.add_items()->add_types("Article");
   require(outcome.document.structured_data_size() == 1 &&
-              outcome.document.structured_data(0).kind() == "json-ld" &&
-              outcome.document.structured_data(0).json() ==
-                  "{\"@context\":\"https://schema.org\",\"@type\":\"Article\"}",
-          "JSON-LD script text populates Document.structured_data");
+              google::protobuf::util::MessageDifferencer::Equals(
+                  outcome.document.structured_data(0), expected_ld),
+          "the JSON-LD script is decoded into typed items: " +
+              (outcome.document.structured_data_size() == 1
+                   ? outcome.document.structured_data(0).ShortDebugString()
+                   : std::string("no single entry")));
 
   // EndTagFound folds as closing tag and clears active element state.
   const auto& script_close = outcome.document.texts(11).text().base();
@@ -2275,6 +2286,159 @@ void verify_lol_html_instance_identity_and_raw_nodes() {
   const auto& nested_group = outcome.document.groups(group_index(nested->parent().ref()));
   require(nested_group.parent().ref() == anchor->parent().ref(),
           "nested match group is parented to the enclosing instance group");
+}
+
+// Three JSON-LD scripts: one that says something of every value shape, one
+// that is not JSON, and one that defines its terms in an inline context.
+constexpr std::string_view kArticleJsonLd = R"json({
+  "@context": "https://schema.org",
+  "@id": "https://example.org/a",
+  "@type": "Article",
+  "headline": "Parsing at scale",
+  "author": {"@type": "Person", "name": "Ada"},
+  "wordCount": 1200,
+  "ratingValue": 4.5,
+  "isAccessibleForFree": true,
+  "about": ["search", {"@id": "https://example.org/topics/rag"}],
+  "name": {"@value": "Analyse", "@language": "de"},
+  "datePublished": {"@value": "2026-11-24", "@type": "Date"},
+  "comment": null
+})json";
+constexpr std::string_view kBrokenJsonLd = R"json({"@type": "Article",})json";
+constexpr std::string_view kInlineContextJsonLd =
+    R"json({"@context": {"title": "http://purl.org/dc/terms/title"}, "@type": "Thing", "title": "T"})json";
+
+class JsonLdLolHtmlService final : public lolv1::LolHtmlService::Service {
+ public:
+  grpc::Status Extract(grpc::ServerContext*,
+      grpc::ServerReaderWriter<lolv1::ExtractResponse, lolv1::ExtractRequest>* stream) override {
+    lolv1::ExtractRequest request;
+    while (stream->Read(&request)) {}
+    uint64_t ordinal = 0;
+    for (const std::string_view block : {kArticleJsonLd, kBrokenJsonLd, kInlineContextJsonLd}) {
+      ++ordinal;
+      lolv1::ExtractResponse event;
+      auto* el = event.mutable_element();
+      el->set_rule_id("links");
+      el->set_match_ordinal(ordinal);
+      el->set_tag_name("script");
+      el->set_tag_name_raw("script");
+      el->set_namespace_(lolv1::NAMESPACE_HTML);
+      el->set_can_have_content(true);
+      auto* type = el->add_attributes();
+      type->set_name("type");
+      type->set_name_raw("type");
+      type->set_value("application/ld+json");
+      type->set_value_present(true);
+      stream->Write(event);
+      event.Clear();
+      auto* node = event.mutable_text();
+      node->set_rule_id("links");
+      node->set_match_ordinal(ordinal);
+      node->set_text(std::string(block));
+      node->set_last_in_node(true);
+      node->set_text_type(lolv1::TEXT_TYPE_SCRIPT_DATA);
+      stream->Write(event);
+      event.Clear();
+      event.mutable_end_tag()->set_rule_id("links");
+      event.mutable_end_tag()->set_match_ordinal(ordinal);
+      event.mutable_end_tag()->set_name("script");
+      stream->Write(event);
+    }
+    lolv1::ExtractResponse event;
+    event.mutable_finished()->set_bytes_parsed(900);
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+};
+
+// A JSON-LD script is machine-readable data, so it reaches the document as
+// typed items a consumer reads without parsing JSON, and a block that
+// cannot be decoded says so with a typed warning on the item that holds
+// its text.
+void verify_lol_html_decodes_json_ld() {
+  JsonLdLolHtmlService service;
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_lol_html_document(server.channel(), lol_html_options(), "<script/>");
+  require(outcome.success, "lol-html collection with JSON-LD succeeds: " + outcome.error);
+  const auto ref_of = [&](std::string_view text) {
+    for (const auto& item : outcome.document.texts()) {
+      if (item.text().base().text() == text) return item.text().base().self_ref();
+    }
+    return std::string("(no item holds the script text)");
+  };
+  require(outcome.document.structured_data_size() == 3,
+          "each JSON-LD script is one structured data entry, got " +
+              std::to_string(outcome.document.structured_data_size()));
+
+  docv1::StructuredData article;
+  article.set_dialect(docv1::STRUCTURED_DATA_KIND_JSON_LD);
+  article.add_contexts("https://schema.org");
+  article.set_item_ref(ref_of(kArticleJsonLd));
+  auto* item = article.add_items();
+  item->set_id("https://example.org/a");
+  item->add_types("Article");
+  const auto property = [&](const char* name) {
+    auto* added = item->add_properties();
+    added->set_name(name);
+    return added;
+  };
+  property("headline")->add_values()->set_text("Parsing at scale");
+  auto* author = property("author")->add_values()->mutable_item();
+  author->add_types("Person");
+  auto* author_name = author->add_properties();
+  author_name->set_name("name");
+  author_name->add_values()->set_text("Ada");
+  property("wordCount")->add_values()->set_integer(1200);
+  property("ratingValue")->add_values()->set_number(4.5);
+  property("isAccessibleForFree")->add_values()->set_boolean(true);
+  auto* about = property("about");
+  about->add_values()->set_text("search");
+  about->add_values()->set_reference("https://example.org/topics/rag");
+  auto* name = property("name")->add_values();
+  name->set_text("Analyse");
+  name->set_language("de");
+  auto* published = property("datePublished")->add_values();
+  published->set_text("2026-11-24");
+  published->set_datatype("Date");
+  property("comment");  // Stated with no value: the name stays, no value does.
+  require(google::protobuf::util::MessageDifferencer::Equals(
+              outcome.document.structured_data(0), article),
+          "every value shape of the block is a typed value: " +
+              outcome.document.structured_data(0).ShortDebugString());
+
+  docv1::StructuredData broken;
+  broken.set_dialect(docv1::STRUCTURED_DATA_KIND_JSON_LD);
+  broken.set_item_ref(ref_of(kBrokenJsonLd));
+  require(google::protobuf::util::MessageDifferencer::Equals(
+              outcome.document.structured_data(1), broken),
+          "a block that is not JSON keeps its entry and has no items: " +
+              outcome.document.structured_data(1).ShortDebugString());
+
+  docv1::StructuredData inline_context;
+  inline_context.set_dialect(docv1::STRUCTURED_DATA_KIND_JSON_LD);
+  inline_context.set_item_ref(ref_of(kInlineContextJsonLd));
+  auto* thing = inline_context.add_items();
+  thing->add_types("Thing");
+  auto* title = thing->add_properties();
+  title->set_name("title");
+  title->add_values()->set_text("T");
+  require(google::protobuf::util::MessageDifferencer::Equals(
+              outcome.document.structured_data(2), inline_context),
+          "a block with an inline context keeps its items under the names it wrote: " +
+              outcome.document.structured_data(2).ShortDebugString());
+
+  std::string seen;
+  for (const grparse::Warning& warning : outcome.warnings) seen += "[" + warning.message + "]";
+  require(outcome.warnings.size() == 2, "the two blocks that lost something each warn: " + seen);
+  require(outcome.warnings[0].code == docv1::WARNING_CODE_STRUCTURED_DATA_NOT_DECODED &&
+              outcome.warnings[0].item_ref == ref_of(kBrokenJsonLd),
+          "the block that is not JSON is named by a typed warning on its item: " + seen);
+  require(outcome.warnings[1].code == docv1::WARNING_CODE_SOURCE_CONSTRUCT_UNMAPPED &&
+              outcome.warnings[1].item_ref == ref_of(kInlineContextJsonLd) &&
+              outcome.warnings[1].count == uint64_t{1},
+          "the inline context that is not decoded is named too: " + seen);
 }
 
 void verify_lol_html_without_rules_never_dials() {
@@ -4525,6 +4689,7 @@ int main() {
       verify_epub_book_survives_a_failing_chapter,
       verify_markup_forwards_hint_and_collects,
       verify_lol_html_forwards_rules_and_folds,
+      verify_lol_html_decodes_json_ld,
       verify_lol_html_without_rules_never_dials,
       verify_lol_html_in_band_error_is_terminal,
       verify_lol_html_captures_page_identity,
