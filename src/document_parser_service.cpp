@@ -321,7 +321,16 @@ class ParseWriteReactor final : public grpc::ServerWriteReactor<Message> {
     }
     const auto& message = messages_[next_];
     ++next_;
-    this->StartWrite(&message);
+    // StartWrite serializes the message before it queues the write, so the
+    // one thing it can throw (no memory for the buffer) comes before any
+    // write is outstanding. The call is finished with that failure rather
+    // than left open: nothing else would ever finish it.
+    try {
+      this->StartWrite(&message);
+    } catch (...) {
+      messages_.clear();
+      this->Finish(status_from_exception(std::current_exception()));
+    }
   }
 
   Messages messages_;
@@ -672,8 +681,11 @@ DocumentParserService::submit_task(grpc::CallbackServerContext* context,
   const bool queued = executor_.submit(
       [this, task_id, work = std::move(work), request_charge,
        call = ParseCall(tasks_->stop_flag(), std::move(passwords))] {
-        tasks_->start(task_id);
+        // Inside the try on purpose: start() tells the task's watchers, and
+        // a throw from there must end the task as failed, not leave it
+        // pending for ever with only the executor's escape counter to say so.
         try {
+          tasks_->start(task_id);
           work(call, task_id);
         } catch (...) {
           tasks_->fail(task_id, status_from_exception(std::current_exception()),
