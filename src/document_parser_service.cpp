@@ -160,7 +160,11 @@ void describe_chunks(const ChunkRequest& chunk_request,
     attach_failures(parsed->result.failures, response);
   }
   response->mutable_option_notices()->Swap(&parsed->option_notices);
-  chunking::fill_chunking_info(chunk_request.chunking_options(),
+  chunking::fill_chunker_settings(chunk_request.chunking_options(),
+                                  response->mutable_chunker_settings());
+  // The deprecated bag is still filled for callers that read it, from the
+  // typed settings.
+  chunking::fill_chunking_info(response->chunker_settings(),
                                response->mutable_chunking_info());
   response->set_processing_time(
       std::chrono::duration<double>(std::chrono::steady_clock::now() - started).count());
@@ -1153,6 +1157,9 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         summary->mutable_documents()->Swap(rest.mutable_documents());
         summary->set_processing_time(rest.processing_time());
         summary->mutable_chunking_info()->swap(*rest.mutable_chunking_info());
+        if (rest.has_chunker_settings()) {
+          summary->mutable_chunker_settings()->Swap(rest.mutable_chunker_settings());
+        }
         if (rest.has_chunk_omissions()) {
           summary->mutable_chunk_omissions()->Swap(rest.mutable_chunk_omissions());
         }

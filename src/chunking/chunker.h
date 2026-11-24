@@ -139,13 +139,20 @@ ChunkOptions chunk_options_from(
 ChunkOptions chunk_options_from(
     const ai::pipestream::parse::v1::HybridChunkerOptions& options);
 
-// Fill ChunkDocumentResponse.chunking_info from the active chunker options
-// (parity with jobkit ChunkedDocumentResult.chunking_info = options.model_dump).
-void fill_chunking_info(
+// The chunker and the options it ran with, as ChunkDocumentResponse states
+// them: the request's options with every default it left unset filled in.
+void fill_chunker_settings(
     const ai::pipestream::parse::v1::HierarchicalChunkerOptions& options,
-    google::protobuf::Map<std::string, ai::pipestream::parse::v1::ScalarValue>* out);
-void fill_chunking_info(
+    ai::pipestream::parse::v1::ChunkerSettings* out);
+void fill_chunker_settings(
     const ai::pipestream::parse::v1::HybridChunkerOptions& options,
+    ai::pipestream::parse::v1::ChunkerSettings* out);
+
+// The same as the deprecated ChunkDocumentResponse.chunking_info bag, read
+// off the typed settings so the two cannot disagree (parity with jobkit
+// ChunkedDocumentResult.chunking_info = options.model_dump).
+void fill_chunking_info(
+    const ai::pipestream::parse::v1::ChunkerSettings& settings,
     google::protobuf::Map<std::string, ai::pipestream::parse::v1::ScalarValue>* out);
 
 // The hierarchical chunker: one chunk per emitted unit in body-tree walk
