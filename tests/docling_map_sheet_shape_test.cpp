@@ -399,6 +399,156 @@ void verify_merge_past_used_range_grows_the_table() {
           "the fold stays well formed");
 }
 
+// "row R, col C" of a table's origin, for a failure message.
+std::string origin_text(const docv1::TableData& data) {
+  return "row " + std::to_string(data.origin().row()) + ", col " +
+         std::to_string(data.origin().col());
+}
+
+// A number cell as the worker sends one.
+void number_cell(officev1::SheetRow* row, int column, double number,
+                 const std::string& display) {
+  officev1::SheetCell* cell = row->add_cells();
+  cell->set_column(column);
+  cell->set_type(officev1::SHEET_CELL_TYPE_VALUE);
+  cell->set_number(number);
+  cell->set_display(display);
+  cell->set_merged_columns(1);
+  cell->set_merged_rows(1);
+}
+
+// A sheet whose used range is C5:E7, with widths for columns A to E. The
+// caller adds the rows.
+officev1::StreamPagesResponse offset_sheet_event(int index, const std::string& name) {
+  officev1::StreamPagesResponse event = sheet_event(index, name, true, 6, 4);
+  event.mutable_sheet()->set_used_start_row(4);
+  event.mutable_sheet()->set_used_start_column(2);
+  for (int column = 0; column < 5; column++) {
+    event.mutable_sheet()->add_column_widths_twips(1000 + column);
+  }
+  return event;
+}
+
+// The shared schema gives TableData an origin for a table cut out of a
+// larger grid, and names the sheet as its case: a sheet whose used range
+// starts at C5 holds the used range only, with grid cell (0, 0) at C5 and
+// the origin saying so. The fold used to write the cells at their sheet
+// addresses, so a sheet whose data sat far from A1 was a table of blank
+// leading rows and columns, and the renderers' grid budget cut the data off
+// the end of it.
+void verify_a_sheet_table_holds_its_used_range_only() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event(2));
+  mapper.consume(offset_sheet_event(0, "Stock"));
+  officev1::StreamPagesResponse labels = row_event(0, 4);
+  text_cell(labels.mutable_sheet_row(), 2, "Region");
+  text_cell(labels.mutable_sheet_row(), 3, "Units");
+  text_cell(labels.mutable_sheet_row(), 4, "Price");
+  mapper.consume(labels);
+  officev1::StreamPagesResponse north = row_event(0, 5);
+  text_cell(north.mutable_sheet_row(), 2, "North");
+  number_cell(north.mutable_sheet_row(), 3, 12, "12");
+  number_cell(north.mutable_sheet_row(), 4, 3.5, "3.50");
+  mapper.consume(north);
+  officev1::StreamPagesResponse south = row_event(0, 6);
+  text_cell(south.mutable_sheet_row(), 2, "South");
+  number_cell(south.mutable_sheet_row(), 3, 7, "7");
+  number_cell(south.mutable_sheet_row(), 4, 4.25, "4.25");
+  mapper.consume(south);
+  // The database range declares the header row, in sheet addresses.
+  officev1::StreamPagesResponse declared;
+  officev1::SheetDatabaseRange* range = declared.mutable_sheet_database_range();
+  range->set_name("StockList");
+  range->set_sheet_index(0);
+  range->mutable_range()->set_start_row(4);
+  range->mutable_range()->set_start_column(2);
+  range->mutable_range()->set_end_row(6);
+  range->mutable_range()->set_end_column(4);
+  range->set_contains_header(true);
+  mapper.consume(declared);
+  // A second sheet that starts at A1.
+  mapper.consume(sheet_event(1, "Plain", true, 0, 0));
+  officev1::StreamPagesResponse plain = row_event(1, 0);
+  text_cell(plain.mutable_sheet_row(), 0, "only");
+  mapper.consume(plain);
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  const docv1::TableData& data = document.tables(0).data();
+  require(data.has_origin() && data.origin().row() == 4 && data.origin().col() == 2,
+          "the table's origin is the used range's first cell, C5, got " +
+              origin_text(data));
+  require_equal(data.num_rows(), 3, "rows of the used range");
+  require_equal(data.num_cols(), 3, "columns of the used range");
+  const docv1::TableCell* region = cell_at(data, 0, 0);
+  require(region != nullptr && region->text() == "Region",
+          "grid cell (0, 0) is the used range's first cell");
+  require(region != nullptr && region->column_header() && cell_at(data, 0, 2) != nullptr &&
+              cell_at(data, 0, 2)->column_header(),
+          "the database range's header row is marked where it sits in the cut grid");
+  const docv1::TableCell* units = cell_at(data, 1, 1);
+  require(units != nullptr && units->value().number() == 12 && !units->column_header(),
+          "a data cell sits at its sheet address minus the origin");
+  for (const docv1::TableCell& cell : data.table_cells()) {
+    require(cell.end_row_offset_idx() <= data.num_rows() &&
+                cell.end_col_offset_idx() <= data.num_cols(),
+            "every cell is inside the grid");
+  }
+  require(data.columns_size() == 3 && data.columns(0).name() == "C" &&
+              data.columns(0).width() == 1002 && data.columns(2).name() == "E",
+          "the column schema starts at the origin column");
+  require(data.row_prov_size() == 3 && data.row_prov(0).grid().row() == 4 &&
+              data.row_prov(0).grid().col() == 2,
+          "row provenance keeps the sheet's own addresses");
+  require(document.named_ranges_size() == 1 &&
+              document.named_ranges(0).range().start().row() == 4 &&
+              document.named_ranges(0).range().start().col() == 2,
+          "a range of the workbook keeps the sheet's own addresses");
+  const docv1::TableData& plain_data = document.tables(1).data();
+  require(!plain_data.has_origin() && cell_at(plain_data, 0, 0) != nullptr,
+          "a sheet that starts at A1 states no origin");
+  require(grparse::docling_integrity_errors(document).empty(), "the fold stays well formed");
+}
+
+// A lone merged label across the used width at the top is a section row.
+// The used width is the width of the used range, wherever the range starts:
+// a title over C5:E5 spans its three-column table whole.
+void verify_a_title_across_the_used_width_is_a_section_row_wherever_the_range_starts() {
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event(1));
+  officev1::StreamPagesResponse sheet = offset_sheet_event(0, "Stock");
+  sheet.mutable_sheet()->set_used_end_row(7);
+  mapper.consume(sheet);
+  officev1::StreamPagesResponse title = row_event(0, 4);
+  text_cell(title.mutable_sheet_row(), 2, "Stock on hand");
+  title.mutable_sheet_row()->mutable_cells(0)->set_merged_columns(3);
+  mapper.consume(title);
+  officev1::StreamPagesResponse labels = row_event(0, 5);
+  text_cell(labels.mutable_sheet_row(), 2, "Region");
+  text_cell(labels.mutable_sheet_row(), 3, "Units");
+  text_cell(labels.mutable_sheet_row(), 4, "Price");
+  mapper.consume(labels);
+  for (int row = 6; row < 8; row++) {
+    officev1::StreamPagesResponse line = row_event(0, row);
+    text_cell(line.mutable_sheet_row(), 2, row == 6 ? "North" : "South");
+    number_cell(line.mutable_sheet_row(), 3, row, std::to_string(row));
+    number_cell(line.mutable_sheet_row(), 4, row + 0.5, std::to_string(row) + ".50");
+    mapper.consume(line);
+  }
+  mapper.consume(status_event());
+
+  const docv1::TableData& data = mapper.document().tables(0).data();
+  const docv1::TableCell* title_cell = cell_at(data, 0, 0);
+  require(title_cell != nullptr && title_cell->text() == "Stock on hand" &&
+              title_cell->row_section(),
+          "the title across the used width is a section row");
+  require(cell_at(data, 1, 0) != nullptr && cell_at(data, 1, 0)->column_header() &&
+              cell_at(data, 1, 2) != nullptr && cell_at(data, 1, 2)->column_header(),
+          "the labels under it are the header row");
+  require(cell_at(data, 2, 1) != nullptr && !cell_at(data, 2, 1)->column_header(),
+          "the data under the labels is not");
+}
+
 }  // namespace
 
 int main() {
@@ -413,5 +563,7 @@ int main() {
       verify_sheet_provenance_and_pivot_span,
       verify_sheet_picture_sits_under_its_sheet,
       verify_merge_past_used_range_grows_the_table,
+      verify_a_sheet_table_holds_its_used_range_only,
+      verify_a_title_across_the_used_width_is_a_section_row_wherever_the_range_starts,
   });
 }
