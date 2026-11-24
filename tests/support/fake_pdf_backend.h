@@ -140,6 +140,21 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     render_stall_ = stall;
   }
 
+  // Fails every Render that covers this page (0-based) with INTERNAL: a
+  // backend that opened the document and cannot draw one of its pages.
+  void fail_renders_of_page(uint32_t page_index) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    failing_renders_.insert(page_index);
+  }
+
+  // Encrypts a registered document: a load that carries no password answers
+  // PASSWORD_REQUIRED and one that carries another answers
+  // PASSWORD_INCORRECT, on every RPC, as a real backend does.
+  void require_password(const std::string& bytes, std::string password) {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    passwords_[bytes] = std::move(password);
+  }
+
   // The frame Parse reports geometry in; PAGE_SPACE_UNSPECIFIED (the
   // default) leaves PageInfo.page_space unset.
   void set_page_space(pdfv1::PageSpace space) {
@@ -519,6 +534,12 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     const uint32_t end = request->has_pages() ? request->pages().end()
                                               : static_cast<uint32_t>(pages.size());
     for (uint32_t index = begin; index < end && index < pages.size(); ++index) {
+      if (render_fails(index)) {
+        return grpc::Status(grpc::StatusCode::INTERNAL,
+                            "fake backend cannot draw page " + std::to_string(index + 1));
+      }
+    }
+    for (uint32_t index = begin; index < end && index < pages.size(); ++index) {
       const FakePdfPage& page = pages[index];
       const bool quarter_turn = page.rotation_degrees % 180 != 0;
       const double width_pts = quarter_turn ? page.height_pts : page.width_pts;
@@ -544,6 +565,11 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     return page_space_;
   }
 
+  bool render_fails(uint32_t page_index) const {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    return failing_renders_.contains(page_index);
+  }
+
   static void shift(pdfv1::BoundingBox* box, double dx, double dy) {
     box->set_x0(box->x0() - dx);
     box->set_y0(box->y0() - dy);
@@ -559,17 +585,40 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     if (document.data().empty()) {
       const auto cached = by_hash_.find(document.sha256());
       if (cached == by_hash_.end()) return {pdfv1::LOAD_STATUS_BYTES_REQUIRED, {}};
+      const auto locked = passwords_by_hash_.find(document.sha256());
+      if (locked != passwords_by_hash_.end()) {
+        const pdfv1::LoadStatus verdict = password_verdict(document, locked->second);
+        if (verdict != pdfv1::LOAD_STATUS_OK) return {verdict, {}};
+      }
       return {pdfv1::LOAD_STATUS_OK, cached->second};
     }
     const auto known = known_.find(document.data());
     if (known == known_.end()) return {pdfv1::LOAD_STATUS_CORRUPT, {}};
-    if (document.has_sha256()) by_hash_[document.sha256()] = known->second;
+    const auto locked = passwords_.find(document.data());
+    if (document.has_sha256()) {
+      by_hash_[document.sha256()] = known->second;
+      if (locked != passwords_.end()) passwords_by_hash_[document.sha256()] = locked->second;
+    }
+    if (locked != passwords_.end()) {
+      const pdfv1::LoadStatus verdict = password_verdict(document, locked->second);
+      if (verdict != pdfv1::LOAD_STATUS_OK) return {verdict, {}};
+    }
     return {pdfv1::LOAD_STATUS_OK, known->second};
+  }
+
+  static pdfv1::LoadStatus password_verdict(const pdfv1::PdfDocument& document,
+                                            const std::string& password) {
+    if (!document.has_password()) return pdfv1::LOAD_STATUS_PASSWORD_REQUIRED;
+    return document.password() == password ? pdfv1::LOAD_STATUS_OK
+                                           : pdfv1::LOAD_STATUS_PASSWORD_INCORRECT;
   }
 
   mutable std::mutex mutex_;
   std::map<std::string, std::vector<FakePdfPage>> known_;
   std::map<std::string, std::vector<FakePdfPage>> by_hash_;
+  std::set<uint32_t> failing_renders_;
+  std::map<std::string, std::string> passwords_;
+  std::map<std::string, std::string> passwords_by_hash_;
   int render_calls_ = 0;
   int probe_calls_ = 0;
   std::vector<std::string> probe_upload_hashes_;
