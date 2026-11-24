@@ -854,6 +854,40 @@ void verify_backend_warnings_reach_the_converted_document() {
   require_equal(said, 1, "the widget fetch hears the same warning and does not repeat it");
 }
 
+// The whole way out for a vote that did not happen: GRPARSE_PDF_BACKEND
+// names two backends and one of them cannot open the document. The PDF
+// still converts, from the other backend alone, and the Document says so,
+// typed: which backend is out, and that page one was not decided by a vote.
+void verify_a_dropped_consensus_backend_reaches_the_converted_document() {
+  grparse_test::ScopedPdfBackend reads_it;
+  grparse_test::ScopedPdfBackend cannot_open_it;
+  // "%PDF-1.4\n", the bytes the request below carries; the second backend
+  // was never told about them and answers LOAD_STATUS_CORRUPT.
+  reads_it.backend().add_document(
+      "%PDF-1.4\n", {grparse_test::text_page({"The survey team returned the equipment"})});
+  ::setenv("GRPARSE_PDF_BACKEND", (reads_it.target() + "," + cannot_open_it.target()).c_str(), 1);
+
+  ParseServer server{grparse::PageSourceFactory{}};
+  parsev1::ConvertSourceResponse response;
+  const grpc::Status status = server.convert("vote.pdf", "JVBERi0xLjQK", std::nullopt, &response);
+  require(status.ok(),
+          "the PDF converts from the backend that reads it: " + status.error_message());
+  const auto& document = response.response().document().doc();
+  const docv1::CollectorWarning* out = nullptr;
+  const docv1::CollectorWarning* undervoted = nullptr;
+  for (const auto& warning : document.warnings()) {
+    if (warning.code() == docv1::WARNING_CODE_CONSENSUS_BACKEND_FAILED) out = &warning;
+    if (warning.code() == docv1::WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED) undervoted = &warning;
+  }
+  require(out != nullptr, "Document.warnings carries WARNING_CODE_CONSENSUS_BACKEND_FAILED (" +
+                              std::to_string(document.warnings_size()) + " warnings)");
+  require(out->message().contains(cannot_open_it.target()) && !out->has_page_no() &&
+              out->source().collector() == "grparse-cv",
+          "naming the backend, about the document, under the collector that read the PDF");
+  require(undervoted != nullptr && undervoted->has_page_no() && undervoted->page_no() == 1,
+          "Document.warnings carries WARNING_CODE_CONSENSUS_PAGE_UNDERVOTED on page one");
+}
+
 }  // namespace
 
 int main() {
@@ -867,5 +901,6 @@ int main() {
        extract_form_fields_unset_true_false_on_a_pdf, verify_widget_trailer_warnings_are_typed,
        verify_unsupported_form_fields_are_not_a_formless_pdf,
        verify_form_field_gaps_reach_the_converted_document,
-       verify_backend_warnings_reach_the_converted_document});
+       verify_backend_warnings_reach_the_converted_document,
+       verify_a_dropped_consensus_backend_reaches_the_converted_document});
 }

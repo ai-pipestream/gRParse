@@ -76,10 +76,14 @@ class PageSource {
   // What the source learned about its own read of `page_number` that the
   // caller must hear: a PDF backend that said it skipped or repaired
   // content, a backend answer whose trailer totals do not match what
-  // arrived. Each warning names the page it is about where the source
-  // knows one. Asked after extract_digital_page() for the page, because a
-  // page that came back with no text layer at all (nullopt) can still have
-  // been reported on. Empty for sources that read nothing remotely.
+  // arrived, a consensus vote that ran without one of its backends. Each
+  // warning names the page it is about where the source knows one; one
+  // about the whole document names none and comes back for every page.
+  // Asked after the caller's last read of the page (extract_digital_page()
+  // and render_page(), whichever it makes), because a page that came back
+  // with no text layer at all (nullopt) can still have been reported on,
+  // and a source can learn something on the render. Empty for sources that
+  // read nothing remotely.
   virtual std::vector<Warning> page_warnings(int) const { return {}; }
 };
 

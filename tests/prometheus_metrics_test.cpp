@@ -567,6 +567,46 @@ void verify_live_pipeline_telemetry_and_run_collectors() {
   grparse::reset_pipeline_telemetry();
 }
 
+// What consensus reads of PDFs went without is a counter family of its own,
+// one series per event whether or not it ever happened, fed by the live
+// process counters the consensus source records into.
+void verify_consensus_events_are_counted_and_rendered() {
+  grparse::PipelineTelemetry telemetry;
+  telemetry.consensus_events(grparse::ConsensusEvent::kLegOpenFailed) = 2;
+  telemetry.consensus_events(grparse::ConsensusEvent::kPageUndervoted) = 7;
+  const std::string text = grparse::render_prometheus_metrics(
+      grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
+      grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
+      grparse::OfficeCvTotals{}, 0, 0, telemetry);
+  require_contains(text, "# HELP grparse_pdf_consensus_events_total ", "consensus help line");
+  require_contains(text, "# TYPE grparse_pdf_consensus_events_total counter\n",
+                   "consensus type line");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_open_failed\"} 2\n",
+                   "legs that could not open a document");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_page_failed\"} 0\n",
+                   "a series exists before its first event");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"leg_disabled\"} 0\n",
+                   "legs taken out of a vote");
+  require_contains(
+      text, "grparse_pdf_consensus_events_total{kind=\"page_count_disagreement\"} 0\n",
+      "documents whose backends disagreed on the page count");
+  require_contains(text, "grparse_pdf_consensus_events_total{kind=\"page_undervoted\"} 7\n",
+                   "pages decided by fewer backends than configured");
+
+  grparse::reset_pipeline_telemetry();
+  grparse::record_consensus_event(grparse::ConsensusEvent::kLegDisabled);
+  grparse::record_consensus_event(grparse::ConsensusEvent::kLegPageFailed, 3);
+  const grparse::PipelineTelemetry live = grparse::pipeline_telemetry();
+  require(live.consensus_events(grparse::ConsensusEvent::kLegDisabled) == 1 &&
+              live.consensus_events(grparse::ConsensusEvent::kLegPageFailed) == 3 &&
+              live.consensus_events(grparse::ConsensusEvent::kLegOpenFailed) == 0,
+          "recorded consensus events show in the live snapshot");
+  grparse::reset_pipeline_telemetry();
+  require(grparse::pipeline_telemetry().consensus_events(
+              grparse::ConsensusEvent::kLegPageFailed) == 0,
+          "and reset with the rest of the pipeline telemetry");
+}
+
 void verify_http_listener() {
   grparse::MetricsHttpServer server(0, [] { return std::string("test_metric 1\n"); });
   require(server.port() != 0, "port 0 must resolve to a bound port");
@@ -612,6 +652,7 @@ int main() {
       verify_render_doctype_and_collector_families,
       verify_doctype_classification_and_collector_status_mapping,
       verify_live_pipeline_telemetry_and_run_collectors,
+      verify_consensus_events_are_counted_and_rendered,
       verify_http_listener,
       verify_renderer_exception_becomes_500,
   });
