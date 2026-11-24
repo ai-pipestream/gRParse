@@ -1061,6 +1061,11 @@ if(BUILD_TESTING)
   add_test(NAME gpu-placement-cuda-script
     COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test/gpu-placement-cuda-selftest.sh)
   set_tests_properties(gpu-placement-cuda-script PROPERTIES TIMEOUT 300 LABELS grparse)
+  # Every service of compose.stack.yaml restarts after a crash or a reboot,
+  # and the one-shot model loader does not (scripts/test/stack-restart-policy-test.sh).
+  add_test(NAME stack-restart-policy
+    COMMAND bash ${CMAKE_SOURCE_DIR}/scripts/test/stack-restart-policy-test.sh)
+  set_tests_properties(stack-restart-policy PROPERTIES TIMEOUT 60 LABELS grparse)
   # The checker every image build runs after ctest, over synthetic JUnit
   # files: a skip outside the allowed tiers fails it (scripts/check-skips.sh).
   add_test(NAME check-skips-script
