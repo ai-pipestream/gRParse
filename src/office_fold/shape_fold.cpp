@@ -54,10 +54,13 @@ void ShapeFold::on_slide(const officev1::Slide& slide) {
   docv1::GroupItem* group =
       arena_.add_group("#/body", docv1::GROUP_LABEL_SLIDE, slide.name(),
                        docv1::CONTENT_LAYER_BODY);
-  auto* fields = group->mutable_meta()->mutable_custom_fields();
-  (*fields)["layout"] = num_value(slide.layout());
+  // The layout is the office core's autolayout number. Zero is a real
+  // layout, so the number is always stated rather than left to read as
+  // absent.
+  docv1::SlideMeta* meta = group->mutable_slide();
+  meta->set_layout_id(slide.layout());
   if (!slide.master_page_name().empty()) {
-    (*fields)["master_page_name"] = str_value(slide.master_page_name());
+    meta->set_master_page_name(slide.master_page_name());
   }
   slide_group_[slide.index()] = group->self_ref();
   if (first_slide_ < 0 || slide.index() < first_slide_) {

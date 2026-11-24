@@ -119,18 +119,6 @@ std::string mime_for_extension(const std::string& extension) {
   return found != kMimes.end() ? found->second : "application/octet-stream";
 }
 
-google::protobuf::Value str_value(const std::string& text) {
-  google::protobuf::Value value;
-  value.set_string_value(text);
-  return value;
-}
-
-google::protobuf::Value num_value(double number) {
-  google::protobuf::Value value;
-  value.set_number_value(number);
-  return value;
-}
-
 std::string double_text(double value) {
   char buffer[32];
   std::snprintf(buffer, sizeof buffer, "%g", value);

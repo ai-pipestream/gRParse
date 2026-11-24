@@ -282,8 +282,9 @@ release runs. Two more gates sit next to it. The anti-drift battery (ctests
 `test_truth_integrity` and `test_fixture_generators` modules under
 `eval/scorecard/tests/`) pins what the passes must keep producing offline:
 the same canonical JSON across runs and input permutations, fixed points for
-repair, the chart and sheet shapes, the mimetype precedence, an exact
-allowlist for colon-keyed custom fields (`cell:?` only), a sha256 manifest
+repair, the chart and sheet shapes, the mimetype precedence, no
+colon-keyed custom field from the office fold (an unplaceable cell is a
+typed `TableData.unplaced_cells` entry, not `cell:?`), a sha256 manifest
 of the fixtures (`eval/scorecard/fixtures/write_manifest.py` updates it on
 purpose), truth files that validate and floors never above their baseline.
 The S3 corpus eval (`eval/s3/run.py`, `eval/s3/README.md`) is the third
