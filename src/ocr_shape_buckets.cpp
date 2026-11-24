@@ -72,7 +72,9 @@ const BucketMode& bucket_mode() {
     // unpadded run (101 ACM papers, OpenVINO CPU: 150 figure items, 0 body).
     const OrtEpSelection selection = ort_ep_selection();
     const bool gpu = selection.ep == OrtEp::kOpenVino && on_gpu_device(selection.openvino_device);
-    return BucketMode{gpu, false};
+    // The Level Zero runtime takes any size as it comes; only the OpenVINO
+    // provider compiles per shape.
+    return BucketMode{gpu && !level_zero_ocr(), false};
   }();
   return mode;
 }
