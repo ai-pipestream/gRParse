@@ -291,33 +291,86 @@ void type_tabular_projection(docv1::TableData* data) {
 }  // namespace
 
 void ChartFold::hold(const officev1::EmbeddedObject& object) {
+  if (arena_.document_type() == "spreadsheet" && !object.persist_name().empty()) {
+    const auto waiting = std::ranges::find_if(
+        waiting_sheet_charts_, [&object](const WaitingSheetChart& held) {
+          return held.chart.sheet_index() == object.page_index() &&
+                 held.chart.name() == object.persist_name();
+        });
+    if (waiting != waiting_sheet_charts_.end()) {
+      const WaitingSheetChart held = std::move(*waiting);
+      waiting_sheet_charts_.erase(waiting);
+      return emit_on_sheet(object, held.chart, held.sheet_ref, held.layer);
+    }
+  }
   pending_charts_[object.page_index()].push_back(object);
 }
 
-bool ChartFold::take_pending(int page_index, const officev1::TwipsPoint* at,
+bool ChartFold::take_pending(int page_index, const officev1::TwipsPoint& at,
                              officev1::EmbeddedObject* out) {
   auto found = pending_charts_.find(page_index);
-  if (found == pending_charts_.end() || found->second.empty()) return false;
+  if (found == pending_charts_.end()) return false;
   std::deque<officev1::EmbeddedObject>& waiting = found->second;
-  auto picked = waiting.end();
-  if (at == nullptr) {
-    picked = waiting.begin();
-  } else {
-    // Positions come from the same model geometry on both events; a twip
-    // of slack covers unit rounding.
-    for (auto it = waiting.begin(); it != waiting.end(); ++it) {
-      if (std::llabs(it->position().x() - at->x()) <= 1 &&
-          std::llabs(it->position().y() - at->y()) <= 1) {
-        picked = it;
-        break;
-      }
-    }
-  }
+  // Positions come from the same model geometry on both events; a twip
+  // of slack covers unit rounding.
+  const auto picked = std::ranges::find_if(
+      waiting, [&at](const officev1::EmbeddedObject& object) {
+        return std::llabs(object.position().x() - at.x()) <= 1 &&
+               std::llabs(object.position().y() - at.y()) <= 1;
+      });
   if (picked == waiting.end()) return false;
   *out = std::move(*picked);
   waiting.erase(picked);
   if (waiting.empty()) pending_charts_.erase(found);
   return true;
+}
+
+bool ChartFold::take_stored(int sheet_index, const std::string& persist_name,
+                            officev1::EmbeddedObject* out) {
+  auto found = pending_charts_.find(sheet_index);
+  if (found == pending_charts_.end()) return false;
+  std::deque<officev1::EmbeddedObject>& waiting = found->second;
+  const auto picked = std::ranges::find_if(
+      waiting, [&persist_name](const officev1::EmbeddedObject& object) {
+        return object.persist_name() == persist_name;
+      });
+  if (picked == waiting.end()) return false;
+  *out = std::move(*picked);
+  waiting.erase(picked);
+  if (waiting.empty()) pending_charts_.erase(found);
+  return true;
+}
+
+void ChartFold::place_sheet_chart(const officev1::SheetChart& chart,
+                                  const std::string& sheet_ref,
+                                  docv1::ContentLayer layer) {
+  officev1::EmbeddedObject object;
+  // Its own object, by storage name; else the first object of a worker
+  // that names no storage, which order alone pairs.
+  if ((!chart.name().empty() && take_stored(chart.sheet_index(), chart.name(), &object)) ||
+      take_stored(chart.sheet_index(), std::string(), &object)) {
+    return emit_on_sheet(object, chart, sheet_ref, layer);
+  }
+  if (chart.name().empty()) return emit_sheet_chart_alone(chart, sheet_ref, layer);
+  waiting_sheet_charts_.push_back(WaitingSheetChart{chart, sheet_ref, layer});
+}
+
+void ChartFold::emit_on_sheet(const officev1::EmbeddedObject& object,
+                              const officev1::SheetChart& chart,
+                              const std::string& sheet_ref,
+                              docv1::ContentLayer layer) {
+  const double l = static_cast<double>(object.position().x());
+  const double t = static_cast<double>(object.position().y());
+  emit(&object, &chart, sheet_ref, layer, true, chart.sheet_index(), l, t,
+       l + static_cast<double>(object.width_twips()),
+       t + static_cast<double>(object.height_twips()));
+}
+
+void ChartFold::emit_sheet_chart_alone(const officev1::SheetChart& chart,
+                                       const std::string& sheet_ref,
+                                       docv1::ContentLayer layer) {
+  emit(nullptr, &chart, sheet_ref, layer, true, chart.sheet_index(), 0, 0, 0, 0,
+       false);
 }
 
 void ChartFold::add_annotations(const officev1::EmbeddedChart& chart,
@@ -606,6 +659,11 @@ void ChartFold::emit(const officev1::EmbeddedObject* object,
 }
 
 void ChartFold::flush(const ShapeFold& shapes) {
+  std::deque<WaitingSheetChart> unjoined;
+  unjoined.swap(waiting_sheet_charts_);
+  for (const WaitingSheetChart& held : unjoined) {
+    emit_sheet_chart_alone(held.chart, held.sheet_ref, held.layer);
+  }
   std::map<int, std::deque<officev1::EmbeddedObject>> waiting;
   waiting.swap(pending_charts_);
   for (auto& [page_index, charts] : waiting) {

@@ -25,9 +25,10 @@ class SheetFold {
   void on_named_range(const officev1::SheetNamedRange& range);
   void on_database_range(const officev1::SheetDatabaseRange& range);
   void on_cell_comment(const officev1::SheetCellComment& comment);
-  // The sheet's draw page announced the chart as an embedded object before
-  // the sheet streamed; that event carries the series, this one the source
-  // ranges. Together they are one chart under the sheet.
+  // The sheet's draw page announces the chart as an embedded object; that
+  // event carries the series, this one the source ranges. Together they
+  // are one chart under the sheet, joined by the object's storage name
+  // (ChartFold::place_sheet_chart).
   void on_chart(const officev1::SheetChart& chart, ChartFold& charts);
   void on_pivot_table(const officev1::SheetPivotTable& pivot);
 

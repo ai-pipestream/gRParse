@@ -5,6 +5,7 @@
 // display text, header flags on the label row only, unlabelled series, a
 // chart that carries no data, and byte-identical output across repeat runs.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
@@ -162,11 +163,12 @@ officev1::StreamPagesResponse chart_object_event(int page_index, const std::stri
   return event;
 }
 
-officev1::StreamPagesResponse sheet_chart_event(int sheet_index, const ChartShape& shape) {
+officev1::StreamPagesResponse sheet_chart_event(int sheet_index, const ChartShape& shape,
+                                                const std::string& name = "Object 1") {
   officev1::StreamPagesResponse event;
   officev1::SheetChart* chart = event.mutable_sheet_chart();
   chart->set_sheet_index(sheet_index);
-  chart->set_name("Object 1");
+  chart->set_name(name);
   officev1::SheetRangeRef* range = chart->add_ranges();
   range->set_start_row(0);
   range->set_start_column(0);
@@ -606,6 +608,115 @@ void verify_repeat_runs_are_byte_identical() {
           "a flushed chart has no SheetChart to name its corner from, so it stays blank");
 }
 
+// A chart object as a worker that reports storage names sends it: the shape
+// name the user sees, and the storage name the sheet's chart list uses.
+officev1::StreamPagesResponse stored_chart_object(int page_index, const std::string& shape_name,
+                                                  const std::string& persist_name,
+                                                  const ChartShape& shape, long long x,
+                                                  long long y) {
+  officev1::StreamPagesResponse event = chart_object_event(page_index, shape_name, shape, x, y);
+  event.mutable_embedded_object()->set_persist_name(persist_name);
+  return event;
+}
+
+const docv1::PictureItem* picture_named(const docv1::Document& document,
+                                        const std::string& shape_name) {
+  for (const docv1::PictureItem& picture : document.pictures()) {
+    if (picture.shape().name() == shape_name) return &picture;
+  }
+  return nullptr;
+}
+
+// Two charts on one sheet. The draw page lists them in one order and the
+// sheet's chart list in the other, so only the storage name says which
+// SheetChart belongs to which object: each picture must carry its own
+// chart's typed data and its own chart's source ranges.
+void verify_sheet_charts_join_their_objects_by_storage_name() {
+  ChartShape revenue = revenue_chart();
+  ChartShape pie = share_pie();
+  pie.title = "Share by segment";
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("spreadsheet", "book.xlsx"));
+  mapper.consume(stored_chart_object(0, "Revenue chart", "Object 1", revenue, 4000, 300));
+  mapper.consume(stored_chart_object(0, "Share chart", "Object 2", pie, 4000, 6000));
+  feed_sheet(&mapper, 0, "Data", "Region", revenue);
+  // The chart list names the pie first. Its range is the first two columns.
+  mapper.consume(sheet_chart_event(0, pie, "Object 2"));
+  mapper.consume(sheet_chart_event(0, revenue, "Object 1"));
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require_equal(document.pictures_size(), 2, "two charts are two pictures");
+  const docv1::PictureItem* revenue_picture = picture_named(document, "Revenue chart");
+  const docv1::PictureItem* pie_picture = picture_named(document, "Share chart");
+  require(revenue_picture != nullptr && pie_picture != nullptr,
+          "each picture keeps its object's shape name");
+  require_equal(revenue_picture->chart().sources_size(), 1, "the revenue chart has its sources");
+  require_equal(revenue_picture->chart().sources(0).end().col(), 2,
+                "the revenue picture carries the revenue chart's three-column range");
+  require_equal(pie_picture->chart().sources(0).end().col(), 1,
+                "the pie picture carries the pie's two-column range");
+  require(std::ranges::any_of(pie_picture->annotations(),
+                              [](const docv1::PictureAnnotation& annotation) {
+                                return annotation.has_pie_chart();
+                              }),
+          "the pie picture carries the pie's typed data");
+  require(std::ranges::none_of(revenue_picture->annotations(),
+                               [](const docv1::PictureAnnotation& annotation) {
+                                 return annotation.has_pie_chart();
+                               }),
+          "the revenue picture does not carry the pie's typed data");
+}
+
+// The sheet's chart list can arrive before the draw-page object. The two
+// are still one chart: one picture under its sheet, with the source ranges,
+// the typed data, the object's shape name and the object's box.
+void verify_a_sheet_chart_that_arrives_first_still_joins_its_object() {
+  const ChartShape revenue = revenue_chart();
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("spreadsheet", "book.xlsx"));
+  feed_sheet(&mapper, 0, "Data", "Region", revenue);
+  mapper.consume(sheet_chart_event(0, revenue, "Object 1"));
+  mapper.consume(stored_chart_object(0, "Revenue chart", "Object 1", revenue, 4000, 300));
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require_equal(document.pictures_size(), 1, "one chart is one picture in either order");
+  const docv1::PictureItem& picture = document.pictures(0);
+  require_equal(picture.shape().name(), std::string("Revenue chart"),
+                "the picture goes by the object's shape name");
+  require_equal(picture.parent().ref(), document.groups(0).self_ref(),
+                "the picture sits under its sheet");
+  require_equal(picture.chart().sources_size(), 1, "it carries the source ranges");
+  require(!picture.annotations().empty(), "it carries the typed chart data");
+  require(picture.prov_size() == 1 && picture.prov(0).has_bbox(),
+          "its provenance is the object's box");
+  require_equal(document.tables_size(), 2, "the sheet's table and the chart's one bound table");
+}
+
+// A storage name that matches no SheetChart on the sheet is not paired by
+// order with a chart of another name: the two stay two charts, each said
+// with what it has.
+void verify_a_storage_name_that_matches_nothing_is_not_paired_by_order() {
+  const ChartShape revenue = revenue_chart();
+  grparse::DoclingMapper mapper;
+  mapper.consume(info_event("spreadsheet", "book.xlsx"));
+  mapper.consume(stored_chart_object(0, "Revenue chart", "Object 7", revenue, 4000, 300));
+  feed_sheet(&mapper, 0, "Data", "Region", revenue);
+  mapper.consume(sheet_chart_event(0, revenue, "Object 1"));
+  mapper.consume(status_event());
+
+  const docv1::Document& document = mapper.document();
+  require_equal(document.pictures_size(), 2, "two names are two charts");
+  const docv1::PictureItem* object_picture = picture_named(document, "Revenue chart");
+  const docv1::PictureItem* sheet_picture = picture_named(document, "Object 1");
+  require(object_picture != nullptr && sheet_picture != nullptr, "each keeps its own name");
+  require(!object_picture->has_chart() || object_picture->chart().sources_size() == 0,
+          "the object's picture did not take another chart's source ranges");
+  require_equal(sheet_picture->chart().sources_size(), 1,
+                "the sheet chart's picture carries its own ranges");
+}
+
 }  // namespace
 
 int main() {
@@ -623,5 +734,8 @@ int main() {
       verify_missing_category_labels_are_named,
       verify_chart_without_data_binds_an_empty_table_and_warns,
       verify_repeat_runs_are_byte_identical,
+      verify_sheet_charts_join_their_objects_by_storage_name,
+      verify_a_sheet_chart_that_arrives_first_still_joins_its_object,
+      verify_a_storage_name_that_matches_nothing_is_not_paired_by_order,
   });
 }

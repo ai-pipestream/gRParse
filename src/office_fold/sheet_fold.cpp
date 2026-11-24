@@ -291,20 +291,8 @@ void SheetFold::on_cell_comment(const officev1::SheetCellComment& comment) {
 }
 
 void SheetFold::on_chart(const officev1::SheetChart& chart, ChartFold& charts) {
-  const std::string sheet_ref = group_ref(chart.sheet_index());
-  const docv1::ContentLayer content_layer = layer(chart.sheet_index());
-  officev1::EmbeddedObject object;
-  if (charts.take_pending(chart.sheet_index(), nullptr, &object)) {
-    const double l = static_cast<double>(object.position().x());
-    const double t = static_cast<double>(object.position().y());
-    charts.emit(&object, &chart, sheet_ref, content_layer, true,
-                chart.sheet_index(), l, t,
-                l + static_cast<double>(object.width_twips()),
-                t + static_cast<double>(object.height_twips()));
-    return;
-  }
-  charts.emit(nullptr, &chart, sheet_ref, content_layer, true,
-              chart.sheet_index(), 0, 0, 0, 0, false);
+  charts.place_sheet_chart(chart, group_ref(chart.sheet_index()),
+                           layer(chart.sheet_index()));
 }
 
 void SheetFold::on_pivot_table(const officev1::SheetPivotTable& pivot) {
