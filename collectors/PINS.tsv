@@ -24,8 +24,8 @@ collectors/warc.proto	fastwarc-grpc	proto/fastwarc/v1/warc.proto	6c3a6398d4d86f5
 collectors/warc_service.proto	fastwarc-grpc	proto/fastwarc/v1/warc_service.proto	6c3a6398d4d86f5ee65e635a58078e043a4028b1
 backends/pdf_backend_types.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_types.proto	dce4e90542329601b4604f0f49daea5b2de24c46
 backends/pdf_backend_service.proto	parser-protos	proto/ai/protomolt/parse/pdf/v1/pdf_backend_service.proto	dce4e90542329601b4604f0f49daea5b2de24c46
-office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	60f6c3056a1661a4f2ef65febb0b2f6a3482bc45
-examples/web-demo/peer-protos/grpc-libreoffice/proto/ai/pipestream/office/v1/office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	60f6c3056a1661a4f2ef65febb0b2f6a3482bc45
+office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	fad324cfaccb8ef675903b76cf045e4c2bd5e608
+examples/web-demo/peer-protos/grpc-libreoffice/proto/ai/pipestream/office/v1/office_service.proto	grpc-libreoffice	proto/ai/pipestream/office/v1/office_service.proto	fad324cfaccb8ef675903b76cf045e4c2bd5e608
 examples/web-demo/peer-protos/grpc-asr/proto/ai/pipestream/media/v1/media.proto	grpc-asr	proto/ai/pipestream/media/v1/media.proto	9f99c57579d9df92924cab875402b9bdbbe64da4
 document.proto	grpc-asr	proto/ai/pipestream/document/v1/document.proto	8b16402df1a6eb23cba84142ee322a9bbaf90ee7
 document.proto	grpc-ebcdic	proto/ai/pipestream/document/v1/document.proto	1161d65f7c07414d0f5acf1610c32d18eddb22da
