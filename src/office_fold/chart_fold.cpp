@@ -49,10 +49,11 @@ void set_chart_sources(const officev1::SheetChart& chart,
 // The bar annotation is single-series by shape, so a clustered chart gets
 // one annotation per series, in series order (the stacked-bar slot carries
 // integer values only and would round the data). The axis labels stay the
-// chart's own axis titles on every annotation; the series names live on the
-// bound table's label row, in the same order. A typed multi-series slot is
-// a schema follow-on. Missing category labels become positional numbers,
-// named once per chart in warnings() rather than silently.
+// chart's own axis titles on every annotation, and each annotation names
+// the series it holds when the source names it; the bound table's label
+// row carries the same names in the same order. Missing category labels
+// become positional numbers, named once per chart in warnings() rather
+// than silently.
 void add_bar_annotations(const officev1::EmbeddedChart& chart,
                          const std::string& name, DocumentArena& arena,
                          docv1::PictureItem* picture) {
@@ -65,6 +66,7 @@ void add_bar_annotations(const officev1::EmbeddedChart& chart,
     bars->set_title(chart.title());
     bars->set_x_axis_label(chart.x_axis_title());
     bars->set_y_axis_label(chart.y_axis_title());
+    if (!one.label().empty()) bars->set_series_name(one.label());
     for (int i = 0; i < one.values_y_size(); i++) {
       docv1::ChartBar* bar = bars->add_bars();
       bar->set_label(i < chart.categories_size() ? chart.categories(i)
@@ -107,8 +109,8 @@ void add_line_annotation(const officev1::EmbeddedChart& chart,
 
 // The pie annotation is single-series by shape too, so a pie with several
 // series (a ring chart read as a pie) gets one annotation per series, in
-// series order, like the bars; the series names live on the tabular
-// projection's label row in the same order.
+// series order, like the bars, each naming its series when the source
+// names it.
 void add_pie_annotations(const officev1::EmbeddedChart& chart,
                          const std::string& name, DocumentArena& arena,
                          docv1::PictureItem* picture) {
@@ -119,6 +121,7 @@ void add_pie_annotations(const officev1::EmbeddedChart& chart,
         picture->add_annotations()->mutable_pie_chart();
     pie->set_kind("pie_chart_data");
     pie->set_title(chart.title());
+    if (!one.label().empty()) pie->set_series_name(one.label());
     for (int i = 0; i < one.values_y_size(); i++) {
       docv1::ChartSlice* slice = pie->add_slices();
       slice->set_label(i < chart.categories_size() ? chart.categories(i)
@@ -154,6 +157,7 @@ void add_scatter_annotations(const officev1::EmbeddedChart& chart,
     scatter->set_title(chart.title());
     scatter->set_x_axis_label(chart.x_axis_title());
     scatter->set_y_axis_label(chart.y_axis_title());
+    if (!one.label().empty()) scatter->set_series_name(one.label());
     int points = std::min(one.values_x_size(), one.values_y_size());
     int sized = 0;
     for (int i = 0; i < points; i++) {

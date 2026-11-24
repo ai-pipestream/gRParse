@@ -322,7 +322,9 @@ class CalamineFold {
         typed = false;
         break;
       case calaminev1::CellData::kIntValue:
-        value.set_number(static_cast<double>(data.int_value()));
+        // The source states an integer: it stays one. A double holds
+        // integers exactly only up to 2^53.
+        value.set_integer(data.int_value());
         text = std::to_string(data.int_value());
         break;
       case calaminev1::CellData::kFloatValue:

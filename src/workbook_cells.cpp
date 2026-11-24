@@ -1,6 +1,7 @@
 #include "grparse/workbook_cells.h"
 
 #include <algorithm>
+#include <cmath>
 #include <map>
 #include <optional>
 #include <set>
@@ -52,6 +53,28 @@ std::map<std::string, int> sheet_tables(const docv1::Document& document) {
   return tables;
 }
 
+// True when calamine's value names the number libreoffice read. calamine
+// states an integer cell as an integer and libreoffice states every number
+// as a double, so an integer agrees with the double that holds exactly it.
+// The comparison is made in integers: an integer a double cannot hold (past
+// 2^53) is not the rounded double beside it.
+bool states_number(const docv1::CellValue& calamine, double number) {
+  switch (calamine.kind_case()) {
+    case docv1::CellValue::kNumber:
+      return calamine.number() == number;
+    case docv1::CellValue::kInteger: {
+      // Doubles from -2^63 up to, not including, 2^63 convert to int64
+      // without overflow; a double with a fraction equals no integer.
+      constexpr double kLimit = 9223372036854775808.0;
+      if (!(number >= -kLimit && number < kLimit) || number != std::trunc(number)) return false;
+      return static_cast<int64_t>(number) == calamine.integer() &&
+             static_cast<double>(calamine.integer()) == number;
+    }
+    default:
+      return false;
+  }
+}
+
 // One cell of the adopted table: calamine's text and value over the
 // libreoffice cell at the same place when there is one, which keeps that
 // cell's presentation (alignment, a cell's anchored ref, a number format,
@@ -77,8 +100,7 @@ docv1::TableCell adopted_cell(const docv1::TableCell& calamine,
   const bool same_formatted_number = libre->has_value() && calamine.has_value()
       && libre->value().has_number_format()
       && libre->value().kind_case() == docv1::CellValue::kNumber
-      && calamine.value().kind_case() == docv1::CellValue::kNumber
-      && libre->value().number() == calamine.value().number();
+      && states_number(calamine.value(), libre->value().number());
   // A formula calamine has no result for is one the file stores with no
   // cached value. That is not a stored value to prefer over libreoffice's:
   // libreoffice computed the result when it loaded the file, and an empty
