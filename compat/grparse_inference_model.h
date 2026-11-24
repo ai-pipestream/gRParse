@@ -143,9 +143,17 @@ ModelShapePolicy ocr_net_shapes(OcrNet net);
 // has nothing to warm (ONNX Runtime).
 std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net);
 
-// The ONNX Runtime-backed model the RapidOCR nets used before (built through
-// make_rapidocr_session's retry policy), or native TensorRT under a CUDA
-// selection in a TensorRT build.
+// Whether the RapidOCR nets run natively through Level Zero under the
+// process selection: a build that carries the graph runtime (the Intel
+// image) with OpenVINO selected on a GPU device.  No shape is compiled in
+// there, so nothing is bucketed or warmed.
+bool level_zero_ocr();
+
+// A RapidOCR net on the process selection: native TensorRT under a CUDA
+// selection in a TensorRT build; native Level Zero when level_zero_ocr();
+// otherwise the ONNX Runtime session the nets used before (built through
+// make_rapidocr_session's retry policy).  A native runtime never falls
+// back: a model it will not build throws ep_refusal's error.
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread);
 

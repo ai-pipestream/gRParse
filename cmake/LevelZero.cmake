@@ -6,7 +6,8 @@
 option(GRPARSE_TABLE_LEVEL_ZERO "Build native Level Zero table structure" OFF)
 
 # The ONNX initializer reader builds everywhere so its test runs in every flavor.
-target_sources(grparse_core PRIVATE src/levelzero/onnx_initializers.cpp)
+target_sources(grparse_ort_ep PRIVATE src/levelzero/onnx_initializers.cpp)
+target_include_directories(grparse_ort_ep PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 target_include_directories(grparse_core PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
 
 if(GRPARSE_TABLE_LEVEL_ZERO)
@@ -67,11 +68,18 @@ if(GRPARSE_TABLE_LEVEL_ZERO)
       COMMAND ${CMAKE_COMMAND} -DINPUT=${spirv} -DOUTPUT=${embedded} -DSYMBOL=${symbol}
         -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake"
       DEPENDS "${spirv}" "${CMAKE_CURRENT_SOURCE_DIR}/cmake/EmbedSpirv.cmake")
-    list(APPEND embedded_kernels "${embedded}")
+    list(APPEND embedded_graph_kernels "${embedded}")
   endforeach()
-  target_sources(grparse_core PRIVATE src/levelzero/device.cpp src/levelzero/encoder_plan.cpp
-    src/levelzero/table_encoder.cpp src/levelzero/table_gpu.cpp src/levelzero/graph_ir.cpp
-    src/levelzero/graph_runtime.cpp ${embedded_kernels})
+  # The device and the graph runtime sit in the model-interface library,
+  # under make_rapidocr_model (src/inference_model.cpp); table structure in
+  # the core library uses the same device.
+  target_sources(grparse_ort_ep PRIVATE src/levelzero/device.cpp src/levelzero/graph_ir.cpp
+    src/levelzero/graph_runtime.cpp ${embedded_graph_kernels})
+  target_compile_definitions(grparse_ort_ep PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
+  target_include_directories(grparse_ort_ep SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
+  target_link_libraries(grparse_ort_ep PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
+  target_sources(grparse_core PRIVATE src/levelzero/encoder_plan.cpp src/levelzero/table_encoder.cpp
+    src/levelzero/table_gpu.cpp ${embedded_kernels})
   target_compile_definitions(grparse_core PRIVATE GRPARSE_TABLE_LEVEL_ZERO=1)
   target_include_directories(grparse_core SYSTEM PRIVATE "${GRPARSE_LEVEL_ZERO_INCLUDE}")
   target_link_libraries(grparse_core PRIVATE "${GRPARSE_LEVEL_ZERO_LIBRARY}")
