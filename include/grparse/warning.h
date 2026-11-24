@@ -32,6 +32,9 @@ struct Warning {
   // held when that is known.
   std::optional<uint64_t> bytes_kept;
   std::optional<uint64_t> bytes_total;
+  // How many occurrences this one warning stands for, when repeats of the
+  // same finding were folded into it; unset means one.
+  std::optional<uint64_t> count;
 
   Warning() = default;
   // Implicit on purpose: a free-text warning is still a warning, and every
@@ -56,6 +59,12 @@ struct Warning {
   Warning kept(uint64_t kept_bytes, std::optional<uint64_t> total_bytes = std::nullopt) && {
     bytes_kept = kept_bytes;
     bytes_total = total_bytes;
+    return std::move(*this);
+  }
+
+  // The same warning, standing for this many occurrences of its finding.
+  Warning times(uint64_t occurrences) && {
+    count = occurrences;
     return std::move(*this);
   }
 

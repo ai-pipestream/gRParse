@@ -28,6 +28,18 @@ void verify_words_alone_claim_no_code_page_or_item() {
   require(!wire.has_item_ref(), "a warning about no item states no item");
   require(!wire.has_bytes_kept() && !wire.has_bytes_total(),
           "a warning about nothing cut states no sizes");
+  require(!wire.has_count(), "a warning that stands for one occurrence states no count");
+}
+
+void verify_a_folded_warning_keeps_its_count() {
+  const Warning warning =
+      Warning(docv1::WARNING_CODE_ENRICHMENT_CROP_MISSING, "no crop could be rendered").times(12);
+  docv1::CollectorWarning wire;
+  grparse::stamp_warning(warning, "grparse-cv", &wire);
+  require(wire.has_count() && wire.count() == 12,
+          "how many occurrences the warning stands for is written");
+  require(!wire.has_page_no() && !wire.has_item_ref(),
+          "a warning about the whole document names no page and no item");
 }
 
 void verify_a_typed_warning_keeps_its_code_page_and_item() {
@@ -64,6 +76,7 @@ int main() {
   return grparse_test::run_test_main("warning-test", "ok", {
       verify_words_alone_claim_no_code_page_or_item,
       verify_a_typed_warning_keeps_its_code_page_and_item,
+      verify_a_folded_warning_keeps_its_count,
       verify_stamping_replaces_whatever_the_message_held,
   });
 }
