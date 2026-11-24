@@ -306,12 +306,17 @@ void verify_render_doctype_and_collector_families() {
   libreoffice.duration.buckets[1] = 2;  // <= 0.025 s
   libreoffice.duration.buckets[6] = 3;  // <= 1 s
   libreoffice.duration.sum_ns = 2'500'000'000ULL;
+  telemetry.executor_task_exceptions = 7;
 
   const std::string text = grparse::render_prometheus_metrics(
       grparse::PageScheduler::Metrics{}, grparse::OcrEnginePool::Stats{},
       grparse::PageScheduler::Options{}, grparse::RepairTotals{}, grparse::DataTotals{},
       grparse::OfficeCvTotals{}, 0, 0, telemetry);
 
+  require_contains(text, "# TYPE grparse_executor_task_exceptions_total counter\n",
+                   "escaped task exceptions type line");
+  require_contains(text, "grparse_executor_task_exceptions_total 7\n",
+                   "escaped task exceptions count");
   require_contains(text, "# HELP grparse_documents_completed_total ", "completed help line");
   require_contains(text, "# TYPE grparse_documents_completed_total counter\n",
                    "completed type line");

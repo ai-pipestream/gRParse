@@ -117,6 +117,7 @@ struct AtomicCollectorMetrics {
 
 std::array<AtomicDoctypeMetrics, kMetricDoctypes.size()> g_doctypes{};
 std::array<AtomicCollectorMetrics, kMetricCollectors.size()> g_collectors{};
+std::atomic<uint64_t> g_executor_task_exceptions{0};
 
 size_t doctype_index(std::string_view name) {
   for (size_t i = 0; i < kMetricDoctypes.size(); ++i) {
@@ -308,6 +309,7 @@ PipelineTelemetry pipeline_telemetry() {
   for (size_t i = 0; i < kMetricCollectors.size(); ++i) {
     out.collectors[i] = g_collectors[i].snapshot();
   }
+  out.executor_task_exceptions = g_executor_task_exceptions.load(std::memory_order_relaxed);
   return out;
 }
 
@@ -318,6 +320,11 @@ void reset_pipeline_telemetry() {
   for (auto& collector : g_collectors) {
     collector.reset();
   }
+  g_executor_task_exceptions.store(0, std::memory_order_relaxed);
+}
+
+void record_executor_task_exception() {
+  g_executor_task_exceptions.fetch_add(1, std::memory_order_relaxed);
 }
 
 void record_document_completion(std::string_view doctype, DocumentCompletionStatus status,
@@ -694,6 +701,11 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   }
   out << "grparse_page_latency_seconds_sum " << seconds(metrics.page_latency_ns) << '\n'
       << "grparse_page_latency_seconds_count " << cumulative << '\n';
+
+  counter(out, "grparse_executor_task_exceptions_total",
+          "Exceptions a call executor task let escape to its worker; each is a task that "
+          "failed outside its own error handling.",
+          telemetry.executor_task_exceptions);
 
   out << "# HELP grparse_documents_completed_total Completed document conversions by doctype "
          "and status.\n"

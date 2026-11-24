@@ -3,6 +3,7 @@
 #include <condition_variable>
 #include <cstddef>
 #include <deque>
+#include <exception>
 #include <functional>
 #include <mutex>
 #include <thread>
@@ -52,6 +53,11 @@ class CallExecutor final {
   // shutting down.  The rejection belongs to the caller: it holds the call and
   // is the only thing that can answer it.
   bool submit(std::function<void()> task);
+  // The same, for a task that owns a call: when `task` exits by exception,
+  // `on_escape` runs on that worker with what was thrown, so the call can
+  // still be finished with a status instead of hanging until its deadline.
+  // An escaped exception is counted and logged either way (see run()).
+  bool submit(std::function<void()> task, std::function<void(std::exception_ptr)> on_escape);
 
   size_t workers() const { return workers_.size(); }
   // Tasks queued but not yet picked up.  Sampled, so it is a gauge, not a
@@ -59,11 +65,18 @@ class CallExecutor final {
   size_t queued() const;
 
  private:
+  // One queued task and, when it has one, what answers its escaped
+  // exception.
+  struct Task {
+    std::function<void()> body;
+    std::function<void(std::exception_ptr)> on_escape;
+  };
+
   void run();
 
   mutable std::mutex mutex_;
   std::condition_variable work_;
-  std::deque<std::function<void()>> tasks_;
+  std::deque<Task> tasks_;
   std::vector<std::thread> workers_;
   const size_t queue_capacity_;
   bool stopping_ = false;
