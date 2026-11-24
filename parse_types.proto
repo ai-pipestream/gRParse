@@ -864,9 +864,9 @@ message BundleManifest {
 //
 // The bundle a target delivers holds the conversion's own account of itself
 // as its member response.pb, a ConvertDocumentResponse: status, errors,
-// chunks, structure_findings, confidence, text_offsets, document.filename
-// and target_result.image_issues as the response carries them when the
-// bundle is built. document.doc and document.exports are left out of it
+// chunks, structure_findings, confidence, text_offsets, option_notices,
+// document.filename and target_result.image_issues as the response carries
+// them when the bundle is built. document.doc and document.exports are left out of it
 // (they are the members document.pb and exports/*), and so are the clock
 // (processing_time, timings, profiling) and target_result's archive and
 // objects, which do not exist until the bundle is delivered. A delivery
@@ -1796,6 +1796,44 @@ message OptionRejection {
   string rejected_value_raw = 3;
 }
 
+// Why an option the request set was accepted and still did not do what its
+// name says.
+enum OptionNoticeReason {
+  OPTION_NOTICE_REASON_UNSPECIFIED = 0;
+  // The server hosts one implementation of what the option selects, so
+  // every valid value gets the same one: table_mode (one table-structure
+  // model serves ACCURATE and FAST), pdf_backend (the deployment's
+  // GRPARSE_PDF_BACKEND reads every PDF) and ocr_preset when the preset it
+  // resolves to names languages (the one installed OCR model set reads
+  // Chinese and English whatever the preset's lang lists).
+  OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION = 1;
+  // The option is accepted for Docling clients, and the peer that would act
+  // on it is not sent it: picture_description_local.prompt and
+  // picture_description_local.generation_config.
+  OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED = 2;
+  // The stage the option names never reads it; a different stage does.
+  // picture_classification_custom_config.threshold does not reach the
+  // figure classifier: it is the picture-description confidence gate when
+  // no picture_description option sets one, and is not read otherwise.
+  OPTION_NOTICE_REASON_READ_BY_ANOTHER_STAGE = 3;
+}
+
+// OptionNotice names one option the request set that passed validation and
+// that the conversion did not apply as named. It is the accepted
+// counterpart of OptionRejection: the request is served, and the response
+// says which of its options changed nothing. A notice states how this
+// server treats the option, whatever the document: it is reported even
+// when the stage the option belongs to had nothing to do for this source.
+message OptionNotice {
+  // The option's field path from ConvertDocumentOptions, spelled as
+  // OptionRejection.option_path spells it, for example "table_mode" or
+  // "picture_description_local.prompt".
+  string option_path = 1;
+  OptionNoticeReason reason = 2;
+  // The same statement for people. The reason is what a program reads.
+  string message = 3;
+}
+
 // ConversionStatus mirrors the upstream ConversionStatus enum.
 enum ConversionStatus {
   CONVERSION_STATUS_UNSPECIFIED = 0;
@@ -2046,6 +2084,10 @@ message ConvertDocumentResponse {
   // for the CV path's own pages and `confidence` is left unset (the page
   // events carry it). Empty when the document has no text items.
   repeated TextOffset text_offsets = 12;
+  // The options this request set that were accepted and not applied as
+  // named, in the order of their field numbers in ConvertDocumentOptions.
+  // Empty when every option the request set was applied.
+  repeated OptionNotice option_notices = 14;
 }
 
 // Embeddings are opt-in on the chunk RPCs: the two synchronous ones,
@@ -2246,6 +2288,9 @@ message ChunkDocumentResponse {
   repeated Document documents = 2;
   double processing_time = 3;
   map<string, ScalarValue> chunking_info = 4;
+  // The convert_options this request set that were accepted and not applied
+  // as named (see ConvertDocumentResponse.option_notices).
+  repeated OptionNotice option_notices = 6;
 }
 
 // TaskStatusPollRequest mirrors GET /v1/status/poll/{taskId}

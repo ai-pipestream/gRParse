@@ -300,6 +300,8 @@ message StreamChunksSummary {
   repeated Document documents = 2;
   double processing_time = 3;
   map<string, ScalarValue> chunking_info = 4;
+  // As ChunkDocumentResponse.option_notices.
+  repeated OptionNotice option_notices = 6;
 }
 
 message ChunkHierarchicalSourceAsyncRequest {

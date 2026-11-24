@@ -129,7 +129,8 @@ OcrPresetPolicy::OcrPresetPolicy(OcrPresetPolicySettings settings) : settings_(s
                                     "(en, english, ch, chinese, zh)");
       }
     }
-    registry_[id] = OcrPreset{.id = id, .kind = spec.kind()};
+    registry_[id] = OcrPreset{
+        .id = id, .kind = spec.kind(), .lang = {spec.lang().begin(), spec.lang().end()}};
   }
 }
 

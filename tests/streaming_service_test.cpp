@@ -1884,6 +1884,125 @@ void verify_stream_document_sends_the_whole_conversion(TestServer* server) {
   }
 }
 
+// An option the server accepts and does not apply as named is named on the
+// response of every surface that takes ConvertDocumentOptions, typed and
+// the same everywhere: the unary conversion, StreamDocument's source_outputs
+// (its completion of a source), both chunk RPCs' response and StreamChunks'
+// summary. A request that sets none of them carries no notice.
+void verify_ignored_options_are_noticed_on_every_surface(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  parsev1::ConvertDocumentOptions options;
+  options.set_table_mode(parsev1::TABLE_FORMER_MODE_ACCURATE);
+  options.set_pdf_backend(parsev1::PDF_BACKEND_DLPARSE_V4);
+  options.mutable_picture_description_local()->set_repo_id("HuggingFaceTB/SmolVLM-256M-Instruct");
+  options.mutable_picture_description_local()->set_prompt("Describe this image.");
+  (*options.mutable_picture_classification_custom_config())["threshold"].set_double_value(0.5);
+  parsev1::Source source;
+  source.mutable_file()->set_filename("handbook.confluence");
+  source.mutable_file()->set_base64_string(
+      grparse::encode_base64(kStorageBody, sizeof(kStorageBody) - 1));
+
+  const auto paths = [](const google::protobuf::RepeatedPtrField<parsev1::OptionNotice>& sent) {
+    std::string joined;
+    for (const auto& notice : sent) joined += notice.option_path() + ";";
+    return joined;
+  };
+  const std::string expected_paths =
+      "pdf_backend;table_mode;picture_description_local.prompt;"
+      "picture_classification_custom_config.threshold;";
+
+  auto client = server->unary_stub();
+  parsev1::ConvertSourceRequest convert;
+  *convert.mutable_request()->add_sources() = source;
+  *convert.mutable_request()->mutable_options() = options;
+  parsev1::ConvertSourceResponse unary;
+  {
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    const grpc::Status status = client->ConvertSource(&context, convert, &unary);
+    require(status.ok(), "a request with ignored options still converts: " + status.error_message());
+  }
+  const auto& notices = unary.response().option_notices();
+  require(paths(notices) == expected_paths,
+          "ConvertSource names every ignored option, in field order; got '" + paths(notices) + "'");
+  require(notices.Get(0).reason() ==
+                  parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION &&
+              notices.Get(2).reason() == parsev1::OPTION_NOTICE_REASON_IGNORED_NOT_FORWARDED &&
+              notices.Get(3).reason() == parsev1::OPTION_NOTICE_REASON_READ_BY_ANOTHER_STAGE,
+          "each notice carries its typed reason");
+
+  {
+    parsev1::StreamDocumentRequest request;
+    *request.mutable_request() = convert.request();
+    auto stream_client = server->stub();
+    const EnvelopeRun run = run_stream_document(stream_client.get(), request);
+    require(run.status.ok(), "the stream finishes OK: " + run.status.error_message());
+    const auto outputs = std::ranges::find_if(
+        run.envelopes, [](const auto& envelope) { return envelope.has_source_outputs(); });
+    require(outputs != run.envelopes.end(), "the stream sends the source's outputs");
+    require(same_messages(outputs->source_outputs().option_notices(), notices),
+            "StreamDocument's source_outputs carries the unary notices; got '" +
+                paths(outputs->source_outputs().option_notices()) + "'");
+  }
+  {
+    parsev1::ChunkHierarchicalSourceRequest request;
+    *request.mutable_request()->add_sources() = source;
+    *request.mutable_request()->mutable_convert_options() = options;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    parsev1::ChunkHierarchicalSourceResponse response;
+    const grpc::Status status = client->ChunkHierarchicalSource(&context, request, &response);
+    require(status.ok(), "the hierarchical chunks: " + status.error_message());
+    require(same_messages(response.response().option_notices(), notices),
+            "ChunkHierarchicalSource carries the unary notices; got '" +
+                paths(response.response().option_notices()) + "'");
+  }
+  {
+    parsev1::ChunkHybridSourceRequest request;
+    *request.mutable_request()->add_sources() = source;
+    *request.mutable_request()->mutable_convert_options() = options;
+    request.mutable_request()->mutable_chunking_options()->set_max_tokens(64);
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    parsev1::ChunkHybridSourceResponse response;
+    const grpc::Status status = client->ChunkHybridSource(&context, request, &response);
+    require(status.ok(), "the hybrid chunks: " + status.error_message());
+    require(same_messages(response.response().option_notices(), notices),
+            "ChunkHybridSource carries the unary notices; got '" +
+                paths(response.response().option_notices()) + "'");
+  }
+  {
+    parsev1::StreamChunksRequest request;
+    *request.mutable_hierarchical()->add_sources() = source;
+    *request.mutable_hierarchical()->mutable_convert_options() = options;
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    auto reader = client->StreamChunks(&context, request);
+    parsev1::StreamChunksResponse message;
+    std::optional<parsev1::StreamChunksSummary> summary;
+    while (reader->Read(&message)) {
+      if (message.has_summary()) summary = message.summary();
+    }
+    const grpc::Status status = reader->Finish();
+    require(status.ok() && summary.has_value(),
+            "StreamChunks ends with its summary: " + status.error_message());
+    require(same_messages(summary->option_notices(), notices),
+            "StreamChunks' summary carries the unary notices; got '" +
+                paths(summary->option_notices()) + "'");
+  }
+  {
+    convert.mutable_request()->clear_options();
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    parsev1::ConvertSourceResponse plain;
+    const grpc::Status status = client->ConvertSource(&context, convert, &plain);
+    require(status.ok(), "the plain request converts: " + status.error_message());
+    require(plain.response().option_notices().empty(),
+            "a request that sets no ignored option carries no notice; got '" +
+                paths(plain.response().option_notices()) + "'");
+  }
+}
+
 void verify_get_service_info(TestServer* server) {
   auto client = server->unary_stub();
   grpc::ClientContext context;
@@ -6407,6 +6526,7 @@ int main() {
         verify_structure_validation_on_the_wire(&server);
         verify_table_cell_limits_on_the_wire(&server);
         verify_stream_document_sends_the_whole_conversion(&server);
+        verify_ignored_options_are_noticed_on_every_surface(&server);
         verify_get_service_info(&server);
         verify_unary_callback_path_admits_concurrent_conversions();
         verify_unary_cancellation_finishes_without_wedging();

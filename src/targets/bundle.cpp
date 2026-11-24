@@ -215,6 +215,7 @@ parsev1::ConvertDocumentResponse bundled_response(
   *response.mutable_chunks() = converted.chunks();
   *response.mutable_structure_findings() = converted.structure_findings();
   *response.mutable_text_offsets() = converted.text_offsets();
+  *response.mutable_option_notices() = converted.option_notices();
   // Set even when empty: a present target_result with no issue says every
   // image was written, where an absent one would say nothing.
   *response.mutable_target_result()->mutable_image_issues() = result.image_issues();

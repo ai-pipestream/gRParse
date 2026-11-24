@@ -351,6 +351,10 @@ void verify_the_bundle_carries_the_conversions_status_and_outputs() {
   auto* offset = converted.add_text_offsets();
   offset->set_self_ref("#/texts/0");
   offset->set_utf_end(7);
+  auto* notice = converted.add_option_notices();
+  notice->set_option_path("table_mode");
+  notice->set_reason(parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION);
+  notice->set_message("one table-structure model serves every table_mode");
   converted.set_processing_time(1.25);
   (*converted.mutable_timings())["total"] = 1.25;
   (*converted.mutable_profiling())["total"].set_count(1);
@@ -376,6 +380,12 @@ void verify_the_bundle_carries_the_conversions_status_and_outputs() {
           "the bundle carries the read quality");
   require_equal(response.text_offsets_size(), 1, "the bundle carries the offset table");
   require_equal(response.text_offsets(0).utf_end(), uint64_t{7}, "an offset row keeps its span");
+  require_equal(response.option_notices_size(), 1,
+                "the bundle carries the options the conversion did not apply");
+  require(response.option_notices(0).option_path() == "table_mode" &&
+              response.option_notices(0).reason() ==
+                  parsev1::OPTION_NOTICE_REASON_IGNORED_SINGLE_IMPLEMENTATION,
+          "a notice keeps its option and its typed reason");
 
   // What other members already hold is not repeated, and the clock stays
   // out: a timing in the bundle would make two runs over one document
@@ -1128,6 +1138,8 @@ int main() {
       verify_bundles_are_reproducible,
       verify_bundle_carries_the_canonical_file_set,
       verify_manifest_describes_every_member,
+      verify_the_manifest_is_a_typed_message,
+      verify_the_json_manifest_says_what_the_typed_manifest_says,
       verify_the_bundle_carries_the_conversions_status_and_outputs,
       verify_an_image_the_bundle_cannot_write_is_reported,
       verify_an_image_member_is_never_named_for_a_type_it_is_not,
@@ -1138,8 +1150,6 @@ int main() {
       verify_uploads_land_as_objects,
       verify_session_token_is_refused_over_http,
       verify_session_token_is_refused_without_verification,
-      verify_the_manifest_is_a_typed_message,
-      verify_the_json_manifest_says_what_the_typed_manifest_says,
       verify_ambient_credentials_need_verification,
       verify_endpoint_hygiene,
       verify_a_partial_failure_reports_the_written_objects,
