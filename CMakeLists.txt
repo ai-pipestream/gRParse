@@ -1547,6 +1547,7 @@ if(BUILD_TESTING)
 endif()
 
 include(cmake/Embeddings.cmake)
+include(cmake/LevelZero.cmake)
 include(cmake/TensorRt.cmake)
 # ---- golden corpus: every InputFormat has a fixture, read directly --------
 # Appended as one block. The corpus manifest (tests/golden/
