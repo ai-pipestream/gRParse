@@ -171,6 +171,7 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
  && cp /build/grparse-embed-text /out/grparse-embed-text \
  && cp /build/embedding-model-test /out/grparse-embedding-check \
  && cp /build/embedding-reference-test /out/grparse-embedding-reference \
+ && cp /build/level-zero-table-decoder-test /out/grparse-table-decoder-check \
  && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs \
  && cp -a /opt/openvino-sdk/runtime/lib/intel64/libopenvino_ir_frontend.so* /out/ort-libs/
 
@@ -199,7 +200,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
-         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/ort-libs/*.so* \
+         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/grparse-table-decoder-check /out/ort-libs/*.so* \
          /usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so $neo_libs \
     && for lib in $neo_libs; do cp -L "$lib" /out/runtime-libs/; done \
     && mkdir -p /out/openvino-cache \
@@ -237,6 +238,9 @@ COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-clien
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
 COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
 COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
+# The Level Zero table decoder against its double-precision reference, run on
+# a host with an Intel GPU: GRPARSE_TEST_MODELS_DIR=/models grparse-table-decoder-check
+COPY --from=build /out/grparse-table-decoder-check /usr/local/bin/grparse-table-decoder-check
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]
