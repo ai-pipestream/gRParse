@@ -54,7 +54,7 @@ uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + gro
 
 struct GraphModel::Kernels {
   ze_kernel_handle_t gemm, conv_gemm, conv_depthwise, conv_direct, conv_transpose, pool2d, row_mean, layer_norm, softmax_rows,
-      binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool;
+      binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool, channel_scale, binary_same;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -83,7 +83,8 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model)
       k("gemm", 256, 1), k("conv_gemm", 256, 1), k("conv_depthwise", 16, 4), k("conv_direct", 16, 4), k("conv_transpose", 16, 4),
       k("pool2d", 16, 4), k("row_mean", 256, 1), k("layer_norm", 256, 1), k("softmax_rows", 256, 1),
       k("binary", 256, 1), k("unary", 256, 1), k("gather_nd", 256, 1), k("copy_blocks", 256, 1),
-      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1)});
+      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1), k("channel_scale", 16, 16),
+      k("binary_same", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
@@ -445,7 +446,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
                 launch(kernels_->gemm, {groups_for(size_t(hw), 64), groups_for(size_t(c.co), 64), uint32_t(c.n)});
               } else if (depthwise) {
                 args(kernels_->conv_depthwise, {P(src), P(dst), P(wp), P(bp), P(c)});
-                launch(kernels_->conv_depthwise, spatial);
+                // Eight outputs of a row per work item (DW_R in kernels_mobile.cl).
+                const size_t items = size_t(c.oh) * size_t((c.ow + 7) / 8);
+                launch(kernels_->conv_depthwise, {groups_for(items, 16), groups_for(size_t(c.n * c.co), 4), 1});
               } else if (node.op == IrOp::kConvTranspose) {
                 args(kernels_->conv_transpose, {P(src), P(dst), P(wp), P(bp), P(c)});
                 launch(kernels_->conv_transpose, spatial);
@@ -561,10 +564,28 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = shape;
             place(out);
             const int count = int(numel(shape)), op = int(node.binary);
+            // The two shapes the mobile blocks are made of get their own
+            // kernels: a residual add, and a per-channel gate on a feature map.
+            const bool add_or_mul = node.binary == BinaryOp::kAdd || node.binary == BinaryOp::kMul;
+            const bool same = add_or_mul && a.shape == bv.shape;
+            const bool gate = node.binary == BinaryOp::kMul && a.shape.size() == 4 && bv.shape.size() == 4 &&
+                              bv.shape[0] == a.shape[0] && bv.shape[1] == a.shape[1] && bv.shape[2] == 1 &&
+                              bv.shape[3] == 1;
+            const int planes = gate ? int(a.shape[0] * a.shape[1]) : 0, hw = gate ? int(a.shape[2] * a.shape[3]) : 0;
             body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](float* arena) {
               const float* x = ptr(a_ref, arena);
               const float* y = ptr(b_ref, arena);
               float* dst = ptr(o_ref, arena);
+              if (same) {
+                args(kernels_->binary_same, {P(x), P(y), P(dst), P(count), P(op)});
+                launch(kernels_->binary_same, {groups_for(size_t(count), 256), 1, 1});
+                return;
+              }
+              if (gate) {
+                args(kernels_->channel_scale, {P(x), P(y), P(dst), P(planes), P(hw)});
+                launch(kernels_->channel_scale, {groups_for(size_t(hw), 16), groups_for(size_t(planes), 16), 1});
+                return;
+              }
               args(kernels_->binary, {P(x), P(y), P(dst), P(nd), P(count), P(op)});
               launch(kernels_->binary, {groups_for(size_t(count), 256), 1, 1});
             };
