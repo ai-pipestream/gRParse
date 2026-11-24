@@ -2245,7 +2245,11 @@ class FakeWarcService final : public warcv1::WarcService::Service {
   enum class Mode {
     kOk,
     kFramingError,
+    kFramingErrorWithoutPosition,
+    kNotAnArchive,
+    kPayloadReadError,
     kTransportError,
+    kTransportErrorMidStream,
     kTruncated,
     kCharsets,
     kRequestBeforeResponse
@@ -2275,6 +2279,39 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     }
     std::vector<warcv1::ParseWarcResponse> out;
     warcv1::ParseWarcResponse event;
+    if (mode_ == Mode::kNotAnArchive) {
+      // Bytes with no WARC framing at all, as fastwarc-grpc answers them:
+      // one non-recoverable error with no position, then a clean end.
+      auto* fatal = event.mutable_record_error();
+      fatal->set_stream_pos(0);
+      fatal->set_recoverable(false);
+      fatal->set_message("invalid WARC version line");
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
+    }
+    if (mode_ == Mode::kPayloadReadError) {
+      // The contract's mid-record failure: the error arrives inside the
+      // record's sequence, and the record_end that follows reports the bytes
+      // streamed before it.
+      auto* start = event.mutable_record_start()->mutable_metadata();
+      start->set_record_type(warcv1::WARC_RECORD_TYPE_RESOURCE);
+      start->set_stream_pos(4096);
+      start->set_content_length(23);
+      out.push_back(event);
+      event.Clear();
+      event.mutable_payload_chunk()->set_data("half a pay");
+      out.push_back(event);
+      event.Clear();
+      auto* fatal = event.mutable_record_error();
+      fatal->set_stream_pos(4096);
+      fatal->set_recoverable(false);
+      fatal->set_message("failed to read record payload: unexpected end of file");
+      out.push_back(event);
+      event.Clear();
+      event.mutable_record_end()->set_payload_length(10);
+      out.push_back(event);
+      return send(*stream, out, config.response_batch_size());
+    }
     if (mode_ == Mode::kTruncated) {
       // One textual record past the 64 KiB fold cap, in two chunks.
       auto* start = event.mutable_record_start()->mutable_metadata();
@@ -2378,16 +2415,22 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     out.push_back(event);
     event.Clear();
     if (mode_ == Mode::kRequestBeforeResponse) return send(*stream, out, config.response_batch_size());
+    if (mode_ == Mode::kTransportErrorMidStream) {
+      // The response record arrives whole, then the call dies.
+      send(*stream, out, config.response_batch_size());
+      return grpc::Status(grpc::StatusCode::INTERNAL, "socket went away");
+    }
     auto* skipped = event.mutable_record_error();
     skipped->set_stream_pos(64);
     skipped->set_recoverable(true);
     skipped->set_message("bad http headers");
     out.push_back(event);
     event.Clear();
-    if (mode_ == Mode::kFramingError) {
-      // Terminal by contract: the server sends this last and ends OK.
+    if (mode_ == Mode::kFramingError || mode_ == Mode::kFramingErrorWithoutPosition) {
+      // Terminal by contract: the server sends this last and ends OK. The
+      // contract leaves the position zero when the parser exposes none.
       auto* fatal = event.mutable_record_error();
-      fatal->set_stream_pos(128);
+      fatal->set_stream_pos(mode_ == Mode::kFramingError ? 128 : 0);
       fatal->set_recoverable(false);
       fatal->set_message("warc framing lost");
       out.push_back(event);
@@ -2611,6 +2654,16 @@ void verify_fastwarc_response_supersedes_the_request_record() {
           "the response record supersedes the request record's provenance");
 }
 
+// The last warning of `outcome`, which must carry `code`.
+grparse::Warning require_last_warning(const grparse::CollectorOutcome& outcome,
+                                      docv1::WarningCode code, const std::string& what) {
+  require(!outcome.warnings.empty(), what + ": no warning at all");
+  const grparse::Warning& last = outcome.warnings.back();
+  require(last.code == code,
+          what + ": " + docv1::WarningCode_Name(last.code) + " \"" + last.message + "\"");
+  return last;
+}
+
 void verify_fastwarc_framing_error_keeps_records() {
   FakeWarcService service(FakeWarcService::Mode::kFramingError);
   ServerFixture server(&service);
@@ -2618,9 +2671,66 @@ void verify_fastwarc_framing_error_keeps_records() {
       grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
   require(outcome.success && outcome.document.groups_size() == 1,
           "a non-recoverable framing error keeps the records already folded");
-  require(outcome.warnings.size() == 2 &&
-              outcome.warnings[1].message.contains("framing error at stream offset 128"),
-          "the framing error surfaces as a warning, not a failure");
+  require(outcome.warnings.size() == 2, "the skipped record and the lost framing both warn");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "lost framing after a folded record is a typed truncation");
+  require(truncated.bytes_kept == uint64_t{128} && !truncated.bytes_total.has_value(),
+          "the offset the framing was lost at is typed, and the archive's size is not known");
+  require(truncated.message.contains("warc framing lost"),
+          "the service's own words stay in the message");
+}
+
+// fastwarc-grpc reports a framing error at position zero: its parser exposes
+// no offset there. A zero after a folded record is "not known", never "kept
+// nothing".
+void verify_fastwarc_framing_error_without_a_position_states_no_offset() {
+  FakeWarcService service(FakeWarcService::Mode::kFramingErrorWithoutPosition);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record before the lost framing is kept");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "lost framing after a folded record is a typed truncation");
+  require(!truncated.bytes_kept.has_value() && !truncated.bytes_total.has_value(),
+          "an offset the service did not report is not stated");
+}
+
+// Bytes that are no archive at all end the stream OK after one framing
+// error. Nothing was read, so there is no document to hand back.
+void verify_fastwarc_lost_framing_without_records_is_a_failure() {
+  FakeWarcService service(FakeWarcService::Mode::kNotAnArchive);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "these bytes are no archive");
+  require(!outcome.success,
+          "an archive that framed no record at all is not an empty success");
+  require(outcome.code == grpc::StatusCode::INVALID_ARGUMENT,
+          "the bytes are what failed, so the leg says INVALID_ARGUMENT");
+  require(outcome.error.contains("invalid WARC version line"),
+          "the service's framing error is the failure's message: " + outcome.error);
+}
+
+// A payload that could not be read to its end closes its record and ends
+// the stream: the record keeps the bytes that arrived and the archive is
+// typed as cut at that record.
+void verify_fastwarc_payload_read_failure_keeps_the_open_record() {
+  FakeWarcService service(FakeWarcService::Mode::kPayloadReadError);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record whose payload failed part way is folded: " + outcome.error);
+  const auto& last_text = outcome.document.texts(outcome.document.texts_size() - 1);
+  require(last_text.text().base().text() == "half a pay",
+          "the payload bytes that arrived before the failure are kept");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+      "a payload read failure ends the archive there, typed");
+  require(truncated.bytes_kept == uint64_t{4096},
+          "the cut is at the record whose payload failed");
 }
 
 void verify_fastwarc_transport_failure_without_records() {
@@ -2632,6 +2742,22 @@ void verify_fastwarc_transport_failure_without_records() {
           "a transport failure before any record is a failed outcome");
   require(outcome.error.contains("socket went away"),
           "the transport message survives");
+}
+
+// The records that arrived before the call died are kept, and the caller is
+// told in a typed warning that the stream did not reach its end.
+void verify_fastwarc_transport_failure_after_records_is_typed() {
+  FakeWarcService service(FakeWarcService::Mode::kTransportErrorMidStream);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 1,
+          "the record that arrived before the failure is kept: " + outcome.error);
+  const grparse::Warning incomplete = require_last_warning(
+      outcome, docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+      "a stream that failed after records is typed as incomplete");
+  require(incomplete.message.contains("socket went away"),
+          "the transport message stays in the warning");
 }
 
 void verify_fastwarc_truncates_payload_text() {
@@ -4266,7 +4392,11 @@ int main() {
       verify_fastwarc_captures_web_provenance,
       verify_fastwarc_response_supersedes_the_request_record,
       verify_fastwarc_framing_error_keeps_records,
+      verify_fastwarc_framing_error_without_a_position_states_no_offset,
+      verify_fastwarc_lost_framing_without_records_is_a_failure,
+      verify_fastwarc_payload_read_failure_keeps_the_open_record,
       verify_fastwarc_transport_failure_without_records,
+      verify_fastwarc_transport_failure_after_records_is_typed,
       verify_fastwarc_truncates_payload_text,
       verify_fastwarc_payload_text_is_utf8,
       verify_fastwarc_streams_both_ways_without_deadlock,

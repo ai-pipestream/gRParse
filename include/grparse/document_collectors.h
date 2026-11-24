@@ -166,8 +166,12 @@ CollectorOutcome collect_lol_html_document(const std::shared_ptr<grpc::Channel>&
 // order, the record's metadata and (when it reads as text) its payload as
 // source-tagged text items. A non-recoverable framing error ends the fold
 // but keeps the records already collected: a clipped archive is a partial
-// success, not a failure. A leg cut off by its deadline or cancelled is a
-// failure: nothing says where its archive really ended.
+// success under a WARNING_CODE_ARCHIVE_TRUNCATED warning, not a failure.
+// When no record was read before it there is nothing to keep, and the leg
+// fails INVALID_ARGUMENT instead of handing back an empty document. A call
+// that fails after records arrived keeps them under
+// WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE; a leg cut off by its deadline or
+// cancelled is a failure: nothing says where its archive really ended.
 CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>& channel,
                                            const std::string& bytes,
                                            CollectorDeadline inbound_deadline =

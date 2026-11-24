@@ -208,6 +208,17 @@ class WarcFold {
 
   int records() const { return document_.groups_size(); }
 
+  // A non-recoverable record error. The contract ends the stream after one,
+  // and whether it cut an archive short or left nothing at all is known only
+  // once the stream has ended, so the fold holds it for the caller.
+  struct LostFraming {
+    std::string message;
+    // The offset in the uncompressed archive at which the failed record
+    // began; unset when the service reported none.
+    std::optional<uint64_t> stream_pos;
+  };
+  const std::optional<LostFraming>& lost_framing() const { return lost_framing_; }
+
  private:
   void note_record_error(const warcv1::RecordError& error) {
     if (error.recoverable()) {
@@ -218,11 +229,21 @@ class WarcFold {
                                   " skipped: " + error.message());
       return;
     }
-    // Framing is lost; the server ends the stream after this. What was
-    // already parsed is kept: a clipped archive is a partial success,
-    // matching how the demo treats truncated captures.
-    outcome_.warnings.push_back("archive truncated by a framing error at stream offset " +
-                                std::to_string(error.stream_pos()) + ": " + error.message());
+    // Framing is lost, or the open record's payload could not be read to its
+    // end (the record_end that follows still closes that record). Nothing
+    // after this is a record; the first such error is the one that counts.
+    if (lost_framing_) return;
+    lost_framing_.emplace();
+    lost_framing_->message = error.message();
+    // The contract leaves stream_pos zero when the parser exposes no
+    // position, which is what fastwarc-grpc sends for a framing error. A
+    // zero is therefore an offset only for the record that is open, whose
+    // own start says where it began.
+    if (error.stream_pos() > 0) {
+      lost_framing_->stream_pos = error.stream_pos();
+    } else if (record_open_) {
+      lost_framing_->stream_pos = current_.stream_pos();
+    }
   }
 
   void add_text(int group, std::string text) {
@@ -357,6 +378,7 @@ class WarcFold {
   bool record_open_ = false;
   bool web_captured_ = false;
   bool web_from_response_ = false;
+  std::optional<LostFraming> lost_framing_;
   // Charsets already warned about, so a crawl of one site warns once.
   std::set<std::string> undecoded_charsets_;
 };
@@ -399,22 +421,49 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
 
   upload.join();
   const grpc::Status status = stream->Finish();
-  if (!status.ok()) {
-    // A leg cut off by its deadline or by cancellation is not a clipped
-    // archive: the server never got to say where the archive ended, and the
-    // records folded so far are whatever arrived before the cut.
-    if (fold.records() == 0 || status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
-        status.error_code() == grpc::StatusCode::CANCELLED) {
-      // Nothing parsed at all, or a cut-off leg: the failure is the outcome.
-      outcome.error = std::string("fastwarc collector: ") + status.error_message();
-      outcome.code = map_code(status.error_code());
+  // A leg cut off by its deadline or by cancellation is not a clipped
+  // archive: the server never got to say where the archive ended, and the
+  // records folded so far are whatever arrived before the cut. A failed call
+  // that folded nothing has only its failure to report.
+  if (!status.ok() &&
+      (fold.records() == 0 || status.error_code() == grpc::StatusCode::DEADLINE_EXCEEDED ||
+       status.error_code() == grpc::StatusCode::CANCELLED)) {
+    outcome.error = std::string("fastwarc collector: ") + status.error_message();
+    outcome.code = map_code(status.error_code());
+    return outcome;
+  }
+  if (const auto& lost = fold.lost_framing()) {
+    if (fold.records() == 0) {
+      // The service read the bytes and framed no record in them, then closed
+      // the stream OK: that is how it answers a file that is no archive, or
+      // one damaged from its first byte. There is no document to hand back,
+      // and an empty one under a warning would read as a parse that worked.
+      // The call itself went through, so the failure is the input's.
+      outcome.error = "fastwarc collector: no WARC record could be read: " + lost->message;
+      outcome.code = grpc::StatusCode::INVALID_ARGUMENT;
       return outcome;
     }
+    // A clipped archive is a partial success: the records before the cut are
+    // real and are kept, and the cut is typed so a caller can tell this
+    // document from a whole archive. The archive's full size is not known
+    // (the offset counts uncompressed bytes), so only the kept side is said.
+    Warning truncated(
+        docv1::WARNING_CODE_ARCHIVE_TRUNCATED,
+        "archive truncated at " +
+            (lost->stream_pos ? "stream offset " + std::to_string(*lost->stream_pos)
+                              : std::string("an offset the service did not report")) +
+            " (records read: " + std::to_string(fold.records()) + "): " + lost->message);
+    if (lost->stream_pos) truncated = std::move(truncated).kept(*lost->stream_pos);
+    outcome.warnings.push_back(std::move(truncated));
+  }
+  if (!status.ok()) {
     // Records already folded survive a mid-stream transport failure, the
-    // same partial-success reading the framing error above gets.
-    outcome.warnings.push_back(std::string("stream failed after ") +
-                               std::to_string(fold.records()) +
-                               " records: " + status.error_message());
+    // same partial-success reading a clipped archive gets, and the caller is
+    // told the stream never reached its end.
+    outcome.warnings.push_back(
+        Warning(docv1::WARNING_CODE_COLLECTOR_STREAM_INCOMPLETE,
+                std::string("stream failed after ") + std::to_string(fold.records()) +
+                    " records: " + status.error_message()));
   }
   outcome.success = true;
   return outcome;
