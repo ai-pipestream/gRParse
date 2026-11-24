@@ -11,6 +11,7 @@
 #include <vector>
 #include <unistd.h>
 
+#include "grparse_inference_model.h"
 #include "grparse_session_ep.h"
 #include "support/check.h"
 #include "support/tiny_onnx_model.h"
@@ -105,7 +106,13 @@ void verify_ocr_batch_size_follows_provider() {
   grparse::OrtEpSelection other = kept;
   other.ep = grparse::OrtEp::kOpenVino;
   grparse::set_ort_ep_selection(other);
-  require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO reads one crop per call");
+  // On a GPU device the Intel image runs the nets on the Level Zero runtime,
+  // which batches as CUDA does; the OpenVINO provider reads one crop per call.
+  require_equal(grparse::ocr_batch_size(), grparse::level_zero_ocr() ? size_t{16} : size_t{1},
+                "OpenVINO on a GPU reads 16 crops per call on Level Zero and one on the provider");
+  other.openvino_device = "CPU";
+  grparse::set_ort_ep_selection(other);
+  require_equal(grparse::ocr_batch_size(), size_t{1}, "OpenVINO on its CPU device reads one crop per call");
   other.ep = grparse::OrtEp::kCuda;
   grparse::set_ort_ep_selection(other);
   require_equal(grparse::ocr_batch_size(), size_t{16}, "CUDA reads 16 crops per call");

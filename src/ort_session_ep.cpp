@@ -262,7 +262,7 @@ size_t configured_ocr_batch() {
 size_t ocr_batch_size() {
   const size_t configured = configured_ocr_batch();
   if (configured != 0) return configured;
-  return ort_ep_selection().ep == OrtEp::kCuda ? 16 : 1;
+  return ort_ep_selection().ep == OrtEp::kCuda || level_zero_ocr() ? 16 : 1;
 }
 
 size_t ocr_direction_batch_size() {

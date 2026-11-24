@@ -501,12 +501,15 @@ build, see below), `cpu` (explicit CPU inference on ONNX Runtime), or `auto`
 (a CUDA device when one is present, then OpenVINO, then CPU, logging each
 step; with a CUDA device present the models build on it or startup fails,
 exactly as under `cuda`). `GRPARSE_OCR_BATCH` (1 to 256) sets how many line
-crops the angle classifier and recognizer take per call: 16 under CUDA, 1
-under CPU (where padding costs more than batching saves) and OpenVINO (whose
-GPU plugin compiles kernels for every new input shape). Where the OCR nets
-run natively through Level Zero, the angle classifier takes 256 crops per
-call unless `GRPARSE_OCR_BATCH` is set: all of them are resized to one size,
-so batching changes no result.
+crops the angle classifier and recognizer take per call: 16 under CUDA and
+where the OCR nets run natively through Level Zero (the Intel image on a GPU
+device), 1 under CPU (where padding costs more than batching saves) and on
+the OpenVINO provider (whose GPU plugin compiles kernels for every new input
+shape). On Level Zero the angle classifier takes 256 crops per call unless
+`GRPARSE_OCR_BATCH` is set: all of them are resized to one size, so batching
+changes no result. A recognizer batch does change a little: on the 96
+acm-table documents 297 of 39,313 text items read differently at 16 than at
+1, on the CPU provider as on a GPU.
 Crops are sorted by width before batching, and each batch is padded to its
 widest crop; 1 reads one crop per call. Requesting a provider the linked ONNX Runtime does not
 offer fails with the list that is actually available. An OCR session that

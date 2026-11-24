@@ -69,12 +69,15 @@ int ort_intra_op_threads();
 
 // How many line crops the patched angle and recognition nets run per call
 // (patches/rapidocr-batched-nets.patch).  GRPARSE_OCR_BATCH sets it, 1 to
-// 256; the default is 16 under CUDA and 1 otherwise.  On the CPU provider
-// the padding costs more than the batch saves (0.44 pages per second at 16
-// against 0.74 at 1 on a 32-core host), and the OpenVINO GPU plugin
-// compiles kernels for each new input shape, which a batch dimension
-// multiplies.  1 reads one crop per call, the upstream behavior.  A
-// malformed value throws std::invalid_argument.
+// 256; the default is 16 under CUDA and on the Level Zero runtime
+// (level_zero_ocr()), and 1 otherwise.  On the CPU provider the padding
+// costs more than the batch saves (0.44 pages per second at 16 against 0.74
+// at 1 on a 32-core host), and the OpenVINO GPU plugin compiles kernels for
+// each new input shape, which a batch dimension multiplies.  A batch pads
+// its lines to the widest one, so the recognizer reads some lines a little
+// differently than it does one at a time; the two GPU flavors batch alike.
+// 1 reads one crop per call, the upstream behavior.  A malformed value
+// throws std::invalid_argument.
 size_t ocr_batch_size();
 
 // How many crops the direction net classifies per call
