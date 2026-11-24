@@ -190,11 +190,11 @@ class LolHtmlFold {
   }
 
   void started(const lolv1::ExtractStarted& started) {
+    // The encoding the peer decoded the page with is a fact about the
+    // source, so it goes to the origin's typed field and the merge accounts
+    // for it like every other origin field.
     if (!started.encoding().empty()) {
-      (*document_.mutable_body()
-            ->mutable_meta()
-            ->mutable_custom_fields())["lol_html.encoding"]
-          .set_string_value(started.encoding());
+      document_.mutable_origin()->set_source_encoding(started.encoding());
     }
   }
 
