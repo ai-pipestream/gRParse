@@ -895,6 +895,7 @@ add_library(grparse_core STATIC
   src/prometheus_metrics.cpp
   src/reading_order.cpp
   src/region_geometry.cpp
+  src/table_column_anchor.cpp
   src/table_structure.cpp
   src/table_structure_engine.cpp
   src/targets/bundle.cpp
@@ -1000,6 +1001,7 @@ if(BUILD_TESTING)
     streaming-service-test
     table-structure-engine-test
     table-structure-test
+    table-column-anchor-test
     targets-test
     text-geometry-test
     warc-stub-wire-test
