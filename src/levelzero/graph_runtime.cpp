@@ -85,9 +85,11 @@ struct GraphModel::Kernels {
       binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool, to_real, from_real, gemm_xmx,
       pack_patches, pack_tokens;
   // kernels_detector.cl
-  ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1;
+  ze_kernel_handle_t gap_partial, gap_finish, scale_merge, conv_transpose2_8, conv_transpose2_1, conv_planes_xmx,
+      shift_copy;
   // kernels_mobile.cl
   ze_kernel_handle_t channel_scale, binary_same;
+  ze_kernel_handle_t reduce_rows;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -102,7 +104,8 @@ struct GraphModel::Value {
 };
 
 GraphModel::GraphModel(Device& device, const std::filesystem::path& model, GraphOptions options)
-    : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), esize_(options.fp16 ? 2 : 4) {
+    : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), reduce_rows_(options.reduce_rows),
+      esize_(options.fp16 ? 2 : 4) {
   last_use_.assign(ir_.values.size(), 0);
   for (size_t index = 0; index < ir_.nodes.size(); ++index) {
     for (int input : ir_.nodes[index].inputs) {
@@ -121,10 +124,12 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model, Graph
       fp16_ ? k("gemm_xmx", 64, 1) : nullptr, fp16_ ? k("pack_patches", 16, 16) : nullptr,
       fp16_ ? k("pack_tokens", 16, 16) : nullptr, k("gap_partial", 256, 1), k("gap_finish", 256, 1),
       k("scale_merge", 16, 4), k("conv_transpose2_8", 16, 4), k("conv_transpose2_1", 16, 4),
-      k("channel_scale", 16, 16), k("binary_same", 256, 1)});
+      fp16_ ? k("conv_planes_xmx", 64, 1) : nullptr, fp16_ ? k("shift_copy", 256, 1) : nullptr,
+      k("channel_scale", 16, 16), k("binary_same", 256, 1), k("reduce_rows", 256, 1)});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
   if (fp16_) build_fp16_weights();
+  if (fp16_) build_plane_weights();
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
   queue_desc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
   ze_check(zeCommandQueueCreate(device_.context(), device_.device(), &queue_desc, &queue_), "command queue");
@@ -162,6 +167,34 @@ void GraphModel::build_fp16_weights() {
   }
   xmx_ = static_cast<uint16_t*>(device_.allocate(std::max<size_t>(packed.size(), 32) * sizeof(uint16_t)));
   device_.upload(xmx_, packed.data(), packed.size() * sizeof(uint16_t));
+}
+
+// Every dense stride-1 size-keeping convolution's weights as conv_planes_xmx
+// reads them: [tap][co padded to 16][ci padded to 32], zero filled.
+void GraphModel::build_plane_weights() {
+  std::vector<uint16_t> packed;
+  planes_offsets_.assign(ir_.nodes.size(), SIZE_MAX);
+  for (size_t index = 0; index < ir_.nodes.size(); ++index) {
+    const IrNode& node = ir_.nodes[index];
+    if (node.op != IrOp::kConv || node.groups != 1 || node.stride_h != 1 || node.stride_w != 1 ||
+        2 * node.pad_h != node.kernel_h - 1 || 2 * node.pad_w != node.kernel_w - 1) {
+      continue;
+    }
+    const size_t taps = size_t(node.kernel_h) * size_t(node.kernel_w), ci = size_t(node.k) / taps;
+    const size_t co = size_t(node.out_channels), cip = (ci + 31) / 32 * 32, cop = (co + 15) / 16 * 16;
+    planes_offsets_[index] = packed.size();
+    packed.resize(packed.size() + taps * cop * cip, 0);
+    uint16_t* a = packed.data() + planes_offsets_[index];
+    for (size_t o = 0; o < co; ++o) {
+      for (size_t i = 0; i < ci; ++i) {
+        for (size_t t = 0; t < taps; ++t) {
+          a[(t * cop + o) * cip + i] = half_bits(ir_.weights[node.weights + (o * ci + i) * taps + t]);
+        }
+      }
+    }
+  }
+  planes_ = static_cast<uint16_t*>(device_.allocate(std::max<size_t>(packed.size(), 32) * sizeof(uint16_t)));
+  device_.upload(planes_, packed.data(), packed.size() * sizeof(uint16_t));
 }
 
 GraphModel::~GraphModel() {
@@ -554,7 +587,21 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
                                    c.ph == 0 && c.pw == 0 && c.groups == 1;
             const bool depthwise = node.op == IrOp::kConv && c.groups == c.ci && c.groups == c.co;
             const int max_pool = node.op == IrOp::kMaxPool, include_pad = node.count_include_pad;
-            const size_t xmx = fp16_ && node.op == IrOp::kConv ? xmx_offsets_[index] : SIZE_MAX;
+            // A size-keeping dense convolution over whole runs reads its input planes in place.
+            const size_t planes = fp16_ && node.op == IrOp::kConv && c.oh == c.ih && c.ow == c.iw && (c.ih * c.iw) % 32 == 0
+                                      ? planes_offsets_[index]
+                                      : SIZE_MAX;
+            const size_t xmx = fp16_ && node.op == IrOp::kConv && planes == SIZE_MAX ? xmx_offsets_[index] : SIZE_MAX;
+            // Its odd tap offsets read a copy of the input moved down one element, free again after the node.
+            const bool shifted = planes != SIZE_MAX && (c.kw > 1 || (c.kh > 1 && c.iw % 2 == 1));
+            size_t shifted_offset = 0;
+            if (shifted) {
+              Value copy;
+              copy.shape = {int64_t(numel(a.shape) + 2 * kArenaSlack)};
+              place(copy);
+              shifted_offset = copy.offset + kArenaSlack;  // room for the elements before the first
+              release(copy);
+            }
             // The XMX path repacks the input into a [terms][columns] scratch block, free again after the node.
             PackArgs pack{};
             size_t scratch_offset = 0;
@@ -578,6 +625,18 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
               if (pool) {
                 args(kernels_->pool2d, {P(src), P(dst), P(c), P(max_pool), P(include_pad)});
                 launch(kernels_->pool2d, spatial);
+              } else if (planes != SIZE_MAX) {
+                const uint16_t* wt = planes_ + planes;
+                const int cip = (c.ci + 31) / 32 * 32, cop = (c.co + 15) / 16 * 16;
+                const char* src1 = shifted ? arena + shifted_offset * esize_ : src;
+                if (shifted) {
+                  const int count = c.n * c.ci * c.ih * c.iw;
+                  args(kernels_->shift_copy, {P(src), P(src1), P(count)});
+                  launch(kernels_->shift_copy, {groups_for(size_t(count) + 32, 32 * 256), 1, 1});
+                }
+                args(kernels_->conv_planes_xmx, {P(src), P(src1), P(dst), P(wt), P(bp), P(c), P(cip), P(cop)});
+                launch(kernels_->conv_planes_xmx, {groups_for(size_t(c.ih) * size_t(c.iw), 128),
+                                                   groups_for(size_t(c.co), 16), uint32_t(c.n)});
               } else if (xmx != SIZE_MAX) {
                 const uint16_t* a = xmx_ + xmx;
                 const char* packed = arena + scratch_offset * esize_;
@@ -936,7 +995,10 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
     moved = true;
   };
   size_t output_floats = 0;
-  for (int id : ir_.outputs) output_floats += (numel(values[size_t(id)].shape) + 15) / 16 * 16;
+  for (int id : ir_.outputs) {
+    const Shape& shape = values[size_t(id)].shape;
+    output_floats += ((reduce_rows_ ? numel(shape) / size_t(shape.back()) * 4 : numel(shape)) + 15) / 16 * 16;
+  }
   grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_, false);
   grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float), true);
   grow(&io_out_, &io_out_floats_, output_floats, sizeof(float), true);
@@ -966,14 +1028,23 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
   size_t out_at = 0;
   for (int id : ir_.outputs) {
     const Value& v = values[size_t(id)];
-    plan->output_shapes.push_back(v.shape);
-    plan->output_floats.push_back(out_at);
     const char* src = ptr(v, arena_);
     char* dst = io_out_ + out_at * sizeof(float);
-    const int count = int(numel(v.shape));
-    args(kernels_->from_real, {P(src), P(dst), P(count)});
-    launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
-    out_at += (size_t(count) + 15) / 16 * 16;
+    Shape shape = v.shape;
+    if (reduce_rows_) {
+      const int cols = int(v.shape.back());
+      const size_t rows = numel(v.shape) / size_t(cols);
+      shape.back() = 4;
+      args(kernels_->reduce_rows, {P(src), P(dst), P(cols)});
+      launch(kernels_->reduce_rows, {uint32_t(rows), 1, 1});
+    } else {
+      const int count = int(numel(v.shape));
+      args(kernels_->from_real, {P(src), P(dst), P(count)});
+      launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
+    }
+    plan->output_floats.push_back(out_at);
+    out_at += (numel(shape) + 15) / 16 * 16;
+    plan->output_shapes.push_back(std::move(shape));
   }
   ze_check(zeCommandListClose(list_), "command list close");
 }

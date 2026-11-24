@@ -100,7 +100,11 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # A line narrower or wider than the recognizer's shape range is
         # padded or resized into it (grparse::ocr_rec_min_width and
         # ocr_rec_max_width; no limit on ONNX Runtime).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-rec-width-limits.patch"
+        # A backend that reduces the recognizer's scores on the device hands
+        # back each time step's best class and score; the decode reads those
+        # (grparse::ocr_rec_reduced).
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-reduced-scores.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -139,6 +143,14 @@ string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_max_width" GRPARSE_CRNN_L
 if(GRPARSE_CRNN_LIMITS_AT EQUAL -1)
   message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-rec-width-limits.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
+# A tree cached before the reduced-scores patch would read a reduced output
+# as scores per class and decode garbage.
+string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_reduced" GRPARSE_CRNN_REDUCED_AT)
+if(GRPARSE_CRNN_REDUCED_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-reduced-scores.patch. Delete _deps/rapidocr-* from the build directory "
     "(or the docker build cache) and re-run CMake.")
 endif()
 unset(GRPARSE_CRNN_SOURCE)

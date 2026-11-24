@@ -191,8 +191,9 @@ bool ocr_net_fp16(OcrNet net) {
 // A model on the Level Zero graph runtime (src/levelzero/graph_runtime.h).
 class LevelZeroModel final : public InferenceModel {
  public:
-  LevelZeroModel(const std::filesystem::path& path, int gpu, bool fp16)
-      : graph_(levelzero::Device::shared(gpu), path, levelzero::graph::GraphOptions{.fp16 = fp16}) {
+  LevelZeroModel(const std::filesystem::path& path, int gpu, bool fp16, bool reduce_rows)
+      : graph_(levelzero::Device::shared(gpu), path,
+               levelzero::graph::GraphOptions{.fp16 = fp16, .reduce_rows = reduce_rows}) {
     const auto& ir = graph_.ir();
     input_names_.push_back(ir.values[static_cast<size_t>(ir.input)].name);
     for (const int output : ir.outputs) output_names_.push_back(ir.values[static_cast<size_t>(output)].name);
@@ -238,6 +239,8 @@ bool level_zero_ocr() {
 bool level_zero_ocr() { return false; }
 #endif
 
+bool ocr_rec_reduced() { return level_zero_ocr(); }
+
 std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::filesystem::path& path,
                                                     OcrNet net, int num_thread) {
   const std::string what(ocr_net_name(net));
@@ -246,7 +249,7 @@ std::unique_ptr<InferenceModel> make_rapidocr_model(Ort::Env& env, const std::fi
     std::unique_ptr<InferenceModel> model;
     try {
       model = std::make_unique<LevelZeroModel>(path, level_zero_gpu(ort_ep_selection().openvino_device),
-                                               ocr_net_fp16(net));
+                                               ocr_net_fp16(net), net == OcrNet::kRecognition);
     } catch (const std::exception& error) {
       throw ep_refusal(what, path, error.what());
     }
