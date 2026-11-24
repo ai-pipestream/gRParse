@@ -8,7 +8,6 @@
 #include <string_view>
 #include <utility>
 
-#include "grparse/base64.h"
 #include "grparse/document_merge.h"
 
 namespace grparse {
@@ -278,11 +277,6 @@ void reparent_tail(docv1::Document* book, int first_child, int group_index) {
                                            body->children_size() - first_child);
 }
 
-std::string data_uri(const std::string& media_type, const std::string& bytes) {
-  return "data:" + (media_type.empty() ? std::string("application/octet-stream") : media_type) +
-         ";base64," + encode_base64(bytes.data(), bytes.size());
-}
-
 void inline_images(const std::vector<EpubResource>& resources, docv1::Document* book,
                    std::vector<Warning>* warnings) {
   std::map<std::string, const EpubResource*> by_href;
@@ -326,7 +320,10 @@ void inline_images(const std::vector<EpubResource>& resources, docv1::Document* 
     inlined_on.emplace(*href, picture.self_ref());
     auto* image = picture.mutable_image();
     if (!resource.media_type.empty()) image->set_mimetype(resource.media_type);
-    image->set_uri(data_uri(image->mimetype(), resource.content));
+    // The picture now holds the bytes; the reference into the archive,
+    // which nothing outside the book could follow, goes.
+    image->set_data(resource.content);
+    image->clear_uri();
   }
 }
 

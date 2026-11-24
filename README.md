@@ -318,7 +318,7 @@ The bundle is one canonical file set, identical whichever target delivers it:
 
 `response.pb` is what a reader of the bucket has in place of the RPC response, so a `CONVERSION_STATUS_PARTIAL_SUCCESS` conversion and its error items read as partial there too. It does not repeat the document or the exports (they are the members above), and it carries no `processing_time`, `timings` or `profiling`, which would differ between two runs. A delivery that fails after the bundle is built is reported on the RPC response alone.
 
-An image member's extension is what the bytes' own signature says, else what the document declares for the image (the data URI's media type, then `ImageRef.mimetype`), from a closed table: `png`, `jpg`, `tif`, `webp`, `gif`, `bmp`, `svg`, `jp2`, `emf`, `wmf`. An image neither names is written as `.bin`, never as a guessed `.png`. Every image the document carries that did not become a member of a known type is listed as a typed `BundleImageIssue` in `TargetResult.image_issues` and, identically, in `response.pb`: `BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED` (the `uri` is a reference, not a `data:` URI; no member), `BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE` (the payload is not readable base64; no member) or `BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE` (the `.bin` member, with its `path`), each naming its `page_no` or `picture_index`. These do not change the conversion's `status`.
+An image member's extension is what the bytes' own signature says, else what the document declares for the image (`ImageRef.mimetype`, or for a producer that still spells the bytes as a data URI, that URI's media type first), from a closed table: `png`, `jpg`, `tif`, `webp`, `gif`, `bmp`, `svg`, `jp2`, `emf`, `wmf`. An image neither names is written as `.bin`, never as a guessed `.png`. Every image the document carries that did not become a member of a known type is listed as a typed `BundleImageIssue` in `TargetResult.image_issues` and, identically, in `response.pb`: `BUNDLE_IMAGE_ISSUE_REASON_NOT_EMBEDDED` (the `uri` is a reference, not a `data:` URI; no member), `BUNDLE_IMAGE_ISSUE_REASON_UNDECODABLE` (the payload is not readable base64; no member) or `BUNDLE_IMAGE_ISSUE_REASON_UNKNOWN_TYPE` (the `.bin` member, with its `path`), each naming its `page_no` or `picture_index`. These do not change the conversion's `status`.
 
 Determinism is the point here too: members are sorted by path, archive timestamps are fixed at the MS-DOS epoch, the compressor is held to one setting, and the manifest carries no clock in either form (`manifest.json` also no whitespace, and its keys sorted). The same conversion and the same requested formats produce a byte-identical archive on every machine and every run.
 
@@ -702,8 +702,8 @@ before the raster is released.
 
 With `GRPARSE_PICTURE_IMAGES=on` (default off) each picture region's pixels
 are cropped from the page raster in the inference stage, PNG-encoded, and
-attached to its `PictureItem` as an `image/png` data URI with the pixel
-size. The crop happens after OCR and before the raster is released, so
+attached to its `PictureItem` as `image/png` bytes (`ImageRef.data`) with
+the pixel size. The crop happens after OCR and before the raster is released, so
 device work is never delayed and no raster outlives its page. Leave it off
 for figure-heavy corpora where embedded images would inflate every page
 event; picture bounding boxes are always present either way.

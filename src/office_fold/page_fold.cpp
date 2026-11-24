@@ -179,7 +179,9 @@ void PageFold::on_page_image(const officev1::PageImage& image) {
   ref->set_dpi(image.dpi());
   ref->mutable_size()->set_width(image.width_px());
   ref->mutable_size()->set_height(image.height_px());
-  ref->set_uri(data_uri(mime, image.png()));
+  // The render's own bytes; the field is named png but holds whichever
+  // encoding the request selected.
+  ref->set_data(image.png());
 }
 
 void PageFold::on_metadata(const officev1::DocumentMetadata& meta) {

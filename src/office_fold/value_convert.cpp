@@ -18,42 +18,6 @@ int32_t clamp32(long long value) {
   return static_cast<int32_t>(value);
 }
 
-std::string base64(const std::string& data) {
-  static const char alphabet[] =
-      "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-  std::string out;
-  out.reserve((data.size() + 2) / 3 * 4);
-  size_t i = 0;
-  while (i + 2 < data.size()) {
-    uint32_t chunk = (static_cast<unsigned char>(data[i]) << 16)
-        | (static_cast<unsigned char>(data[i + 1]) << 8)
-        | static_cast<unsigned char>(data[i + 2]);
-    out.push_back(alphabet[(chunk >> 18) & 63]);
-    out.push_back(alphabet[(chunk >> 12) & 63]);
-    out.push_back(alphabet[(chunk >> 6) & 63]);
-    out.push_back(alphabet[chunk & 63]);
-    i += 3;
-  }
-  if (i + 1 == data.size()) {
-    uint32_t chunk = static_cast<unsigned char>(data[i]) << 16;
-    out.push_back(alphabet[(chunk >> 18) & 63]);
-    out.push_back(alphabet[(chunk >> 12) & 63]);
-    out.append("==");
-  } else if (i + 2 == data.size()) {
-    uint32_t chunk = (static_cast<unsigned char>(data[i]) << 16)
-        | (static_cast<unsigned char>(data[i + 1]) << 8);
-    out.push_back(alphabet[(chunk >> 18) & 63]);
-    out.push_back(alphabet[(chunk >> 12) & 63]);
-    out.push_back(alphabet[(chunk >> 6) & 63]);
-    out.push_back('=');
-  }
-  return out;
-}
-
-std::string data_uri(const std::string& mime, const std::string& bytes) {
-  return "data:" + mime + ";base64," + base64(bytes);
-}
-
 std::string page_image_mime(officev1::PageImageFormat format) {
   switch (format) {
     case officev1::PAGE_IMAGE_FORMAT_JPEG: return "image/jpeg";

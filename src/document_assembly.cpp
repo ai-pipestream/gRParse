@@ -19,7 +19,6 @@
 #include "grparse/assembly_blocks.h"
 #include "grparse/assembly_floats.h"
 #include "grparse/assembly_table_data.h"
-#include "grparse/base64.h"
 #include "grparse/list_marker.h"
 #include "grparse/reading_order.h"
 #include "grparse/region_geometry.h"
@@ -196,7 +195,7 @@ std::string sharper_render_failed(const OcrPage& page) {
 
 }  // namespace
 
-// Embed a captured crop as a data URI.  The pixel size comes from the PNG
+// Hold a captured crop's PNG bytes on the image.  The pixel size comes from the PNG
 // IHDR itself, which is authoritative regardless of the page's coordinate
 // space (digital pages measure in PDF points, crops in raster pixels).
 void set_picture_image(const std::vector<unsigned char>& png,
@@ -207,7 +206,7 @@ void set_picture_image(const std::vector<unsigned char>& png,
     image->mutable_size()->set_width(read_be32(png.data() + 16));
     image->mutable_size()->set_height(read_be32(png.data() + 20));
   }
-  image->set_uri("data:image/png;base64," + encode_base64(png.data(), png.size()));
+  image->set_data(png.data(), png.size());
 }
 
 uint64_t utf8_codepoint_count(const std::string& text) {

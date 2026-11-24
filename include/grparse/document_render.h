@@ -172,13 +172,14 @@ struct DoclangOptions {
   // How a picture's image is carried.
   //   kPlaceholder: no uri on the picture element (and, in the archive, no
   //     assets/ member).
-  //   kReferenced: render_doclang writes the picture's existing image uri;
-  //     render_dclx stores the picture's image bytes (its own data-URI image,
-  //     else a crop of its first provenance box from its page image) as an
-  //     assets/ member and points the uri at it. A picture whose image uri is
-  //     not a data URI keeps that uri, as docling does when it cannot load
-  //     the image.
-  //   kEmbedded: render_doclang writes the existing uri, else a PNG data URI
+  //   kReferenced: render_doclang writes the picture's image as a uri (its
+  //     reference, else the bytes it holds as a data URI); render_dclx
+  //     stores the picture's image bytes (the bytes it holds, else a crop
+  //     of its first provenance box from its page image) as an assets/
+  //     member and points the uri at it. A picture whose image is only a
+  //     reference keeps that uri, as docling does when it cannot load the
+  //     image.
+  //   kEmbedded: render_doclang writes the same uri, else a PNG data URI
   //     cropped from the page image. render_dclx rejects it.
   enum class ImageMode { kPlaceholder, kEmbedded, kReferenced };
   // Unset takes the format's docling default: kPlaceholder for

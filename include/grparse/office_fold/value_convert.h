@@ -18,9 +18,6 @@ bool ends_with(const std::string& value, const std::string& suffix);
 // wrapping.
 int32_t clamp32(long long value);
 
-std::string base64(const std::string& data);
-std::string data_uri(const std::string& mime, const std::string& bytes);
-
 // The media type of a rendered page image. The request selects the encoding
 // and the response names it; a producer that predates format selection sends
 // PNG and no name.

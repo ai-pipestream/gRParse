@@ -32,8 +32,7 @@ void set_replacement_image(const officev1::EmbeddedObject& object,
   ref->set_mimetype(object.replacement_mime_type());
   ref->mutable_size()->set_width(static_cast<double>(object.width_twips()));
   ref->mutable_size()->set_height(static_cast<double>(object.height_twips()));
-  ref->set_uri(data_uri(object.replacement_mime_type(),
-                        object.replacement_image()));
+  ref->set_data(object.replacement_image());
 }
 
 // Where the chart's data came from, as grid spans on the sheet it sits on.
