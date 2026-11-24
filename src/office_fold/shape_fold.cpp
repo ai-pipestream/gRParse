@@ -192,7 +192,7 @@ void ShapeFold::on_slide_shape(const officev1::SlideShape& shape,
 
   if (ends_with(shape.shape_type(), "OLE2Shape")) {
     officev1::EmbeddedObject object;
-    if (charts.take_pending(shape.slide_index(), &shape.position(), &object)) {
+    if (charts.take_pending(shape.slide_index(), shape.position(), &object)) {
       charts.emit(&object, nullptr, parent, layer, true, prov_page, box.l,
                   box.t, box.r, box.b);
       return;

@@ -26,12 +26,32 @@ class ChartFold {
 
   // Holds a chart until the event that places it in the reading order
   // arrives (a sheet's SheetChart, a slide's OLE2 shape). Writer charts
-  // never wait: their caret anchor places them as they arrive.
+  // never wait: their caret anchor places them as they arrive. A sheet's
+  // chart whose SheetChart is already waiting for it (place_sheet_chart)
+  // is emitted with it at once.
   void hold(const officev1::EmbeddedObject& object);
-  // Takes the first chart waiting on page_index, or the one whose laid-out
-  // position matches `at` when given. False when none is waiting.
-  bool take_pending(int page_index, const officev1::TwipsPoint* at,
+  // Takes the chart waiting on a slide whose laid-out position matches
+  // `at`. False when none is waiting there.
+  bool take_pending(int page_index, const officev1::TwipsPoint& at,
                     officev1::EmbeddedObject* out);
+
+  // Places a sheet's chart. Calc reports a chart on a sheet twice: as a
+  // draw-page object with the typed data and as a SheetChart with the
+  // source ranges. The two are one chart and fold into one composite,
+  // joined by the object's storage name (EmbeddedObject.persist_name),
+  // which is the name the sheet's chart list reports (SheetChart.name),
+  // whichever event arrives first. The draw page and the chart list need
+  // not agree on order, so order joins nothing when the names are there.
+  //
+  // The object waiting under that name is emitted with the chart. With
+  // none, a named chart waits for its object in turn, until the stream
+  // ends (flush): emitting it now would leave a second picture when the
+  // object arrives. A worker that predates persist_name names no storage;
+  // its objects are paired with the sheet's charts in arrival order, the
+  // only link there is.
+  void place_sheet_chart(const officev1::SheetChart& chart,
+                         const std::string& sheet_ref,
+                         docv1::ContentLayer layer);
 
   // Emits one chart composite. `object` is the collector's embedded chart
   // (null when only a SheetChart arrived) and `sheet_chart` the sheet-side
@@ -47,8 +67,10 @@ class ChartFold {
             bool page_local, int page_index, double l, double t, double r,
             double b, bool has_geometry = true);
 
-  // Emits every chart still waiting once the stream ends, under the sheet
-  // or slide group of its page when one was mapped, else under the body.
+  // Emits everything still waiting once the stream ends: each SheetChart
+  // whose object never arrived, with its ranges and the sheet cells they
+  // cover, then each chart object nothing placed, under the sheet or slide
+  // group of its page when one was mapped, else under the body.
   void flush(const ShapeFold& shapes);
 
  private:
@@ -103,9 +125,33 @@ class ChartFold {
   DocumentArena& arena_;
   SheetFold& sheets_;
   AttachmentRegistry& attachments_;
+  // Emits the composite of a sheet chart and its object at the object's
+  // laid-out box.
+  void emit_on_sheet(const officev1::EmbeddedObject& object,
+                     const officev1::SheetChart& chart,
+                     const std::string& sheet_ref, docv1::ContentLayer layer);
+  // A SheetChart with no object: its ranges and the cells they cover, on
+  // the sheet, with no box.
+  void emit_sheet_chart_alone(const officev1::SheetChart& chart,
+                              const std::string& sheet_ref,
+                              docv1::ContentLayer layer);
+  // Takes the chart object waiting on sheet_index under the storage name
+  // `persist_name`; with an empty name, the first one that names no
+  // storage. False when there is none.
+  bool take_stored(int sheet_index, const std::string& persist_name,
+                   officev1::EmbeddedObject* out);
+
   // Charts waiting for the event that places them, keyed by the sheet or
   // slide they sit on, in arrival order.
   std::map<int, std::deque<officev1::EmbeddedObject>> pending_charts_;
+  // Named SheetCharts waiting for their object, in arrival order, with the
+  // sheet group and layer they were placed under.
+  struct WaitingSheetChart {
+    officev1::SheetChart chart;
+    std::string sheet_ref;
+    docv1::ContentLayer layer = docv1::CONTENT_LAYER_BODY;
+  };
+  std::deque<WaitingSheetChart> waiting_sheet_charts_;
 };
 
 }  // namespace grparse::office_fold
