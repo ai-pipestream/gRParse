@@ -22,6 +22,7 @@ namespace officev1 = ai::pipestream::office::v1;
 namespace {
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 struct Series {
   std::string label;
@@ -326,7 +327,7 @@ void verify_numeric_categories_and_typed_cells() {
           "a decimal value displays as written");
   const docv1::TableCell* million = cell_at(data, 3, 1);
   require(million != nullptr && million->text() == "1e+06" && million->value().number() == 1000000,
-          "large values use the same %g display as sheet cells; the typed value is exact");
+          "a round million takes its shortest spelling; the typed value is exact");
   for (const docv1::TableCell& cell : data.table_cells()) {
     require(cell.column_header() == (cell.start_row_offset_idx() == 0),
             "column_header marks the label row and nothing else");
@@ -344,6 +345,46 @@ void verify_numeric_categories_and_typed_cells() {
     }
   }
   require(line, "the line annotation carries one line with every point");
+}
+
+// The cell text is what the Markdown and text exports, the chunker and the
+// embedder read, so it has to spell the number the typed value holds: every
+// digit, not the six significant ones "%g" keeps.
+void verify_series_values_keep_every_digit_in_the_cell_text() {
+  ChartShape shape{
+      .kind = officev1::EMBEDDED_CHART_KIND_LINE,
+      .title = "Revenue",
+      .x_title = "Year",
+      .y_title = "USD",
+      .categories = {"2019", "2020", "2021"},
+      .series = {{"Revenue", {1234567.89, 0.000123456789, -98765432.1}}},
+  };
+  grparse::DoclingMapper mapper = spreadsheet_with(shape, "Year");
+  const docv1::TableData& data = mapper.document().tables(1).data();
+  const char* expected[] = {"1234567.89", "0.000123456789", "-98765432.1"};
+  for (int row = 0; row < 3; row++) {
+    const docv1::TableCell* cell = cell_at(data, row + 1, 1);
+    require(cell != nullptr, "every series value has a cell");
+    require_equal(cell->text(), expected[row], "a series value's cell text keeps every digit");
+    require(std::stod(cell->text()) == cell->value().number(),
+            "the cell text reads back as the typed value: " + cell->text());
+  }
+
+  // A scatter chart's x values head the rows through the same spelling.
+  ChartShape scatter{.kind = officev1::EMBEDDED_CHART_KIND_SCATTER,
+                     .title = "Drift",
+                     .x_title = "Seconds",
+                     .y_title = "",
+                     .categories = {},
+                     .series = {{"Probe", {1, 2}, {}, {1700000000.25, 1700000001.5}}}};
+  grparse::DoclingMapper deck;
+  deck.consume(info_event("presentation", "deck.pptx"));
+  deck.consume(chart_object_event(0, "Chart 1", scatter));
+  deck.consume(slide_event(0, "Drift"));
+  deck.consume(status_event());
+  const docv1::TableCell* head = cell_at(deck.document().tables(0).data(), 1, 0);
+  require(head != nullptr, "the scatter chart's first x value heads a row");
+  require_equal(head->text(), "1700000000.25", "an x value's cell text keeps every digit");
 }
 
 void verify_unlabelled_series_get_positional_labels() {
@@ -562,6 +603,7 @@ int main() {
       verify_pie_without_title_names_corner_from_sheet_and_mints_no_caption,
       verify_presentation_pie_without_sheet_leaves_the_corner_blank,
       verify_numeric_categories_and_typed_cells,
+      verify_series_values_keep_every_digit_in_the_cell_text,
       verify_unlabelled_series_get_positional_labels,
       verify_bubble_sizes_survive_the_fold,
       verify_scatter_sizes_ride_regardless_of_kind,

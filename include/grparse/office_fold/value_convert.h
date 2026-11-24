@@ -50,8 +50,12 @@ std::string mime_for_extension(const std::string& extension);
 google::protobuf::Value str_value(const std::string& text);
 google::protobuf::Value num_value(double number);
 
-// "%g", the spelling the office collector's own tabular projection uses,
-// so a series value reads the same whether it arrived typed or projected.
+// The shortest spelling that reads back as the same double ("3", "4.5",
+// "1234567.89"): the cell text of a typed series value, which is what the
+// exports, the chunker and the embedder read. The office collector's own
+// tabular projection spells its numbers with "%g" (six significant
+// digits), so a projected cell can read shorter than a typed one; the
+// typed value is the exact one.
 std::string double_text(double value);
 
 }  // namespace grparse::office_fold
