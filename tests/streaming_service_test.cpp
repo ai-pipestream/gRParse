@@ -40,7 +40,9 @@ extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
 #include "../src/render/renderer_base.h"
 #include "../src/source_parse.h"
 #include "../src/task_registry.h"
+#include "../src/targets/bundle.h"
 #include "../src/targets/sha256.h"
+#include "../src/targets/zip_writer.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
@@ -1328,6 +1330,17 @@ void verify_unary_zip_target_delivers_an_archive(TestServer* server) {
 
   require(convert().response().target_result().archive() == delivered.archive(),
           "two identical conversions must deliver identical archives");
+
+  // The archive is the bundle of the very response the caller holds, status
+  // and errors included: whoever reads the delivered bundle and whoever
+  // reads the RPC response are told the same thing about the conversion.
+  require(response.response().status() == pipestream::parse::v1::CONVERSION_STATUS_SUCCESS,
+          "the conversion succeeded");
+  pipestream::parse::v1::TargetResult rebuilt;
+  require(grparse::targets::write_zip(
+              grparse::targets::build_bundle(response.response(), &rebuilt)) ==
+              delivered.archive(),
+          "the delivered archive must be the bundle of the response the caller received");
 }
 
 // The targets the wire declares but this server does not serve say so by
