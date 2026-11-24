@@ -15,6 +15,7 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "ai/pipestream/vlm/v1/vlm_convert.pb.h"
 #include "grparse/collector_coordinator.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -106,15 +107,45 @@ enum class VlmBodyEngine {
   kLightonOcr,
 };
 
+// What became of one page the VLM convert leg sent.
+enum class VlmPageStatus {
+  // A PageDocument arrived for it and merged.
+  kOk,
+  // The peer answered PageRaw: the model call failed, or its output could
+  // not be mapped into items.
+  kFailed,
+  // The stream ended with no answer for it.
+  kUnanswered,
+};
+
+// One sent page's outcome on the grpc-vlm-convert leg.
+struct VlmPageOutcome {
+  // 1-based, as Document.pages keys are.
+  int page_no = 0;
+  VlmPageStatus status = VlmPageStatus::kUnanswered;
+  // PageRaw.error, the peer's own words; empty unless the page failed.
+  std::string error;
+  // PageRaw.text: the model's output for a page the peer could not map,
+  // byte for byte. The same text is kept on the Document as the page's
+  // generation_traces entry, which is how it reaches the caller.
+  std::string raw_text;
+};
+
 struct VlmConvertReport {
   // Which engine this report is from; set by the leg that ran.
   VlmBodyEngine engine = VlmBodyEngine::kVlmConvert;
   int pages_sent = 0;
   int pages_ok = 0;
   int pages_failed = 0;
-  std::vector<std::string> warnings;
-  // True when the dial produced at least one PageDocument (or the peer
-  // answered complete with pages_ok > 0).
+  // One entry per page sent, in the order sent, once the stream has ended.
+  // Filled by the grpc-vlm-convert leg; a page that was never sent (its
+  // render failed) has a warning and no entry.
+  std::vector<VlmPageOutcome> pages;
+  std::vector<Warning> warnings;
+  // True when the peer finished the stream with its trailer and at least
+  // one PageDocument merged. A page that failed or went unanswered is a
+  // warning beside the success, unless abort_on_error makes it the leg's
+  // failure.
   bool success = false;
   grpc::StatusCode code = grpc::StatusCode::OK;
   std::string error;
@@ -148,8 +179,15 @@ bool raw_heading_depth_format(ai::pipestream::vlm::v1::ResponseFormat format);
 void normalize_section_header_levels(ai::pipestream::document::v1::Document* document);
 
 // Rasterize `bytes` and run ConvertPages through `channel`. Merges every
-// PageDocument into `document` under claimant "vlm-convert". Never throws;
-// dial / peer failures set report.success false and report.error. Pages are
+// PageDocument into `document` under claimant "vlm-convert", and keeps a
+// PageRaw's model output as a Document.generation_traces entry for its page.
+// Never throws; dial / peer failures set report.success false and
+// report.error. The stream counts as finished only with its ConvertComplete
+// trailer: an OK stream without one, an answer for a page that was not sent
+// and a second answer for one page are INTERNAL. A sent page with no answer
+// is a PAGE_UNANSWERED warning (INTERNAL under abort_on_error), and a
+// trailer whose counts differ from what was sent and arrived is a
+// COLLECTOR_COUNT_MISMATCH warning. Pages are
 // rendered and streamed one at a time; `cancelled` and `inbound_deadline` are
 // checked before each page, and either ends the dial (CANCELLED or
 // DEADLINE_EXCEEDED) instead of rasterizing the rest of the document.

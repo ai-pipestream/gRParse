@@ -283,7 +283,7 @@ VlmConvertReport convert_lighton_pages(const std::shared_ptr<grpc::Channel>& cha
       const int page_no = static_cast<int>(failure->page_no()) + offset;
       report.warnings.push_back(page_failure_text(page_no, *failure));
       if (vlm.abort_on_error) {
-        refuse(report.warnings.back().substr(std::string("lighton ocr: ").size()));
+        refuse(report.warnings.back().message.substr(std::string("lighton ocr: ").size()));
         break;
       }
       failures.emplace(failure->page_no(), std::move(*failure));
@@ -324,7 +324,7 @@ VlmConvertReport convert_lighton_pages(const std::shared_ptr<grpc::Channel>& cha
   if (fragments.empty()) {
     return fail(grpc::StatusCode::INTERNAL, report.warnings.empty()
                                                 ? "lighton ocr: peer returned no page documents"
-                                                : report.warnings.front());
+                                                : report.warnings.front().message);
   }
   docv1::CollectorSource claimant;
   claimant.set_collector(kLightonCollectorName);
