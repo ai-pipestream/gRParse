@@ -254,6 +254,7 @@ class Lowering {
       fail(n.outputs[0], "a groups-1, unpadded transposed convolution");
     }
     out.out_channels = channels;
+    out.k = int(w->dims[1]) * out.kernel_h * out.kernel_w;  // terms per output of a forward convolution
     std::vector<double> weights(w->values.begin(), w->values.end());
     std::vector<double> bias(size_t(channels), 0.0);
     if (n.inputs.size() > 2 && !n.inputs[2].empty()) {

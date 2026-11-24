@@ -15,6 +15,8 @@ namespace grparse::levelzero {
 // graph_kernels.cl as SPIR-V, generated at build time (cmake/LevelZero.cmake).
 extern const unsigned char kGraphKernelsSpirv[];
 extern const size_t kGraphKernelsSpirvSize;
+extern const unsigned char kGraphKernelsFp16Spirv[];
+extern const size_t kGraphKernelsFp16SpirvSize;
 }  // namespace grparse::levelzero
 
 namespace grparse::levelzero::graph {
@@ -48,13 +50,34 @@ struct ConvArgs {
   float alpha, beta;
 };
 
+struct XmxArgs {
+  int m, cols, k, mp, kp, colsp, c_m, c_n, c_image, per_image, act;
+  float alpha, beta;
+};
+struct PackArgs {
+  int n, ci, ih, iw, oh, ow, kh, kw, sh, sw, ph, pw, k, kp, cols, colsp;
+};
+
+// Elements of slack before and after the arena; blocks are placed on 64-byte
+// boundaries, which the XMX kernels' block reads need.
+constexpr size_t kArenaSlack = 64;
+constexpr size_t kBlock = 32;
+
+uint16_t half_bits(float value) {
+  const _Float16 narrow = static_cast<_Float16>(value);
+  uint16_t bits = 0;
+  std::memcpy(&bits, &narrow, sizeof(bits));
+  return bits;
+}
+
 uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + group - 1) / group); }
 
 }  // namespace
 
 struct GraphModel::Kernels {
   ze_kernel_handle_t gemm, conv_gemm, conv_depthwise, conv_direct, conv_transpose, pool2d, row_mean, layer_norm, softmax_rows,
-      binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool;
+      binary, unary, gather_nd, copy_blocks, resize_nearest, global_average_pool, to_real, from_real, gemm_xmx,
+      pack_patches, pack_tokens;
 };
 
 // A value during one call: its shape, and either host integers or a place
@@ -68,8 +91,8 @@ struct GraphModel::Value {
   bool live = false;
 };
 
-GraphModel::GraphModel(Device& device, const std::filesystem::path& model)
-    : device_(device), ir_(lower_onnx(model)) {
+GraphModel::GraphModel(Device& device, const std::filesystem::path& model, GraphOptions options)
+    : device_(device), ir_(lower_onnx(model)), fp16_(options.fp16), esize_(options.fp16 ? 2 : 4) {
   last_use_.assign(ir_.values.size(), 0);
   for (size_t index = 0; index < ir_.nodes.size(); ++index) {
     for (int input : ir_.nodes[index].inputs) {
@@ -77,15 +100,19 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model)
     }
   }
   for (int output : ir_.outputs) last_use_[size_t(output)] = SIZE_MAX;
-  ze_module_handle_t module = device_.module(kGraphKernelsSpirv, kGraphKernelsSpirvSize, "graph");
+  ze_module_handle_t module = fp16_ ? device_.module(kGraphKernelsFp16Spirv, kGraphKernelsFp16SpirvSize, "graph FP16")
+                                    : device_.module(kGraphKernelsSpirv, kGraphKernelsSpirvSize, "graph");
   const auto k = [&](const char* name, uint32_t x, uint32_t y) { return device_.kernel(module, name, x, y, 1); };
   kernels_ = std::make_unique<Kernels>(Kernels{
       k("gemm", 256, 1), k("conv_gemm", 256, 1), k("conv_depthwise", 16, 4), k("conv_direct", 16, 4), k("conv_transpose", 16, 4),
       k("pool2d", 16, 4), k("row_mean", 256, 1), k("layer_norm", 256, 1), k("softmax_rows", 256, 1),
       k("binary", 256, 1), k("unary", 256, 1), k("gather_nd", 256, 1), k("copy_blocks", 256, 1),
-      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1)});
+      k("resize_nearest", 16, 4), k("global_average_pool", 256, 1), k("to_real", 256, 1), k("from_real", 256, 1),
+      fp16_ ? k("gemm_xmx", 64, 1) : nullptr, fp16_ ? k("pack_patches", 16, 16) : nullptr,
+      fp16_ ? k("pack_tokens", 16, 16) : nullptr});
   weights_ = static_cast<float*>(device_.allocate(std::max<size_t>(ir_.weights.size(), 16) * sizeof(float)));
   device_.upload(weights_, ir_.weights.data(), ir_.weights.size() * sizeof(float));
+  if (fp16_) build_fp16_weights();
   auto queue_desc = ze_desc<ze_command_queue_desc_t>(ZE_STRUCTURE_TYPE_COMMAND_QUEUE_DESC);
   queue_desc.mode = ZE_COMMAND_QUEUE_MODE_ASYNCHRONOUS;
   ze_check(zeCommandQueueCreate(device_.context(), device_.device(), &queue_desc, &queue_), "command queue");
@@ -93,6 +120,38 @@ GraphModel::GraphModel(Device& device, const std::filesystem::path& model)
   ze_check(zeCommandListCreate(device_.context(), device_.device(), &list_desc, &list_), "command list");
   auto fence_desc = ze_desc<ze_fence_desc_t>(ZE_STRUCTURE_TYPE_FENCE_DESC);
   ze_check(zeFenceCreate(queue_, &fence_desc, &fence_), "fence");
+}
+
+// FP16 mode: the weight block narrowed index for index (constants read as
+// activations), and every GEMM-shaped node's weights as gemm_xmx's A
+// operand, each 64-byte aligned: [outputs padded to 64][terms padded to 32],
+// a dense convolution's [co][ci*kh*kw] as stored, a MatMul's [K][N] transposed.
+void GraphModel::build_fp16_weights() {
+  std::vector<uint16_t> narrow(ir_.weights.size() + kArenaSlack, 0);
+  for (size_t i = 0; i < ir_.weights.size(); ++i) narrow[i] = half_bits(ir_.weights[i]);
+  weights_real_ = device_.allocate(narrow.size() * sizeof(uint16_t));
+  device_.upload(weights_real_, narrow.data(), narrow.size() * sizeof(uint16_t));
+  std::vector<uint16_t> packed;
+  xmx_offsets_.assign(ir_.nodes.size(), SIZE_MAX);
+  for (size_t index = 0; index < ir_.nodes.size(); ++index) {
+    const IrNode& node = ir_.nodes[index];
+    const bool conv = node.op == IrOp::kConv && node.groups == 1;
+    if (!conv && node.op != IrOp::kMatMulConst) continue;
+    const size_t terms = size_t(node.k);
+    const size_t outputs = conv ? size_t(node.out_channels) : size_t(node.n);
+    const size_t kp = (terms + 31) / 32 * 32, mp = (outputs + 63) / 64 * 64;
+    xmx_offsets_[index] = packed.size();
+    packed.resize(packed.size() + mp * kp, 0);
+    uint16_t* a = packed.data() + xmx_offsets_[index];
+    for (size_t o = 0; o < outputs; ++o) {
+      for (size_t t = 0; t < terms; ++t) {
+        a[o * kp + t] = half_bits(conv ? ir_.weights[node.weights + o * terms + t]
+                                       : ir_.weights[node.weights + t * outputs + o]);
+      }
+    }
+  }
+  xmx_ = static_cast<uint16_t*>(device_.allocate(std::max<size_t>(packed.size(), 32) * sizeof(uint16_t)));
+  device_.upload(xmx_, packed.data(), packed.size() * sizeof(uint16_t));
 }
 
 GraphModel::~GraphModel() {
@@ -162,9 +221,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
   // Arena placement: first fit over freed blocks, freed after the last read.
   std::map<size_t, size_t> free_blocks;  // offset -> floats
   std::map<size_t, int> holders;         // offset -> values (a tensor and its views) holding it
-  size_t arena_end = 0;
+  size_t arena_end = kArenaSlack;
   const auto place = [&](Value& v) {
-    const size_t want = (numel(v.shape) + 15) / 16 * 16;
+    const size_t want = (numel(v.shape) + kBlock - 1) / kBlock * kBlock;
     for (auto it = free_blocks.begin(); it != free_blocks.end(); ++it) {
       if (it->second < want) continue;
       v.offset = it->first;
@@ -182,10 +241,16 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
   const auto release = [&](Value& v) {
     if (!v.live) return;
     v.live = false;
-    if (--holders[v.offset] == 0) free_blocks[v.offset] = (numel(v.shape) + 15) / 16 * 16;
+    if (--holders[v.offset] == 0) free_blocks[v.offset] = (numel(v.shape) + kBlock - 1) / kBlock * kBlock;
   };
-  std::vector<std::pair<size_t, std::function<void(float*)>>> launches;
-  const auto ptr = [this](const Value& v, float* arena) { return (v.in_weights ? weights_ : arena) + v.offset; };
+  std::vector<std::pair<size_t, std::function<void(char*)>>> launches;
+  // A value's device address: constants read as activations come from the
+  // `real` copy of the weight block.
+  const auto ptr = [this](const Value& v, char* arena) {
+    char* base = arena;
+    if (v.in_weights) base = fp16_ ? static_cast<char*>(weights_real_) : reinterpret_cast<char*>(weights_);
+    return base + v.offset * esize_;
+  };
   const auto args = [](ze_kernel_handle_t kernel, std::initializer_list<std::pair<size_t, const void*>> list) {
     uint32_t index = 0;
     for (const auto& [size, value] : list) ze_check(zeKernelSetArgumentValue(kernel, index++, size, value), "kernel argument");
@@ -327,9 +392,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
           }
           nd.b[0] = int(start);
           const int count = int(numel(shape));
-          launches.emplace_back(index, [=, this, &a_ref = a, &o_ref = out](float* arena) {
-            const float* src = ptr(a_ref, arena);
-            float* dst = ptr(o_ref, arena);
+          launches.emplace_back(index, [=, this, &a_ref = a, &o_ref = out](char* arena) {
+            const char* src = ptr(a_ref, arena);
+            char* dst = ptr(o_ref, arena);
             args(kernels_->gather_nd, {P(src), P(dst), P(nd), P(count)});
             launch(kernels_->gather_nd, {groups_for(size_t(count), 256), 1, 1});
           });
@@ -358,9 +423,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             Value& part = values[size_t(id)];
             const size_t inner = numel(Shape(part.shape.begin() + int64_t(axis), part.shape.end()));
             const int o = int(outer), i = int(inner), s = int(out_inner);
-            launches.emplace_back(index, [=, this, &p_ref = part, &o_ref = out](float* arena) {
-              const float* src = ptr(p_ref, arena);
-              float* dst = ptr(o_ref, arena) + offset;
+            launches.emplace_back(index, [=, this, &p_ref = part, &o_ref = out](char* arena) {
+              const char* src = ptr(p_ref, arena);
+              char* dst = ptr(o_ref, arena) + offset * esize_;
               args(kernels_->copy_blocks, {P(src), P(dst), P(o), P(i), P(s)});
               launch(kernels_->copy_blocks, {groups_for(size_t(o) * size_t(i), 256), 1, 1});
             });
@@ -384,7 +449,7 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
       }
       default: {
         // Device operations write a fresh output buffer.
-        std::function<void(float*)> body;
+        std::function<void(char*)> body;
         Value& a = operand(0);
         if (a.host) fail("a device operation on a host value");
         switch (node.op) {
@@ -428,9 +493,23 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
                                    c.ph == 0 && c.pw == 0 && c.groups == 1;
             const bool depthwise = node.op == IrOp::kConv && c.groups == c.ci && c.groups == c.co;
             const int max_pool = node.op == IrOp::kMaxPool, include_pad = node.count_include_pad;
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* src = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            const size_t xmx = fp16_ && node.op == IrOp::kConv ? xmx_offsets_[index] : SIZE_MAX;
+            // The XMX path repacks the input into a [terms][columns] scratch block, free again after the node.
+            PackArgs pack{};
+            size_t scratch_offset = 0;
+            if (xmx != SIZE_MAX) {
+              const int terms = c.ci * c.kh * c.kw, cols = c.n * c.oh * c.ow;
+              pack = {c.n, c.ci, c.ih, c.iw, c.oh, c.ow, c.kh, c.kw, c.sh, c.sw, c.ph, c.pw,
+                      terms, (terms + 31) / 32 * 32, cols, (cols + 63) / 64 * 64};
+              Value scratch;
+              scratch.shape = {int64_t(pack.kp), int64_t(pack.colsp)};
+              place(scratch);
+              scratch_offset = scratch.offset;
+              release(scratch);
+            }
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* src = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               const float* wp = weights_ + w;
               const float* bp = weights_ + b;
               const ze_group_count_t spatial{groups_for(size_t(c.ow), 16), groups_for(size_t(c.oh), 4),
@@ -438,6 +517,16 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
               if (pool) {
                 args(kernels_->pool2d, {P(src), P(dst), P(c), P(max_pool), P(include_pad)});
                 launch(kernels_->pool2d, spatial);
+              } else if (xmx != SIZE_MAX) {
+                const uint16_t* a = xmx_ + xmx;
+                const char* packed = arena + scratch_offset * esize_;
+                args(kernels_->pack_patches, {P(src), P(packed), P(pack)});
+                launch(kernels_->pack_patches, {uint32_t(pack.colsp / 16), uint32_t(pack.kp / 16), 1});
+                const int positions = c.oh * c.ow;
+                const XmxArgs x{c.co, pack.cols, pack.k, (c.co + 63) / 64 * 64, pack.kp, pack.colsp, positions, 1,
+                                (c.co - 1) * positions, positions, c.act, c.alpha, c.beta};
+                args(kernels_->gemm_xmx, {P(a), P(packed), P(dst), P(bp), P(x)});
+                launch(kernels_->gemm_xmx, {uint32_t(pack.colsp / 64), groups_for(size_t(c.co), 64), 1});
               } else if (pointwise) {
                 const int hw = c.ih * c.iw;
                 GemmArgs g{c.co, hw, c.ci, 0, c.ci, 1, c.ci * hw, hw, 1, c.co * hw, hw, 1, 1, c.act, c.alpha, c.beta};
@@ -486,11 +575,31 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             }
             const size_t w = node.weights, b = node.bias;
             const bool constant = node.op == IrOp::kMatMulConst;
-            body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](float* arena) {
-              const float* left = ptr(a_ref, arena);
-              const float* right = constant ? weights_ + w : ptr(b_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            const size_t xmx = fp16_ && constant ? xmx_offsets_[index] : SIZE_MAX;
+            const int kp = (g.k + 31) / 32 * 32, colsp = (g.m + 63) / 64 * 64;
+            size_t scratch_offset = 0;
+            if (xmx != SIZE_MAX) {
+              Value scratch;
+              scratch.shape = {int64_t(kp), int64_t(colsp)};
+              place(scratch);
+              scratch_offset = scratch.offset;
+              release(scratch);
+            }
+            body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](char* arena) {
+              const char* left = ptr(a_ref, arena);
+              const char* right = constant ? reinterpret_cast<const char*>(weights_ + w) : ptr(b_ref, arena);
+              char* dst = ptr(o_ref, arena);
               const float* bp = weights_ + b;
+              if (xmx != SIZE_MAX) {
+                const uint16_t* a = xmx_ + xmx;
+                const char* packed = arena + scratch_offset * esize_;
+                args(kernels_->pack_tokens, {P(left), P(packed), P(g.m), P(g.k), P(kp), P(colsp)});
+                launch(kernels_->pack_tokens, {uint32_t(colsp / 16), uint32_t(kp / 16), 1});
+                const XmxArgs x{g.n, g.m, g.k, (g.n + 63) / 64 * 64, kp, colsp, 1, g.n, 0, 1 << 30, g.act, g.alpha, g.beta};
+                args(kernels_->gemm_xmx, {P(a), P(packed), P(dst), P(bp), P(x)});
+                launch(kernels_->gemm_xmx, {uint32_t(colsp / 64), groups_for(size_t(g.n), 64), 1});
+                return;
+              }
               args(kernels_->gemm, {P(left), P(right), P(dst), P(bp), P(g)});
               launch(kernels_->gemm, {groups_for(size_t(g.n), 64), groups_for(size_t(g.m), 64), uint32_t(groups)});
             };
@@ -517,9 +626,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             const IrOp op = node.op;
             const size_t w = node.weights, b = node.bias;
             const float eps = node.alpha;
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* src = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* src = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               if (op == IrOp::kSoftmax) {
                 args(kernels_->softmax_rows, {P(src), P(dst), P(cols)});
                 launch(kernels_->softmax_rows, {uint32_t(rows), 1, 1});
@@ -561,10 +670,10 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = shape;
             place(out);
             const int count = int(numel(shape)), op = int(node.binary);
-            body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](float* arena) {
-              const float* x = ptr(a_ref, arena);
-              const float* y = ptr(b_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &b_ref = bv, &o_ref = out](char* arena) {
+              const char* x = ptr(a_ref, arena);
+              const char* y = ptr(b_ref, arena);
+              char* dst = ptr(o_ref, arena);
               args(kernels_->binary, {P(x), P(y), P(dst), P(nd), P(count), P(op)});
               launch(kernels_->binary, {groups_for(size_t(count), 256), 1, 1});
             };
@@ -575,9 +684,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             place(out);
             const int count = int(numel(a.shape)), op = int(node.unary);
             const float alpha = node.alpha, beta = node.beta;
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* x = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* x = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               args(kernels_->unary, {P(x), P(dst), P(count), P(op), P(alpha), P(beta)});
               launch(kernels_->unary, {groups_for(size_t(count), 256), 1, 1});
             };
@@ -587,9 +696,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = {a.shape[0], a.shape[1], 1, 1};
             place(out);
             const int planes = int(a.shape[0] * a.shape[1]), hw = int(a.shape[2] * a.shape[3]);
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* x = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* x = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               args(kernels_->global_average_pool, {P(x), P(dst), P(planes), P(hw)});
               launch(kernels_->global_average_pool, {groups_for(size_t(planes), 16), 1, 1});
             };
@@ -615,9 +724,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = {a.shape[0], a.shape[1], oh, ow};
             place(out);
             const uint32_t planes = uint32_t(a.shape[0] * a.shape[1]);
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* x = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* x = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               args(kernels_->resize_nearest, {P(x), P(dst), P(ih), P(iw), P(oh), P(ow), P(scale_h), P(scale_w)});
               launch(kernels_->resize_nearest, {groups_for(size_t(ow), 16), groups_for(size_t(oh), 4), planes});
             };
@@ -642,9 +751,9 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
             out.shape = shape;
             place(out);
             const int count = int(numel(shape));
-            body = [=, this, &a_ref = a, &o_ref = out](float* arena) {
-              const float* x = ptr(a_ref, arena);
-              float* dst = ptr(o_ref, arena);
+            body = [=, this, &a_ref = a, &o_ref = out](char* arena) {
+              const char* x = ptr(a_ref, arena);
+              char* dst = ptr(o_ref, arena);
               args(kernels_->gather_nd, {P(x), P(dst), P(nd), P(count)});
               launch(kernels_->gather_nd, {groups_for(size_t(count), 256), 1, 1});
             };
@@ -661,30 +770,51 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
       if (input >= 0 && last_use_[size_t(input)] == index) release(values[size_t(input)]);
     }
   }
-  // Grow the arena to this call's peak, then record.
-  if (arena_end > arena_floats_) {
-    if (arena_ != nullptr) zeMemFree(device_.context(), arena_);
-    arena_floats_ = arena_end + arena_end / 2;
-    arena_ = static_cast<float*>(device_.allocate(arena_floats_ * sizeof(float)));
-  }
+  // Grow the arena and the float staging buffers to this call's peak, then record.
+  const auto grow = [this](char** memory, size_t* have, size_t want, size_t element) {
+    if (want <= *have) return;
+    if (*memory != nullptr) zeMemFree(device_.context(), *memory);
+    *have = want + want / 2;
+    *memory = static_cast<char*>(device_.allocate(*have * element));
+  };
+  size_t output_floats = 0;
+  for (int id : ir_.outputs) output_floats += (numel(values[size_t(id)].shape) + 15) / 16 * 16;
+  grow(&arena_, &arena_elements_, arena_end + kArenaSlack, esize_);
+  grow(&io_in_, &io_in_floats_, numel(input_shape), sizeof(float));
+  grow(&io_out_, &io_out_floats_, output_floats, sizeof(float));
   ze_check(zeCommandListReset(list_), "command list reset");
-  ze_check(zeCommandListAppendMemoryCopy(list_, arena_ + input_offset, input, numel(input_shape) * sizeof(float),
-                                         nullptr, 0, nullptr),
+  ze_check(zeCommandListAppendMemoryCopy(list_, io_in_, input, numel(input_shape) * sizeof(float), nullptr, 0,
+                                         nullptr),
            "input upload");
   ze_check(zeCommandListAppendBarrier(list_, nullptr, 0, nullptr), "graph barrier");
+  {
+    const char* src = io_in_;
+    char* dst = arena_ + input_offset * esize_;
+    const int count = int(numel(input_shape));
+    current_node_ = 0;
+    args(kernels_->to_real, {P(src), P(dst), P(count)});
+    launch(kernels_->to_real, {groups_for(size_t(count), 256), 1, 1});
+  }
   for (const auto& [node_index, body] : launches) {
     current_node_ = node_index;
     body(arena_);
   }
   outputs->reserve(ir_.outputs.size());
+  size_t out_at = 0;
   for (int id : ir_.outputs) {
     const Value& v = values[size_t(id)];
     HostTensor& t = outputs->emplace_back();
     t.shape = v.shape;
     t.data.resize(numel(v.shape));
-    ze_check(zeCommandListAppendMemoryCopy(list_, t.data.data(), ptr(v, arena_), t.data.size() * sizeof(float),
-                                           nullptr, 0, nullptr),
+    const char* src = ptr(v, arena_);
+    char* dst = io_out_ + out_at * sizeof(float);
+    const int count = int(t.data.size());
+    args(kernels_->from_real, {P(src), P(dst), P(count)});
+    launch(kernels_->from_real, {groups_for(size_t(count), 256), 1, 1});
+    ze_check(zeCommandListAppendMemoryCopy(list_, t.data.data(), dst, t.data.size() * sizeof(float), nullptr, 0,
+                                           nullptr),
              "output readback");
+    out_at += (t.data.size() + 15) / 16 * 16;
   }
   ze_check(zeCommandListClose(list_), "command list close");
 }
