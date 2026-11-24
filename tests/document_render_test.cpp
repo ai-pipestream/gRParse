@@ -1,9 +1,11 @@
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <print>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -11,6 +13,7 @@
 #include <yaml-cpp/yaml.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+#include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "org/apache/opennlp/grpc/v1/opennlp_annotations.pb.h"
 #include "org/apache/opennlp/grpc/v1/opennlp_document.pb.h"
 #include "grparse/document_render.h"
@@ -18,6 +21,7 @@
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace {
 
@@ -30,6 +34,7 @@ grparse::DoclangOptions doclang_referenced() {
 }
 
 using grparse_test::require;
+using grparse_test::require_equal;
 
 void require_contains(const std::string& haystack, const std::string& needle,
                       const std::string& message) {
@@ -363,12 +368,106 @@ void verify_document_grid_budget_is_shared() {
     first->set_end_row_offset_idx(1);
     first->set_end_col_offset_idx(1);
   }
-  for (const auto& [format, rendered] :
-       {std::pair{"markdown", grparse::render_markdown(document)},
-        std::pair{"html", grparse::render_html(document)}}) {
+  parsev1::RenderOmissions markdown_omissions;
+  parsev1::RenderOmissions html_omissions;
+  for (const auto& [format, rendered, omissions] :
+       {std::tuple{"markdown", grparse::render_markdown(document, {}, &markdown_omissions),
+                   &markdown_omissions},
+        std::tuple{"html", grparse::render_html(document, &html_omissions),
+                   &html_omissions}}) {
     require(rendered.contains("table0") && rendered.contains("table1") &&
                 !rendered.contains("table2") && !rendered.contains("table3"),
             std::string(format) + " spends one grid budget across the document");
+    // The caller is told the export is not the whole document: every table
+    // was cut, the first two to their 256 leading rows and the last two to
+    // nothing, each named by its self_ref.
+    const std::string what = std::string(format) + " reports what it left out: ";
+    require_equal(omissions->tables_cut(), 4, what + "every table was cut");
+    require_equal(omissions->rows_dropped(),
+                  2 * (std::int64_t{1048576} - 256) + 2 * std::int64_t{1048576},
+                  what + "the rows no table rendered");
+    require_equal(omissions->columns_dropped(), 2 * std::int64_t{16384},
+                  what + "the columns no table rendered");
+    require_equal(omissions->tables_size(), 4, what + "the tables are listed");
+    for (int index = 0; index < 4; ++index) {
+      const auto& table = omissions->tables(index);
+      require_equal(table.item_ref(), "#/tables/" + std::to_string(index),
+                    what + "each table is named by its self_ref");
+      require(table.declared_rows() == 1048576 && table.declared_cols() == 16384,
+              what + "with the grid it declares");
+      require(table.kept_rows() == (index < 2 ? 256 : 0) &&
+                  table.kept_cols() == (index < 2 ? 16384 : 0),
+              what + "and the grid it kept: " + table.ShortDebugString());
+    }
+  }
+}
+
+// Every renderer that lays a table out as a grid reports what its grids
+// left out, each through its own entry point. A 16 KiB cell spanning
+// 128 x 128 positions is over the document's budget for repeated text in
+// all of them, so each places it once and says so; a document whose tables
+// fit leaves the report untouched.
+void verify_every_grid_renderer_reports_what_it_left_out() {
+  docv1::Document document = base_document("span.xlsx");
+  auto* data = add_table(&document, "#/body")->mutable_data();
+  data->set_num_rows(128);
+  data->set_num_cols(128);
+  auto* wide = data->add_table_cells();
+  wide->set_text("span" + std::string(16384, 'x'));
+  wide->set_end_row_offset_idx(128);
+  wide->set_end_col_offset_idx(128);
+
+  docv1::Document whole = base_document("whole.xlsx");
+  auto* fits = add_table(&whole, "#/body")->mutable_data();
+  fits->set_num_rows(2);
+  fits->set_num_cols(2);
+  auto* header = fits->add_table_cells();
+  header->set_text("AB");
+  header->set_end_row_offset_idx(1);
+  header->set_end_col_offset_idx(2);
+
+  using Render = std::string (*)(const docv1::Document&, parsev1::RenderOmissions*);
+  const std::pair<const char*, Render> renderers[] = {
+      {"markdown",
+       [](const docv1::Document& doc, parsev1::RenderOmissions* out) {
+         return grparse::render_markdown(doc, {}, out);
+       }},
+      {"html", grparse::render_html},
+      {"html split page", grparse::render_html_split_page},
+      {"canonical json", grparse::render_canonical_json},
+      {"gdocs json", grparse::render_gdocs_json},
+      {"doctags", grparse::render_doctags},
+      {"doclang",
+       [](const docv1::Document& doc, parsev1::RenderOmissions* out) {
+         return grparse::render_doclang(doc, {}, out);
+       }},
+      {"dclx",
+       [](const docv1::Document& doc, parsev1::RenderOmissions* out) {
+         return grparse::render_dclx(doc, {}, out);
+       }},
+      {"latex", grparse::render_latex},
+  };
+  for (const auto& [format, render] : renderers) {
+    const std::string what = std::string(format) + ": ";
+    parsev1::RenderOmissions omissions;
+    render(document, &omissions);
+    require_equal(omissions.spans_not_repeated(), std::int64_t{1},
+                  what + "the span placed once is counted");
+    require_equal(omissions.tables_cut(), 0, what + "no table was cut");
+    require_equal(omissions.tables_size(), 1, what + "the table is listed");
+    require_equal(omissions.tables(0).item_ref(), "#/tables/0",
+                  what + "the table is named by its self_ref");
+    require(omissions.tables(0).spans_not_repeated() == 1 &&
+                omissions.tables(0).declared_rows() == 128 &&
+                omissions.tables(0).kept_rows() == 128 &&
+                omissions.tables(0).declared_cols() == 128 &&
+                omissions.tables(0).kept_cols() == 128,
+            what + "the entry keeps the whole grid: " + omissions.tables(0).ShortDebugString());
+
+    parsev1::RenderOmissions none;
+    render(whole, &none);
+    require_equal(none.ByteSizeLong(), std::size_t{0},
+                  what + "a complete rendering reports nothing");
   }
 }
 
@@ -1499,6 +1598,7 @@ int main() {
       verify_markdown_reconstructs_grid_from_flat_cells,
       verify_oversized_table_dimensions_are_bounded,
       verify_document_grid_budget_is_shared,
+      verify_every_grid_renderer_reports_what_it_left_out,
       verify_spanned_cell_output_is_bounded,
       verify_jagged_wire_grid_is_bounded,
       verify_markdown_multiline_cells_stay_single_line,

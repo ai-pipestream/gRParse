@@ -32,6 +32,7 @@
 #include "text_class.h"
 
 namespace docv1 = ai::pipestream::document::v1;
+namespace parsev1 = ai::pipestream::parse::v1;
 
 namespace grparse {
 namespace {
@@ -112,6 +113,8 @@ class LatexRenderer : RendererBase {
   explicit LatexRenderer(const docv1::Document& document) : RendererBase(document) {
     collect_reference_sets();
   }
+
+  using RendererBase::report_omissions;
 
   std::string render() {
     std::vector<std::string> refs;
@@ -923,17 +926,28 @@ class LatexRenderer : RendererBase {
 }  // namespace
 
 std::string render_latex(const docv1::Document& document) {
+  return render_latex(document, nullptr);
+}
+
+std::string render_latex(const docv1::Document& document, parsev1::RenderOmissions* omissions) {
+  // Renders `walked`, the document or its normalized copy, and reports what
+  // the render left out while that document is still alive: the report
+  // names tables by where their data lives in it.
+  const auto render_walked = [omissions](const docv1::Document& walked) {
+    LatexRenderer renderer(walked);
+    std::string latex = renderer.render();
+    renderer.report_omissions(omissions);
+    return latex;
+  };
   // The reference reaches the document through its model layer, which
   // relabels ordered-list groups and re-homes list items parented outside a
   // list group on load. Only the migration can change this export, so the
   // defensive copy happens only when a list item actually needs re-homing.
-  if (!render::has_misplaced_list_items(document)) {
-    return LatexRenderer(document).render();
-  }
+  if (!render::has_misplaced_list_items(document)) return render_walked(document);
   docv1::Document normalized = document;
   render::relabel_ordered_list_groups(&normalized);
   render::migrate_misplaced_list_items(&normalized);
-  return LatexRenderer(normalized).render();
+  return render_walked(normalized);
 }
 
 }  // namespace grparse

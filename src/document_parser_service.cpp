@@ -1122,6 +1122,9 @@ DocumentParserService::StreamChunks(grpc::CallbackServerContext* context,
         summary->mutable_documents()->Swap(rest.mutable_documents());
         summary->set_processing_time(rest.processing_time());
         summary->mutable_chunking_info()->swap(*rest.mutable_chunking_info());
+        if (rest.has_chunk_omissions()) {
+          summary->mutable_chunk_omissions()->Swap(rest.mutable_chunk_omissions());
+        }
         return grpc::Status::OK;
       });
 }
@@ -1143,12 +1146,14 @@ grpc::Status DocumentParserService::chunk_hierarchical_source(
   if (!parse_status.ok()) return parse_status;
   const chunking::ChunkOptions options =
       chunking::chunk_options_from(chunk_request.chunking_options());
+  pipestream::parse::v1::RenderOmissions omissions;
   *chunks = chunking::chunk_hierarchical(parsed->result.document, parsed->offsets, options,
-                                         parsed->filename.string());
+                                         parsed->filename.string(), &omissions);
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 
@@ -1171,14 +1176,16 @@ grpc::Status DocumentParserService::chunk_hybrid_source(
       parse_chunk_source(call, chunk_request.sources(), chunk_request.convert_options(),
                          surface, parsed);
   if (!parse_status.ok()) return parse_status;
-  const grpc::Status chunk_status =
-      chunking::chunk_hybrid(parsed->result.document, parsed->offsets,
-                             chunk_request.chunking_options(), parsed->filename.string(), chunks);
+  pipestream::parse::v1::RenderOmissions omissions;
+  const grpc::Status chunk_status = chunking::chunk_hybrid(
+      parsed->result.document, parsed->offsets, chunk_request.chunking_options(),
+      parsed->filename.string(), chunks, &omissions);
   if (!chunk_status.ok()) return chunk_status;
   const auto embedded = embedder_.embed(chunk_request.embedding_options(),
                                         [&call] { return call.cancelled(); }, chunks);
   if (!embedded.ok()) return embedded;
   describe_chunks(chunk_request, started, parsed, response);
+  if (left_something_out(omissions)) *response->mutable_chunk_omissions() = std::move(omissions);
   return grpc::Status::OK;
 }
 

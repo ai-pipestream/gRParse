@@ -528,6 +528,11 @@ message StreamSourceOutputs {
   // (see ConvertDocumentResponse.text_offsets). Empty when the document has
   // no text items.
   repeated TextOffset text_offsets = 5;
+  // What `chunks` left out of the document (see
+  // ConvertDocumentResponse.chunk_omissions). Absent when the chunks hold
+  // everything the chunker serializes, and when no chunks were asked for.
+  // What an export left out rides inside `exports`, as on the unary surface.
+  optional RenderOmissions chunk_omissions = 6;
 }
 
 // StreamErrorCode is the stable machine class of a StreamError.

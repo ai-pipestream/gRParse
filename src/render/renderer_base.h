@@ -7,6 +7,7 @@
 #define GRPARSE_RENDER_RENDERER_BASE_H
 
 #include <algorithm>
+#include <cstddef>
 #include <cstdint>
 #include <optional>
 #include <set>
@@ -18,6 +19,10 @@
 #include <google/protobuf/struct.pb.h>
 
 #include "ai/pipestream/document/v1/document.pb.h"
+
+namespace ai::pipestream::parse::v1 {
+class RenderOmissions;
+}
 
 namespace grparse::render {
 
@@ -69,9 +74,27 @@ std::string code_fence_language(const ai::pipestream::document::v1::CodeItem& co
 // without them one cell spanning a large grid would print its text
 // millions of times. A table built after the positions run out keeps
 // none; a spanned cell whose repeats no longer fit lands at its first
-// position only. Either way one stderr line per document reports it.
+// position only. Either way one stderr line per document reports it to the
+// operator, and the budget keeps the account the caller is told through
+// (report_omissions): how many tables were cut and by how much, how many
+// spans did not repeat, and which tables those were.
 class GridBudget {
  public:
+  // One table a grid built against this budget did not carry whole (the
+  // wire's TruncatedTable). `data` identifies the table until the report
+  // resolves it to the item it belongs to.
+  struct Table {
+    const ai::pipestream::document::v1::TableData* data = nullptr;
+    int declared_rows = 0;
+    int declared_cols = 0;
+    int kept_rows = 0;
+    int kept_cols = 0;
+    std::int64_t spans_not_repeated = 0;
+  };
+  // The tables the account names. A document of thousands of capped tables
+  // still reports them all in the counts, but lists only this many.
+  static constexpr std::size_t kMaximumListedTables = 64;
+
   static constexpr std::int64_t kDocumentPositions = std::int64_t{1} << 23;
   static constexpr std::int64_t kDocumentRepeatPositions = std::int64_t{1} << 23;
   static constexpr std::int64_t kDocumentRepeatBytes = std::int64_t{1} << 26;
@@ -95,12 +118,49 @@ class GridBudget {
   bool first_truncation() { return !std::exchange(truncated_, true); }
   bool truncated() const { return truncated_; }
 
+  // Records that `data`, declared rows x cols, kept only its leading
+  // kept_rows x kept_cols.
+  void note_cut(const ai::pipestream::document::v1::TableData& data, int rows, int cols,
+                int kept_rows, int kept_cols);
+  // Records one spanned cell of `data` whose text does not repeat at every
+  // position it covers. rows x cols is the grid the table kept, which is
+  // the grid it declares unless note_cut already said otherwise.
+  void note_span_not_repeated(const ai::pipestream::document::v1::TableData& data, int rows,
+                              int cols);
+
+  int tables_cut() const { return tables_cut_; }
+  std::int64_t rows_dropped() const { return rows_dropped_; }
+  std::int64_t columns_dropped() const { return columns_dropped_; }
+  std::int64_t spans_not_repeated() const { return spans_not_repeated_; }
+  // The affected tables in the order their grids were built, at most
+  // kMaximumListedTables of them.
+  const std::vector<Table>& tables() const { return tables_; }
+
  private:
+  // The listed entry of `data`, added when it has none and the list still
+  // has room; nullptr when the list is full.
+  Table* listed(const ai::pipestream::document::v1::TableData& data, int rows, int cols);
+
   std::int64_t remaining_ = kDocumentPositions;
   std::int64_t repeat_positions_ = kDocumentRepeatPositions;
   std::int64_t repeat_bytes_ = kDocumentRepeatBytes;
   bool truncated_ = false;
+  int tables_cut_ = 0;
+  std::int64_t rows_dropped_ = 0;
+  std::int64_t columns_dropped_ = 0;
+  std::int64_t spans_not_repeated_ = 0;
+  std::vector<Table> tables_;
 };
+
+// Writes what the grids built against `budget` left out onto `out`: the
+// counts, and each listed table under the self_ref of the item of
+// `document` it belongs to (a table item, or the picture whose chart data
+// it is). `document` must be the one those grids were built from. A budget
+// that cut nothing leaves `out` as it was, and a null `out` asks for no
+// report.
+void report_omissions(const GridBudget& budget,
+                      const ai::pipestream::document::v1::Document& document,
+                      ai::pipestream::parse::v1::RenderOmissions* out);
 
 // The table's cell layout as a row-major pointer grid. The grid field wins
 // when populated; otherwise the flat cell list is placed by its offsets.
@@ -108,8 +168,9 @@ class GridBudget {
 // pay for the repeats, and at its first position only once it cannot;
 // nullptr marks a position no cell reaches. The declared dimensions are
 // untrusted: a grid above a fixed position budget, or above what `budget`
-// has left, keeps only its leading rows and columns, and a warning goes to
-// stderr (derived_table_grid caps the same way). A wire grid counts as its row
+// has left, keeps only its leading rows and columns, a warning goes to
+// stderr, and `budget` records the cut for the caller's omission report
+// (derived_table_grid caps the same way). A wire grid counts as its row
 // count times its widest row, since a jagged grid renders padded to that.
 std::vector<std::vector<const ai::pipestream::document::v1::TableCell*>> table_grid(
     const ai::pipestream::document::v1::TableData& data, GridBudget& budget);
@@ -217,6 +278,13 @@ class RendererBase {
   mutable GridBudget grid_budget_;
 
   bool consume(const std::string& ref) { return consumed_.insert(ref).second; }
+
+  // What this render's grids left out, for the entry point to hand its
+  // caller once the render is done. A renderer exposes it with a using
+  // declaration; the base is inherited privately.
+  void report_omissions(ai::pipestream::parse::v1::RenderOmissions* out) const {
+    render::report_omissions(grid_budget_, document_, out);
+  }
 
   // True for any content layer the exports leave out: everything except the
   // body layer and the unspecified default.
