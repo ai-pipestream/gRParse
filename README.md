@@ -1301,23 +1301,56 @@ from the build stage; its runtime base is plain `ubuntu:26.04` behind the
 
 Verified on an Arc B70 (Battlemage): detection/recognition/classification,
 layout, table structure and figure classification all run on the GPU.
-Table structure does not run on the ONNX Runtime provider: `slanet_plus.onnx`
-decodes inside one ONNX `Loop` whose carried tensors grow each step, which
-OpenVINO's ONNX frontend cannot read. The server runs it split, as on
-TensorRT ("Table structure" above): the encoder
-(`slanet_plus_encoder.onnx`) on native OpenVINO through its C API at FP32,
-and the decoder on no framework at all. `src/levelzero/slanet_decoder.cl` is
-compiled to SPIR-V at build time by Intel's `ocloc` and launched through
-Level Zero, one cooperative launch per batch of tables that runs every
-decode step on the GPU (a lone table spreads over 16 Xe cores; tables that
-arrive together share a launch), with its weights read from
-`slanet_plus_step.onnx`. Its placement series are
-`model="table structure encoder"` with `actual="OpenVINO"` and
-`model="table structure decoder"` with `actual="LevelZero"`. The decoder
-needs a GPU device (`GRPARSE_OPENVINO_DEVICE=GPU` or `GPU.<n>`, the n-th
-Level Zero GPU); any other device, a missing Level Zero driver or a kernel
-the driver will not build fails startup, counted as a refusal, and nothing
-runs in its place.
+
+**OCR and table structure run on no framework.** On a GPU device
+(`GRPARSE_OPENVINO_DEVICE=GPU` or `GPU.<n>`, the n-th Level Zero GPU) the
+three RapidOCR nets and the table structure encoder run on gRParse's own
+graph runtime (`src/levelzero/`): the ONNX file is read and lowered at
+startup (`graph_ir.cpp`; a convolution with its batch norm, bias and
+activation is one operation, as is a LayerNorm), and its operations are
+OpenCL C kernels (`graph_kernels.cl`, `kernels_*.cl`) compiled to SPIR-V at
+build time by Intel's `ocloc` and launched through Level Zero. No kernel has
+a shape compiled in: shapes are arguments, worked out per call from the
+input, so a text line of a new width runs at once, where the OpenVINO GPU
+plugin compiled a kernel set for it (about 640 ms a width on the B70). The
+launches of an input shape are recorded once and replayed. The detector and
+the line crops go to the GPU as bytes and are normalized there; the
+recognizer's scores are reduced there to each time step's best class, so a
+call reads back four floats a step and not one per class.
+
+Two precisions are built. In float, every net reproduces ONNX Runtime's CPU
+provider: on the 96 acm-table documents (39,313 text items) the output is
+identical item for item, where the OpenVINO provider's differed in 178.
+`GRPARSE_OCR_FP16` (a comma list of `det`, `cls` and `rec`, or `all`; unset
+is float) stores a net's activations as half and runs its convolutions and
+linear layers on the matrix engines (XMX) with float sums: about 1.5 times
+faster end to end with all three, for a few dozen items that read
+differently. `grparse-ocr-check` in the image is the receipt on a host with
+an Intel GPU (models in `GRPARSE_TEST_MODELS_DIR`, `tests/data` in
+`GRPARSE_TEST_DATA_DIR`): the three nets against ONNX Runtime on CPU, with
+the runtime's working memory filled with NaN before every call, so a kernel
+that reads what it was not given fails the check.
+
+Table structure does not fit a graph: `slanet_plus.onnx` decodes inside one
+ONNX `Loop` whose carried tensors grow each step, which OpenVINO's ONNX
+frontend cannot read. The server runs it split, as on TensorRT ("Table
+structure" above): the encoder (`slanet_plus_encoder.onnx`) on the graph
+runtime in float, and the decoder as one kernel of its own
+(`src/levelzero/slanet_decoder.cl`), one cooperative launch per batch of
+tables that runs every decode step on the GPU (a lone table spreads over 16
+Xe cores; tables that arrive together share a launch), with its weights read
+from `slanet_plus_step.onnx`. `grparse-table-decoder-check` compares it with
+the CPU path on real table crops.
+
+All of these report `actual="LevelZero"` on `grparse_ort_sessions`
+(`model="OCR detection"`, `"OCR direction"`, `"OCR recognition"`,
+`"table structure encoder"`, `"table structure decoder"`). A missing Level
+Zero driver, an operator the lowering does not know or a kernel the driver
+will not build fails startup, counted as a refusal, and nothing runs in its
+place; a device lost mid-run fails the call with `UNAVAILABLE`. On any other
+OpenVINO device (`NPU`, `CPU`) the OCR nets stay on the OpenVINO provider and
+table structure refuses to start. Layout and figure classification still
+run on the OpenVINO provider.
 
 The image defaults to `GRPARSE_ORT_EP=openvino` with
 `GRPARSE_OPENVINO_DEVICE=GPU`; set the device to `GPU.<n>`, `NPU`, `NPU.<n>`
@@ -1335,7 +1368,8 @@ inherits the ownership on first use, while a bind mount needs
 `chown 65532` on the host. The
 layout session asks for single precision explicitly; the GPU plugin's default
 half precision loses that detector real detections and drifts its boxes, while
-the OCR, table, and classifier nets keep the plugin's own choice.
+the figure classifier keeps the plugin's own choice (and so do the OCR nets
+on a device where they still run on the provider).
 
 ### Intermittent IGC failures and VRAM headroom
 
