@@ -872,6 +872,8 @@ void verify_images_held_as_bytes_render_the_same() {
   const auto move_to_data = [&prefix, &moved](docv1::ImageRef* image) {
     if (!image->uri().starts_with(prefix)) return;
     image->set_data(grparse::decode_base64(image->uri().substr(prefix.size())));
+    // The data: URI said what the bytes are; with it gone the ref says so.
+    image->set_mimetype("image/png");
     image->clear_uri();
     ++moved;
   };
