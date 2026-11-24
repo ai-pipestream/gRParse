@@ -453,20 +453,18 @@ void verify_collector_rules_are_typed() {
   }
 }
 
-// The open bags beside typed twins are retired additively: the failure
-// detail map is reserved (number and name), and the stringified chunk
-// metadata keeps its tag but is marked deprecated while typed_metadata and
-// text_source carry its content.
+// The open bags beside typed twins are retired: the failure detail map and
+// the stringified chunk metadata are reserved (number and name), and
+// typed_metadata and text_source carry what the chunk map held.
 void verify_retired_bags_stay_reserved() {
   const auto* failure = parsev1::PublicFailureInfo::descriptor();
   require(failure->FindFieldByNumber(5) == nullptr && failure->IsReservedNumber(5) &&
               failure->IsReservedName("details"),
           "PublicFailureInfo.details is reserved, number and name");
   const auto* chunk = parsev1::Chunk::descriptor();
-  const auto* metadata = chunk->FindFieldByNumber(10);
-  require(metadata != nullptr && metadata->name() == "metadata" &&
-              metadata->options().deprecated(),
-          "Chunk.metadata keeps its tag for existing readers, deprecated");
+  require(chunk->FindFieldByNumber(10) == nullptr && chunk->IsReservedNumber(10) &&
+              chunk->IsReservedName("metadata"),
+          "Chunk.metadata is reserved, number and name");
   const auto* text_source = chunk->FindFieldByName("text_source");
   require(text_source != nullptr && text_source->number() == 18 &&
               text_source->enum_type() == parsev1::ChunkTextSource_descriptor(),

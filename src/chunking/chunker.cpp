@@ -899,8 +899,7 @@ std::string_view text_source_name(parsev1::ChunkTextSource source) {
   }
 }
 
-// The chunk's typed metadata (the deprecated string `metadata` is no longer
-// written), plus the source document's identity (origin hash and mimetype),
+// The chunk's typed metadata, plus the source document's identity (origin hash and mimetype),
 // which the reference chunker carries on every chunk's meta.
 void stamp_typed_metadata(const WorkChunk& work, const docv1::DocumentOrigin& origin,
                           parsev1::Chunk* chunk) {
@@ -1254,25 +1253,6 @@ ChunkOptions chunk_options_from(const parsev1::HybridChunkerOptions& options) {
   return out;
 }
 
-namespace {
-
-void put_string(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
-                const std::string& key, const std::string& value) {
-  (*out)[key].set_string_value(value);
-}
-
-void put_bool(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
-              const std::string& key, bool value) {
-  (*out)[key].set_bool_value(value);
-}
-
-void put_int(google::protobuf::Map<std::string, parsev1::ScalarValue>* out,
-             const std::string& key, std::int64_t value) {
-  (*out)[key].set_int_value(value);
-}
-
-}  // namespace
-
 void fill_chunker_settings(const parsev1::HierarchicalChunkerOptions& options,
                            parsev1::ChunkerSettings* out) {
   if (out == nullptr) return;
@@ -1294,39 +1274,6 @@ void fill_chunker_settings(const parsev1::HybridChunkerOptions& options,
   // wordish/1 unless told otherwise.
   if (!ran_with->has_tokenizer()) ran_with->set_tokenizer("wordish/1");
   if (!ran_with->has_merge_peers()) ran_with->set_merge_peers(true);
-}
-
-void fill_chunking_info(const parsev1::ChunkerSettings& settings,
-                        google::protobuf::Map<std::string, parsev1::ScalarValue>* out) {
-  if (out == nullptr) return;
-  switch (settings.chunker_case()) {
-    case parsev1::ChunkerSettings::kHierarchical: {
-      const parsev1::HierarchicalChunkerOptions& options = settings.hierarchical();
-      put_string(out, "chunker", "hierarchical");
-      put_bool(out, "use_markdown_tables", options.use_markdown_tables());
-      put_bool(out, "include_raw_text", options.include_raw_text());
-      put_bool(out, "use_markdown_images", options.use_markdown_images());
-      put_string(out, "image_placeholder", options.image_placeholder());
-      return;
-    }
-    case parsev1::ChunkerSettings::kHybrid: {
-      const parsev1::HybridChunkerOptions& options = settings.hybrid();
-      put_string(out, "chunker", "hybrid");
-      put_bool(out, "use_markdown_tables", options.use_markdown_tables());
-      put_bool(out, "include_raw_text", options.include_raw_text());
-      put_bool(out, "use_markdown_images", options.use_markdown_images());
-      put_string(out, "image_placeholder", options.image_placeholder());
-      if (options.has_max_tokens()) put_int(out, "max_tokens", options.max_tokens());
-      put_string(out, "tokenizer", options.tokenizer());
-      put_bool(out, "merge_peers", options.merge_peers());
-      if (options.has_tokenizer_path()) {
-        put_string(out, "tokenizer_path", options.tokenizer_path());
-      }
-      return;
-    }
-    case parsev1::ChunkerSettings::CHUNKER_NOT_SET:
-      return;
-  }
 }
 
 void add_offsets(const google::protobuf::RepeatedPtrField<parsev1::TextOffset>& rows,

@@ -299,8 +299,9 @@ message StreamChunksSummary {
   // collector failed.
   repeated Document documents = 2;
   double processing_time = 3;
-  // As ChunkDocumentResponse.chunking_info; read `chunker_settings`.
-  map<string, ScalarValue> chunking_info = 4 [deprecated = true];
+  // Was `map<string, ScalarValue> chunking_info`; read `chunker_settings`.
+  reserved 4;
+  reserved "chunking_info";
   // As ChunkDocumentResponse.chunk_omissions, for the chunk messages that
   // preceded this summary.
   optional RenderOmissions chunk_omissions = 5;

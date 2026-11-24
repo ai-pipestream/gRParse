@@ -615,10 +615,8 @@ void verify_pages_items_and_offsets_propagate() {
               static_cast<std::uint64_t>(sparrows->end_offset()) == entry.end,
           "the span is the item's own entry");
   require_eq(sparrows->page_numbers(0), 1, "the chunk carries the item's page");
-  // The deprecated string map is no longer written; the typed map carries
-  // the keys with their types, plus the source document's identity when the
-  // origin states it.
-  require(sparrows->metadata().empty(), "the stringified metadata map stays empty");
+  // The typed map carries the keys with their types, plus the source
+  // document's identity when the origin states it.
   require(sparrows->typed_metadata().at("min_confidence").kind_case() ==
                   parsev1::ScalarValue::kDoubleValue &&
               std::abs(sparrows->typed_metadata().at("min_confidence").double_value() - 0.94) <
@@ -644,7 +642,6 @@ void verify_pages_items_and_offsets_propagate() {
           "typed min_confidence is the item's confidence as a double");
   require_eq(typed.at("text_source").string_value(), "digital",
              "typed text_source names the source");
-  require(stamped->metadata().empty(), "an origin does not bring the string map back");
   require(typed.at("binary_hash").uint_value() == 0xFFFFFFFFFFFFFFF0ULL,
           "the chunk names its document's origin hash, above int64 range intact");
   require_eq(typed.at("mimetype").string_value(), "application/pdf",
@@ -660,7 +657,6 @@ void verify_pages_items_and_offsets_propagate() {
           "the list span is the union of its items' entries");
   require(std::abs(list->typed_metadata().at("min_confidence").double_value() - 0.62) < 1e-6,
           "the list reports the lowest confidence of its items");
-  require(list->metadata().empty(), "the list writes no string metadata");
 
   // A single missing entry withdraws the whole span rather than reporting a
   // partial one.
@@ -698,7 +694,6 @@ void verify_mixed_text_source_is_reported() {
   const auto source_of = [&chunks](const std::string& text) {
     const auto* chunk = find_chunk(chunks, text);
     require(chunk != nullptr, "the chunk must exist: " + text);
-    require(chunk->metadata().empty(), "no string metadata on: " + text);
     return std::pair{chunk->typed_metadata().at("text_source").string_value(),
                      chunk->text_source()};
   };
@@ -1270,7 +1265,6 @@ void set_language(docv1::Document* document, const std::string& ref, const std::
 }
 
 std::string language_key(const parsev1::Chunk& chunk) {
-  require(chunk.metadata().empty(), "the language rides typed only");
   const auto typed = chunk.typed_metadata().find("language");
   if (typed == chunk.typed_metadata().end()) return {};
   require(typed->second.kind_case() == parsev1::ScalarValue::kStringValue,
@@ -1278,9 +1272,9 @@ std::string language_key(const parsev1::Chunk& chunk) {
   return typed->second.string_value();
 }
 
-// Both chunkers write the chunk's metadata typed only: the deprecated string
-// map stays empty, and typed_metadata carries min_confidence as a double,
-// text_source and language as strings, beside the text_source enum field.
+// Both chunkers write the chunk's metadata typed: typed_metadata carries
+// min_confidence as a double, text_source and language as strings, beside
+// the text_source enum field.
 void verify_chunk_metadata_is_typed_only() {
   docv1::Document document = new_document();
   document.mutable_source_meta()->set_language("en");
@@ -1296,7 +1290,6 @@ void verify_chunk_metadata_is_typed_only() {
        std::initializer_list<const std::vector<parsev1::Chunk>*>{&hierarchical, &hybrid}) {
     require(chunks->size() == 1, "one paragraph, one chunk");
     const parsev1::Chunk& chunk = chunks->front();
-    require(chunk.metadata().empty(), "the stringified metadata map is never written");
     const auto& typed = chunk.typed_metadata();
     require(typed.contains("min_confidence") &&
                 typed.at("min_confidence").kind_case() == parsev1::ScalarValue::kDoubleValue &&

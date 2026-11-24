@@ -148,13 +148,6 @@ void fill_chunker_settings(
     const ai::pipestream::parse::v1::HybridChunkerOptions& options,
     ai::pipestream::parse::v1::ChunkerSettings* out);
 
-// The same as the deprecated ChunkDocumentResponse.chunking_info bag, read
-// off the typed settings so the two cannot disagree (parity with jobkit
-// ChunkedDocumentResult.chunking_info = options.model_dump).
-void fill_chunking_info(
-    const ai::pipestream::parse::v1::ChunkerSettings& settings,
-    google::protobuf::Map<std::string, ai::pipestream::parse::v1::ScalarValue>* out);
-
 // The hierarchical chunker: one chunk per emitted unit in body-tree walk
 // order, each carrying the heading trail in force where it was emitted.
 // The walk does not chunk everything: a table over the grid budget

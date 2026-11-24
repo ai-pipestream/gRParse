@@ -7297,10 +7297,9 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
             "the chunk span is the parse's own offset entry");
     require(chunk.page_numbers_size() == 1 && chunk.page_numbers(0) == index + 1,
             "the chunk carries the page it came from");
-    require(chunk.metadata().empty() &&
-                chunk.typed_metadata().at("text_source").string_value() == "ocr" &&
+    require(chunk.typed_metadata().at("text_source").string_value() == "ocr" &&
                 chunk.text_source() == ai::pipestream::parse::v1::CHUNK_TEXT_SOURCE_OCR,
-            "the recognized-text source rides typed, never as string metadata");
+            "the recognized-text source rides typed");
     const std::string producer =
         std::string("grparse-") + GRPARSE_VERSION + "-" + GRPARSE_ORT_PACKAGE_NAME;
     require(chunk.producer() == producer, "every chunk names the build that produced it");
@@ -7311,14 +7310,8 @@ void verify_hierarchical_chunk_rpc_carries_digest_and_offsets(TestServer* server
   require(response.response().documents().empty(),
           "the converted document rides along only when it is asked for");
   require(response.response().processing_time() >= 0.0, "processing time is reported");
-  const auto& info = response.response().chunking_info();
-  require(info.contains("chunker") && info.at("chunker").string_value() == "hierarchical",
-          "chunking_info names the hierarchical chunker");
-  require(info.contains("use_markdown_tables") &&
-              !info.at("use_markdown_tables").bool_value(),
-          "chunking_info carries use_markdown_tables");
-  // The same facts, typed: the chunker and the options it ran with, every
-  // default filled in, so a reader never looks a key up in a bag.
+  // The chunker and the options it ran with, typed, every default filled
+  // in, so a reader never looks a key up in a bag.
   require(response.response().has_chunker_settings() &&
               response.response().chunker_settings().has_hierarchical(),
           "the response names the hierarchical chunker in a typed field");
@@ -7362,15 +7355,6 @@ void verify_hybrid_chunk_rpc_merges_and_validates(TestServer* server) {
               identity.settings_digest().size() == 64 && !identity.build().empty(),
           "the document names the build, settings and options that produced it");
   require(chunk.chunk_key().size() == 64, "the hybrid chunk carries its storage key");
-  const auto& info = response.response().chunking_info();
-  require(info.contains("chunker") && info.at("chunker").string_value() == "hybrid",
-          "chunking_info names the hybrid chunker");
-  require(info.contains("max_tokens") && info.at("max_tokens").int_value() == 8,
-          "chunking_info carries the request budget");
-  require(info.contains("merge_peers") && info.at("merge_peers").bool_value(),
-          "chunking_info defaults merge_peers to true");
-  require(info.contains("tokenizer") && info.at("tokenizer").string_value() == "wordish/1",
-          "chunking_info defaults the tokenizer to wordish/1");
   require(response.response().chunker_settings().has_hybrid(),
           "the response names the hybrid chunker in a typed field");
   const auto& ran_with = response.response().chunker_settings().hybrid();
@@ -7482,12 +7466,10 @@ void verify_stream_chunks_matches_the_unary_chunkers(TestServer* server) {
   require(summary.summary().chunk_count() == chunks.size(), "the summary counts the chunks");
   require(summary.summary().documents().empty(),
           "the converted document rides along only when it is asked for");
-  require(summary.summary().chunking_info().at("chunker").string_value() == "hierarchical",
-          "the summary carries chunking_info");
   require(summary.summary().chunker_settings().has_hierarchical() &&
               summary.summary().chunker_settings().hierarchical().image_placeholder() ==
                   "![IMAGE]",
-          "the summary carries the typed chunker settings too");
+          "the summary carries the typed chunker settings");
 
   pipestream::parse::v1::StreamChunksRequest hybrid;
   *hybrid.mutable_hybrid()->add_sources() = unary.request().sources(0);
