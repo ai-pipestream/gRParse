@@ -2309,15 +2309,20 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   enrich.picture_description_deny = inputs.picture_description_deny;
   enrich.picture_description_min_confidence = inputs.picture_description_min_confidence;
   if (!enrich.any_job()) return;
-  std::vector<ChartCandidate> item_crops = enrich_item_crops(
+  CodeFormulaCrops item_crops = enrich_item_crops(
       enrich, inputs.bytes, result->document,
       [call, inbound_deadline] {
         return call.cancelled() || std::chrono::system_clock::now() >= inbound_deadline;
       },
       inbound_deadline);
+  // An item that goes to enrichment without its crop is read from its text
+  // alone; the caller is told which, so two runs can be compared.
+  for (Warning& missing : item_crops.warnings) {
+    result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, std::move(missing));
+  }
   const ChartDerenderReport derendered =
       derender_charts(collectors->enrich_channel(), enrich, &result->document, inbound_deadline,
-                      [call] { return call.cancelled(); }, std::move(item_crops));
+                      [call] { return call.cancelled(); }, std::move(item_crops.crops));
   for (const std::string& warning : derendered.warnings) {
     result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, warning);
   }
