@@ -113,7 +113,14 @@ FROM ${GRPARSE_DEPS_IMAGE} AS build
 # on its preprocessed source, flags and compiler, so an entry cannot go stale
 # the way an object in a reused build tree can. A hosted CI runner, whose
 # cache mounts start empty, restores and saves it (scripts/ccache-mount.sh).
+# The table structure decoder's toolchain, here too so the seed stays as it
+# is: Intel's offline compiler (ocloc, with the graphics compiler front end
+# libigdfcl it loads) turns its OpenCL C kernel into SPIR-V,
+# and the Level Zero loader and headers build the code that launches it
+# (cmake/LevelZero.cmake). libze-intel-gpu1 is NEO's Level Zero driver, which
+# the loader opens at run time; it is staged into the runtime below.
 RUN apt-get update && apt-get install -y --no-install-recommends ccache \
+      intel-ocloc libigdfcl2 libigc2 libze-dev libze1 libze-intel-gpu1 \
     && rm -rf /var/lib/apt/lists/*
 ENV CCACHE_DIR=/ccache CCACHE_MAXSIZE=2G
 ARG GRPARSE_BUILD_JOBS=2
@@ -152,7 +159,7 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
       -DGRPARSE_WERROR=ON -DGRPARSE_ORT_PACKAGE=openvino \
       -DGRPARSE_EMBED_OPENVINO=ON -DGRPARSE_OPENVINO_ROOT=/opt/openvino-sdk/runtime \
       -DOpenCV_DIR=/opt/opencv/lib/cmake/opencv5 \
-      -DGRPARSE_COMPILER_LAUNCHER=ccache \
+      -DGRPARSE_COMPILER_LAUNCHER=ccache -DGRPARSE_TABLE_LEVEL_ZERO=ON \
  && cmake --build /build --target grparse-server grparse-stream-client grparse-embed-text grparse-tests --parallel ${GRPARSE_BUILD_JOBS} \
  && ccache --show-stats \
  && LD_LIBRARY_PATH=/opt/opencv/lib ctest --test-dir /build --output-on-failure -L grparse -LE "stack|eval|bench" -j "${GRPARSE_BUILD_JOBS}" \
@@ -164,6 +171,7 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
  && cp /build/grparse-embed-text /out/grparse-embed-text \
  && cp /build/embedding-model-test /out/grparse-embedding-check \
  && cp /build/embedding-reference-test /out/grparse-embedding-reference \
+ && cp /build/level-zero-table-decoder-test /out/grparse-table-decoder-check \
  && cp -a /build/ort-openvino/onnxruntime/capi /out/ort-libs \
  && cp -a /opt/openvino-sdk/runtime/lib/intel64/libopenvino_ir_frontend.so* /out/ort-libs/
 
@@ -178,19 +186,21 @@ RUN --mount=type=cache,id=grparse-openvino-ubuntu26-grpc1.84.1-ort1.24.1-cxx23-s
 # server alone sees none of that, so the dlopened libraries are walked as
 # inputs of their own: the ORT/OpenVINO directory wholesale (and left out
 # of the staged set, since the runtime copies that directory as it is), and
-# the NEO libraries by SONAME from the packages that own them. NEO stays at
-# the path /etc/OpenCL/vendors/intel.icd names.
+# the NEO libraries by SONAME from the packages that own them, its Level
+# Zero driver (libze_intel_gpu, which the Level Zero loader opens by name)
+# among them. NEO's OpenCL stays at the path /etc/OpenCL/vendors/intel.icd
+# names.
 # The last line holds this image to the invariant the vendored OpenCV
 # exists for: no poppler in the staged closure.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ocl-icd-libopencl1 intel-opencl-icd \
     && rm -rf /var/lib/apt/lists/* \
-    && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 libigc2 libigdfcl2 libigdgmm12 \
+    && neo_libs=$(dpkg -L intel-opencl-icd ocl-icd-libopencl1 libigc2 libigdfcl2 libigdgmm12 libze-intel-gpu1 \
                   | grep -E '\.so\.[0-9]+$') \
     && LD_LIBRARY_PATH=/out/ort-libs:/opt/opencv/lib \
        STAGE_KEEP_ON_BASE='^/out/ort-libs/' \
        sh scripts/stage-runtime-closure.sh /out/runtime-libs \
-         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/ort-libs/*.so* \
+         /out/grparse-server /out/grparse-stream-client /out/grparse-embed-text /out/grparse-embedding-check /out/grparse-embedding-reference /out/grparse-table-decoder-check /out/ort-libs/*.so* \
          /usr/lib/x86_64-linux-gnu/intel-opencl/libigdrcl.so $neo_libs \
     && for lib in $neo_libs; do cp -L "$lib" /out/runtime-libs/; done \
     && mkdir -p /out/openvino-cache \
@@ -228,6 +238,10 @@ COPY --from=build /out/grparse-stream-client /usr/local/bin/grparse-stream-clien
 COPY --from=build /out/grparse-embed-text /usr/local/bin/grparse-embed-text
 COPY --from=build /out/grparse-embedding-check /usr/local/bin/grparse-embedding-check
 COPY --from=build /out/grparse-embedding-reference /usr/local/bin/grparse-embedding-reference
+# The table structure GPU path (Level Zero decoder) against the CPU path on
+# real crops, run on a host with an Intel GPU, with GRPARSE_TEST_MODELS_DIR
+# and GRPARSE_TEST_DATA_DIR naming models/ and tests/data/.
+COPY --from=build /out/grparse-table-decoder-check /usr/local/bin/grparse-table-decoder-check
 USER 65532:65532
 EXPOSE 50051
 ENTRYPOINT ["/usr/local/bin/grparse-server"]

@@ -120,6 +120,17 @@ class InferenceModel {
 // ONNX Runtime session is built in its place.
 std::unique_ptr<InferenceModel> make_inference_model(const ModelSpec& spec);
 
+// Whether this build carries native OpenVINO (the Intel image:
+// src/openvino/openvino_model.cpp).
+bool native_openvino_build();
+
+// The model read and compiled by native OpenVINO on the selection's OpenVINO
+// device, with spec.precision honored as the plugin's precision hint and the
+// selection's cache directory as its compile cache.  A model the plugin will
+// not compile throws ep_refusal's error with OpenVINO's message, and nothing
+// is built in its place.  Throws in a build without native OpenVINO.
+std::unique_ptr<InferenceModel> make_openvino_model(const ModelSpec& spec);
+
 // Whether CUDA device `cuda_device` exists and initializes, in a build that
 // carries native TensorRT; `detail` gets CUDA's own words when it does not.
 // Always false, with a detail saying so, in a build without TensorRT.
