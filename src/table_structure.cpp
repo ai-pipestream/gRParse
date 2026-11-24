@@ -9,6 +9,7 @@
 #include <utility>
 
 #include "grparse/region_geometry.h"
+#include "grparse/table_column_anchor.h"
 
 namespace grparse {
 namespace {
@@ -442,6 +443,7 @@ TableLineAssignment assign_table_lines(const OcrPage& page, const LayoutRegion& 
     }
     out.cell_of_line[index] = chosen;
   }
+  anchor_body_columns(page, table, out.cell_of_line);
   return out;
 }
 
