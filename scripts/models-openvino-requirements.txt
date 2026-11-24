@@ -1,0 +1,9 @@
+# Converter toolchain for the openvino IR (scripts/build-openvino-irs.sh,
+# models/openvino/).  The IR's sha256 values in models/MANIFEST were made with
+# exactly these versions; another version may serialize differently and fail
+# the check.  torch comes from the CPU index (see Dockerfile.models).
+openvino==2025.4.1
+onnx==1.23.2
+numpy==2.3.5
+transformers==4.56.1
+safetensors==0.8.0

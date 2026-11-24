@@ -58,9 +58,10 @@ class FigureClassifierEngine::Impl {
                                             OrtPrecision::kProviderDefault, kIntraOpProcessDefault,
                                             std::move(shapes)});
 
-    // The class count is checked on a startup inference, so a model file
-    // that predates the current label set fails startup here rather than on
-    // the first figure of the first document.
+    // The class count is checked on a startup inference (which is also the
+    // prewarm on native OpenVINO), so a model file that predates the current
+    // label set fails startup here rather than on the first figure of the
+    // first document.
     const std::vector<float> zeros(static_cast<size_t>(3) * kInputSize * kInputSize, 0.0F);
     const TensorView probe{TensorElement::kFloat32, zeros.data(), {1, 3, kInputSize, kInputSize}};
     {

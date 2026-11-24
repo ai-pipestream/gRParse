@@ -9,6 +9,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <print>
 #include <span>
 #include <utility>
 #include <vector>
@@ -333,11 +334,17 @@ class LayoutEngine::Impl {
     const OrtPrecision precision = model == LayoutModel::kHeron
                                        ? OrtPrecision::kFloat32
                                        : OrtPrecision::kProviderDefault;
+    // Native TensorRT builds heron for its one input shape.  On native
+    // OpenVINO heron keeps the exported graph's own shapes: the B70's GPU
+    // plugin computes it exactly at FP32 only that way (a static reshape
+    // fails to compile, and FP16 shifts boxes by up to 0.7 px, which moves
+    // table crops enough to change the table decoder's cells).
     ModelShapePolicy shapes;
     if (model == LayoutModel::kHeron) {
       shapes.profiles.push_back(
           static_profile({{1, 3, kQueryInputSide, kQueryInputSide}, {1, 2}}));
     }
+    shapes.static_shapes = model != LayoutModel::kHeron;
     model_ = make_inference_model(
         ModelSpec{model_path, "layout", precision, kIntraOpAllCores, std::move(shapes)});
     strategy_->bind(*model_);

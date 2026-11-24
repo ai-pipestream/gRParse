@@ -84,7 +84,9 @@ void set_ocr_detector_side_limit(int max_side_len, int padding) {
 
 ModelShapePolicy ocr_net_shapes(OcrNet net) {
   ModelShapePolicy policy;
-  if (!tensorrt_selected()) return policy;
+  // Native OpenVINO: fixed batches for the direction and recognition nets
+  // (src/ocr_shape_buckets.cpp); empty on every other selection.
+  if (!tensorrt_selected()) return openvino_ocr_net_shapes(net);
   switch (net) {
     case OcrNet::kDetection:
       policy.profiles = trt::detector_profiles(detector_limit.load());
@@ -100,8 +102,12 @@ ModelShapePolicy ocr_net_shapes(OcrNet net) {
 }
 
 // TensorRT builds every profile into the engine at startup, so there is no
-// per-shape compile left to warm; ONNX Runtime has none either.
-std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet) { return {}; }
+// per-shape compile left to warm; ONNX Runtime has none either.  Native
+// OpenVINO compiles per static shape, so it warms every bucketed one
+// (src/ocr_shape_buckets.cpp).
+std::vector<std::vector<TensorSpec>> ocr_prewarm_sets(OcrNet net) {
+  return openvino_ocr_prewarm_sets(net);
+}
 
 int ocr_rec_min_width() { return tensorrt_selected() ? trt::kRecMinWidth : 1; }
 

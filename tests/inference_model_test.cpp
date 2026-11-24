@@ -1,13 +1,16 @@
 // Proves the typed model interface (compat/grparse_inference_model.h): an
 // ONNX Runtime session behind it runs and copies its outputs typed, a device
-// failure maps to UNAVAILABLE, and the shape policy (optimization profiles,
-// line width limits) exists exactly where native TensorRT runs the nets.
+// failure maps to UNAVAILABLE, and the shape policy exists exactly where a
+// native backend runs the nets: optimization profiles and line width limits
+// under native TensorRT; under native OpenVINO the detector's twelve
+// letterbox buckets and the line nets' batches of eight.
 
 #include <climits>
 #include <cstdint>
 #include <filesystem>
 #include <format>
 #include <fstream>
+#include <set>
 #include <span>
 #include <string>
 #include <unistd.h>
@@ -116,6 +119,38 @@ void verify_device_probe_without_tensorrt() {
   require(detail.find("no TensorRT") != std::string::npos, "the detail says why");
 }
 
+void verify_native_shape_policy() {
+  if (!grparse::native_openvino_build()) return;
+  grparse::OrtEpSelection selection;
+  selection.ep = grparse::OrtEp::kOpenVino;
+  selection.openvino_device = "GPU";
+  grparse::set_ort_ep_selection(selection);
+  require(grparse::ocr_det_max_side(2048) == 1600, "the detector is capped at 1600");
+  require(grparse::ocr_det_max_side(960) == 960, "a smaller configured side stays");
+  // Every resize the detector can see lands in one of the eight buckets,
+  // and every bucket covers its input.
+  std::set<std::pair<int, int>> buckets;
+  for (int width = 32; width <= 1600; width += 32) {
+    for (int height = 32; height <= 1600; height += 32) {
+      const auto [bucket_width, bucket_height] = grparse::ocr_det_bucket_shape(width, height);
+      require(bucket_width >= width && bucket_height >= height, "a bucket covers its input");
+      buckets.insert({bucket_width, bucket_height});
+    }
+  }
+  const auto prewarm = grparse::ocr_prewarm_sets(grparse::OcrNet::kDetection);
+  std::set<std::pair<int, int>> warmed;
+  for (const auto& set : prewarm) warmed.insert({static_cast<int>(set[0].shape[3]), static_cast<int>(set[0].shape[2])});
+  for (const auto& bucket : buckets) {
+    require(warmed.contains(bucket), std::format("bucket {}x{} is prewarmed", bucket.first, bucket.second));
+  }
+  require_equal(buckets.size(), size_t{12}, "every detector input lands in one of twelve buckets");
+  require_equal(prewarm.size(), size_t{12}, "the twelve detector buckets are prewarmed");
+  require(grparse::ocr_net_shapes(grparse::OcrNet::kRecognition).batch_ladder == std::vector<int64_t>{8},
+          "recognition runs batches of eight");
+  require(grparse::ocr_net_shapes(grparse::OcrNet::kDetection).batch_ladder.empty(),
+          "detection runs one page at a time");
+}
+
 }  // namespace
 
 int main() {
@@ -125,5 +160,6 @@ int main() {
       verify_static_profile,
       verify_shape_policy_follows_backend,
       verify_device_probe_without_tensorrt,
+      verify_native_shape_policy,
   });
 }

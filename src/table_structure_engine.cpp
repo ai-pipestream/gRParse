@@ -143,7 +143,15 @@ class TableStructureEngine::Impl {
     if (!std::filesystem::exists(model_path)) {
       throw std::runtime_error("Table structure model is missing: " + model_path.string());
     }
-    const bool split = native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda;
+    // The split model (an encoder and one decoder step, driven here) runs
+    // wherever a native backend compiles for fixed shapes: native TensorRT
+    // under CUDA, native OpenVINO under an OpenVINO selection, so no dynamic
+    // loop reaches the GPU.  Both ask for single precision: at half
+    // precision the decoder's 501-step feedback drifts and the table tokens
+    // fall apart (OpenVINO CPU device check, 2026-11-16).
+    const bool split =
+        (native_tensorrt_build() && ort_ep_selection().ep == OrtEp::kCuda) ||
+        (native_openvino_build() && ort_ep_selection().ep == OrtEp::kOpenVino);
     const std::string characters =
         split ? load_split_model(model_path) : load_released_model(model_path);
     std::istringstream lines(characters);
@@ -355,7 +363,8 @@ class TableStructureEngine::Impl {
   // The split model: the encoder once, then one decoder step per token from
   // sos, feeding back the argmax as a one-hot, until eos after the first
   // step or kMaxSteps (the released loop's 501), with the softmax the
-  // released graph applies to the structure scores.
+  // released graph applies to the structure scores.  Native TensorRT and
+  // native OpenVINO both run it.
   void decode_split(const std::vector<float>& tensor, std::vector<float>* boxes,
                      std::vector<float>* probs) {
     constexpr int kMaxSteps = 501;
