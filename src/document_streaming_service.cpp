@@ -756,6 +756,10 @@ class DocumentStreamReactor final
       cv_started_ = std::chrono::steady_clock::now();
       cv_active_ = true;
       cv_tuning_ = tuning;
+      // The CV pages of a PDF get its AcroForm widgets on their repair
+      // event. The bytes are kept for that read, which starts once the
+      // pages are recognized (on_scheduler_finish).
+      if (pdf && form_widgets_deliverable(false)) form_widget_bytes_ = bytes;
     }
     try {
       const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
@@ -798,11 +802,92 @@ class DocumentStreamReactor final
 
   static void deliver(const std::weak_ptr<CallbackGate>& weak_gate,
                       pipestream::parse::v1::Collector id, CollectorOutcome outcome,
-                      bool pages_streamed = false, uint64_t duration_ns = 0) {
-    with_reactor(
-        weak_gate, [id, &outcome, pages_streamed, duration_ns](DocumentStreamReactor& reactor) {
-          reactor.on_collector_done(id, std::move(outcome), pages_streamed, duration_ns);
+                      bool pages_streamed = false, uint64_t duration_ns = 0,
+                      std::optional<PdfFormWidgetAnswer> form_widgets = std::nullopt) {
+    with_reactor(weak_gate, [id, &outcome, pages_streamed, duration_ns,
+                             &form_widgets](DocumentStreamReactor& reactor) {
+      reactor.on_collector_done(id, std::move(outcome), pages_streamed, duration_ns,
+                                std::move(form_widgets));
+    });
+  }
+
+  // Whether this stream has an event that can carry a PDF's AcroForm
+  // widgets, which is what decides whether it asks a PDF backend for them.
+  // The repair event carries them for any pages; without it only a whole
+  // collector Document does, and a slimmed one leaves its items to the
+  // repair event. A stream with neither names the step as left out
+  // (name_omitted_steps_locked) instead of reading widgets for nobody.
+  bool form_widgets_deliverable(bool collector_document) const {
+    if (!pdf_form_widget_backend_configured()) return false;
+    if (repair_delta_wanted()) return true;
+    return collector_document && !slim_collector_documents_.value_or(false);
+  }
+
+  // The widget read of a PDF whose pages the CV pipeline produced: one
+  // blocking call to the PDF backend on a stream worker, cancelled with the
+  // client like every leg's, its answer kept for settle_fold_locked. It
+  // starts when recognition is done, not beside it, the order ConvertSource
+  // keeps: the backend then already holds the document the page source
+  // uploaded, and the read names it by its hash instead of sending the bytes
+  // a second time. It holds the terminal event as one more part. A worker
+  // the full queue refuses is a form nobody read, said on the complete
+  // event; the pages are not failed for it.
+  void start_form_widget_leg_locked() {
+    std::shared_ptr<const std::string> bytes = std::move(form_widget_bytes_);
+    form_widget_bytes_.reset();
+    if (bytes == nullptr) return;
+    const std::weak_ptr<CallbackGate> weak_gate = callback_gate_;
+    const std::chrono::system_clock::time_point deadline = context_->deadline();
+    std::string refused;
+    try {
+      const bool queued = executor_.submit([weak_gate, bytes = std::move(bytes), deadline] {
+        PdfFormWidgetAnswer answer;
+        try {
+          answer = fetch_pdf_form_widgets_from_backend(*bytes, deadline, {},
+                                                       leg_cancelled(weak_gate));
+        } catch (const std::exception& error) {
+          // The part this leg holds is settled whatever happened in it.
+          answer = PdfFormWidgetAnswer{};
+          answer.warnings.emplace_back(
+              pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+              std::string("AcroForm widgets not read: ") + error.what());
+        }
+        with_reactor(weak_gate, [&answer](DocumentStreamReactor& reactor) {
+          reactor.on_form_widgets(std::move(answer));
         });
+      });
+      if (queued) {
+        // The leg reports through the lock held here, so the part is
+        // counted before it can be settled.
+        ++pending_parts_;
+        return;
+      }
+      refused = "the stream worker queue is full (GRPARSE_STREAM_QUEUE)";
+    } catch (const std::exception& error) {
+      refused = error.what();
+    }
+    PdfFormWidgetAnswer unread;
+    unread.warnings.emplace_back(pipestream::document::v1::WARNING_CODE_FORM_FIELDS_UNREADABLE,
+                                 "AcroForm widgets not read: " + refused);
+    form_widgets_ = std::move(unread);
+  }
+
+  void on_form_widgets(PdfFormWidgetAnswer answer) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    form_widgets_ = std::move(answer);
+    part_done_locked();
+    pump_locked();
+  }
+
+  // The widget step's warnings join the complete event's, as they join the
+  // CV collector's on the unary Document, and one the CV leg already said
+  // in the same words is not said twice.
+  void take_form_widget_warnings_locked(std::vector<Warning> warnings) {
+    form_widgets_ran_ = true;
+    for (Warning& warning : warnings) {
+      if (std::ranges::find(assembly_warnings_, warning) != assembly_warnings_.end()) continue;
+      assembly_warnings_.push_back(std::move(warning));
+    }
   }
 
   // Queues one leg on the stream pool. A throw inside the leg (an
@@ -862,6 +947,9 @@ class DocumentStreamReactor final
     CollectorDeadline deadline;
     PageScheduler::OcrTuning tuning;
     bool previews = false;
+    // The fast path's Document gets the AcroForm widgets (see
+    // form_widgets_deliverable).
+    bool form_widgets = false;
   };
 
   // The pdf routing leg: the inspector's classification decides whether the
@@ -881,7 +969,7 @@ class DocumentStreamReactor final
   void spawn_pdf_router(std::shared_ptr<const std::string> bytes, bool pdf,
                         PageScheduler::OcrTuning tuning) {
     PdfLeg leg{endpoints_, std::move(bytes), pdf, context_->deadline(), std::move(tuning),
-               scheduler_.captures_page_images()};
+               scheduler_.captures_page_images(), pdf && form_widgets_deliverable(true)};
     start_leg(pipestream::parse::v1::COLLECTOR_PDF,
               [leg = std::move(leg)](const std::weak_ptr<CallbackGate>& weak_gate) mutable {
                 run_pdf_route(weak_gate, std::move(leg));
@@ -995,8 +1083,16 @@ class DocumentStreamReactor final
       }
       preview_session.reset();
       std::ranges::move(preview_warnings, std::back_inserter(parsed.outcome.warnings));
+      // The widgets are the PDF backend's to read, and this thread is where
+      // the leg's blocking calls already are; the reactor folds the answer
+      // in once the repair pass has run on the Document.
+      std::optional<PdfFormWidgetAnswer> form_widgets;
+      if (leg.form_widgets) {
+        form_widgets = fetch_pdf_form_widgets_from_backend(*leg.bytes, leg.deadline, {},
+                                                           leg_cancelled(weak_gate));
+      }
       deliver(weak_gate, pipestream::parse::v1::COLLECTOR_PDF, std::move(parsed.outcome),
-              streamed, pdf_elapsed_ns);
+              streamed, pdf_elapsed_ns, std::move(form_widgets));
       return;
     }
     preview_session.reset();
@@ -1293,6 +1389,7 @@ class DocumentStreamReactor final
     record_collector_done_cv_locked(status);
     if (status.ok()) {
       ++succeeded_parts_;
+      start_form_widget_leg_locked();
     } else {
       record_part_failure_locked(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, status);
     }
@@ -1303,8 +1400,13 @@ class DocumentStreamReactor final
   // `pages_streamed`: the collector's pages already went out one by one
   // (the inspector's streamed fast path), so only the whole Document
   // follows here.
+  //
+  // `form_widgets`: what a PDF backend answered for the document's AcroForm
+  // widgets, when this is the inspector's fast-path Document and the leg
+  // asked (run_pdf_route).
   void on_collector_done(pipestream::parse::v1::Collector collector, CollectorOutcome outcome,
-                         bool pages_streamed = false, uint64_t duration_ns = 0) {
+                         bool pages_streamed = false, uint64_t duration_ns = 0,
+                         std::optional<PdfFormWidgetAnswer> form_widgets = std::nullopt) {
     record_collector_call(collector,
                           collector_call_status_for(outcome.success, outcome.code),
                           duration_ns, outcome.warnings.size());
@@ -1326,6 +1428,14 @@ class DocumentStreamReactor final
       run_repair_pass(&outcome.document, *repair_);
       renamed = log.renames();
     }
+    // The widgets join the repaired body, the order ConvertSource keeps,
+    // and before the structural rules read the Document, as there. The
+    // Document then carries the form subtree whole, and the repair event
+    // below brings a client folding the pages to the same.
+    const bool widgets_folded = outcome.success && form_widgets.has_value();
+    if (widgets_folded && form_widgets->answered) {
+      fold_pdf_form_widgets(form_widgets->pages, form_widgets->engine, &outcome.document);
+    }
     google::protobuf::RepeatedPtrField<pipestream::parse::v1::StructureFinding> findings;
     const grpc::Status structure_status =
         outcome.success ? check_structure(outcome.document, structure_, kStreamSurface, &findings)
@@ -1338,6 +1448,7 @@ class DocumentStreamReactor final
       request_finish_locked(structure_status);
       return;
     }
+    if (widgets_folded) take_form_widget_warnings_locked(std::move(form_widgets->warnings));
     if (outcome.success) {
       // A collector's finished document reaches the stream as page events
       // first, the same shape the CV pipeline emits page by page, so a
@@ -1386,6 +1497,7 @@ class DocumentStreamReactor final
           events_.push_back(std::move(page_event));
         }
       }
+      const bool delta_sent = delta.has_value();
       if (delta.has_value()) {
         auto delta_event = std::make_unique<Event>();
         delta_event->message.set_document_id(document_id_);
@@ -1393,7 +1505,15 @@ class DocumentStreamReactor final
         *delta_event->message.mutable_repair() = std::move(*delta);
         events_.push_back(std::move(delta_event));
       }
-      if (paged && slim_collector_documents_.value_or(false)) slim(&outcome.document);
+      if (paged && slim_collector_documents_.value_or(false)) {
+        slim(&outcome.document);
+        // The form subtree goes with the items its field items name, when a
+        // repair event went out to carry it.
+        if (delta_sent) {
+          outcome.document.clear_field_regions();
+          outcome.document.clear_field_items();
+        }
+      }
       auto event = std::make_unique<Event>();
       event->message.set_document_id(document_id_);
       event->message.set_total_pages(total_pages_);
@@ -1491,15 +1611,20 @@ class DocumentStreamReactor final
     request_finish_locked(grpc::Status::OK);
   }
 
-  // The unary path ends with two steps this stream has no way to deliver:
-  // the AcroForm widgets of a PDF (field items, which no stream event
-  // carries) and the enrichment leg (a call to another service over the
-  // whole document, made after the pages are already on the wire). Each is
-  // named exactly when ConvertSource with default options would have run it
-  // for this document on this deployment, so the complete event never lets
-  // a stream pass for the unary result where it is not.
+  // The unary path ends with two steps over the whole document, each a
+  // call to another service. The AcroForm widgets of a PDF the stream reads
+  // too and delivers on the repair event or in the PDF collector's own
+  // Document; the step is named here when this stream did not run it (no
+  // event could carry the field items, form_widgets_deliverable, or the
+  // pages came from neither the PDF collector nor the CV pipeline). The
+  // enrichment leg (a call to another service over the whole document,
+  // made after the pages are already on the wire) the stream does not run.
+  // Each is named exactly when ConvertSource with default options would
+  // have run it for this document on this deployment and this stream did
+  // not, so the complete event never lets a stream pass for the unary
+  // result where it is not.
   void name_omitted_steps_locked(pipestream::parse::v1::DocumentComplete* complete) const {
-    if (pdf_ && pdf_form_widget_backend_configured()) {
+    if (pdf_ && pdf_form_widget_backend_configured() && !form_widgets_ran_) {
       complete->add_omitted_steps(pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS);
     }
     if (endpoints_ != nullptr && endpoints_->has_derender() &&
@@ -1548,6 +1673,17 @@ class DocumentStreamReactor final
         }
       }
       renamed = log.renames();
+      // The AcroForm widgets join the repaired body, the order ConvertSource
+      // keeps; the delta below carries them as the form subtree. Only a
+      // client that takes the repair event had them read
+      // (form_widgets_deliverable).
+      if (form_widgets_.has_value()) {
+        if (form_widgets_->answered) {
+          fold_pdf_form_widgets(form_widgets_->pages, form_widgets_->engine, &after);
+        }
+        take_form_widget_warnings_locked(std::move(form_widgets_->warnings));
+        form_widgets_.reset();
+      }
     } catch (const std::exception& error) {
       if (validates) {
         // The document the rules were asked to check does not exist, and
@@ -1770,6 +1906,15 @@ class DocumentStreamReactor final
   // What the page assembly had to approximate rather than map, shipped with
   // the terminal event.
   std::vector<Warning> assembly_warnings_;
+  // The AcroForm widget step of a PDF. The bytes are held from the CV
+  // run's submission until its pages are recognized and the widget leg
+  // takes them; the leg's answer waits here for settle_fold_locked. `ran`:
+  // the step's result is on the stream (folded into the fast path's
+  // Document or into the CV pages' repair event, or said as a typed
+  // warning), so it is not named as left out.
+  std::shared_ptr<const std::string> form_widget_bytes_;
+  bool form_widgets_ran_ = false;
+  std::optional<PdfFormWidgetAnswer> form_widgets_;
   // What the routed CV pages take from the inspector's read (see
   // note_cv_route), held for the complete event.
   std::vector<Warning> route_warnings_;

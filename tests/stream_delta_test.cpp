@@ -262,6 +262,60 @@ void verify_cv_pages_delta_matches_the_unary_treatment() {
   require_same_part(rebuilt, after, "fold plus delta equals the grouped, repaired document");
 }
 
+// A document's form subtree: no page event carries a field region or a
+// field item, so the delta carries both arenas whole, with the texts the
+// field items name and the body children the regions join, and applying
+// it gives a fold the same subtree.
+void verify_delta_carries_the_form_subtree() {
+  const docv1::Document document = report();
+  const grparse::PageFold fold =
+      fold_of(grparse::project_page_data(document, parsev1::TEXT_SOURCE_DIGITAL_PDF));
+  docv1::Document with_form = fold.document();
+  const std::string key_ref = "#/texts/" + std::to_string(with_form.texts_size());
+  auto* key = with_form.add_texts()->mutable_text()->mutable_base();
+  key->set_self_ref(key_ref);
+  key->mutable_parent()->set_ref("#/field_items/0");
+  key->set_label(docv1::DOC_ITEM_LABEL_FIELD_KEY);
+  key->set_text("customer_name");
+  auto* region = with_form.add_field_regions();
+  region->set_self_ref("#/field_regions/0");
+  region->mutable_parent()->set_ref("#/body");
+  region->set_label(docv1::DOC_ITEM_LABEL_FIELD_REGION);
+  region->add_children()->set_ref("#/field_items/0");
+  auto* item = with_form.add_field_items();
+  item->set_self_ref("#/field_items/0");
+  item->mutable_parent()->set_ref("#/field_regions/0");
+  item->add_children()->set_ref(key_ref);
+  with_form.mutable_body()->add_children()->set_ref("#/field_regions/0");
+
+  const auto delta =
+      grparse::repair_delta(fold.document(), with_form, {}, parsev1::COLLECTOR_PDF);
+  require(delta.has_value(), "a form subtree alone is a change the delta carries");
+  require(delta->field_regions_size() == 1 && delta->field_items_size() == 1,
+          "both field arenas travel whole");
+  require(delta->texts_size() == 1 && delta->has_body_children(),
+          "the field's key text and the region's place in the body travel with them");
+  docv1::Document rebuilt = fold.document();
+  require(grparse::apply_repair_delta(*delta, &rebuilt), "the delta applies to the fold");
+  require_same_part(rebuilt, with_form, "fold plus delta equals the document with its form");
+  google::protobuf::util::MessageDifferencer differencer;
+  require(rebuilt.field_regions_size() == 1 &&
+              differencer.Compare(rebuilt.field_regions(0), with_form.field_regions(0)) &&
+              rebuilt.field_items_size() == 1 &&
+              differencer.Compare(rebuilt.field_items(0), with_form.field_items(0)),
+          "the rebuilt fold holds the field region and the field item");
+
+  // A later delta is the whole truth about the subtree: one from a
+  // document without a form takes the fold's away.
+  const auto without = grparse::repair_delta(with_form, fold.document(), {},
+                                             parsev1::COLLECTOR_PDF);
+  require(without.has_value() && without->field_items_size() == 0,
+          "losing the form subtree is a change too");
+  require(grparse::apply_repair_delta(*without, &rebuilt) && rebuilt.field_items_size() == 0 &&
+              rebuilt.field_regions_size() == 0,
+          "a delta with empty field arenas leaves the fold without a form");
+}
+
 }  // namespace
 
 int main() {
@@ -269,6 +323,7 @@ int main() {
   verify_rename_log_composes_steps();
   verify_collector_delta_rebuilds_the_repaired_document();
   verify_cv_pages_delta_matches_the_unary_treatment();
+  verify_delta_carries_the_form_subtree();
   std::println("stream delta tests passed");
   return 0;
 }

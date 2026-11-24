@@ -119,6 +119,18 @@ bool same_refs(const google::protobuf::RepeatedPtrField<docv1::RefItem>& left,
   return true;
 }
 
+template <typename Item>
+bool same_items(const google::protobuf::RepeatedPtrField<Item>& left,
+                const google::protobuf::RepeatedPtrField<Item>& right) {
+  if (left.size() != right.size()) return false;
+  for (int index = 0; index < left.size(); ++index) {
+    if (!google::protobuf::util::MessageDifferencer::Equals(left[index], right[index])) {
+      return false;
+    }
+  }
+  return true;
+}
+
 // Items of `after` that the renamed fold does not already hold verbatim
 // under the same ref, and only that ref.
 template <typename Item>
@@ -266,6 +278,12 @@ std::optional<parsev1::DocumentRepairDelta> repair_delta(
       changed = true;
     }
   }
+  // The form subtree travels whole: no page event carries a field region
+  // or a field item, so there is no folded arena worth a per-item diff.
+  *delta.mutable_field_regions() = after.field_regions();
+  *delta.mutable_field_items() = after.field_items();
+  changed |= !same_items(fold.field_regions(), after.field_regions()) ||
+             !same_items(fold.field_items(), after.field_items());
   if (!changed) return std::nullopt;
   return delta;
 }
@@ -291,6 +309,8 @@ bool apply_repair_delta(const parsev1::DocumentRepairDelta& delta, docv1::Docume
   }
   for (const auto& [page_no, page] : delta.pages()) (*document->mutable_pages())[page_no] = page;
   for (const int32_t page_no : delta.dropped_pages()) document->mutable_pages()->erase(page_no);
+  *document->mutable_field_regions() = delta.field_regions();
+  *document->mutable_field_items() = delta.field_items();
   return true;
 }
 

@@ -7133,14 +7133,62 @@ std::vector<pipestream::parse::v1::StreamOmittedStep> omitted_steps(
   return steps;
 }
 
+// What a client holds for a streamed PDF once the stream ends: the page
+// events folded, the complete event's heading levels applied, then every
+// repair event.
+docv1::Document rebuild_streamed_pdf(const StreamPdfRun& run, const std::string& label) {
+  require(!run.events.empty() && run.events.back().has_complete(),
+          label + ": the stream closes with the complete event");
+  grparse::PageFold fold;
+  for (const auto& event : run.events) {
+    if (event.has_page()) fold.fold(event.page());
+  }
+  const auto& complete = run.events.back().complete();
+  const std::map<std::string, int32_t> levels(complete.section_header_levels().begin(),
+                                              complete.section_header_levels().end());
+  docv1::Document rebuilt = fold.document();
+  grparse::apply_section_header_levels(levels, &rebuilt);
+  for (const auto& event : run.events) {
+    if (event.has_repair()) {
+      require(grparse::apply_repair_delta(event.repair(), &rebuilt),
+              label + ": the repair event applies to the fold");
+    }
+  }
+  return rebuilt;
+}
+
+// A Document's form subtree in one comparable string: every field region
+// and field item, and under each item the text its children name, so two
+// documents compare equal only when the fields, their keys and their values
+// agree.
+std::string form_subtree(const docv1::Document& document) {
+  const auto text_at = [&document](const std::string& ref) -> std::string {
+    constexpr std::string_view prefix = "#/texts/";
+    if (!ref.starts_with(prefix)) return ref;
+    const int index = std::atoi(ref.c_str() + prefix.size());
+    if (index < 0 || index >= document.texts_size()) return ref + " (no such text)";
+    return document.texts(index).ShortDebugString();
+  };
+  std::string out;
+  for (const auto& region : document.field_regions()) {
+    out += "region " + region.ShortDebugString() + "\n";
+  }
+  for (const auto& item : document.field_items()) {
+    out += "item " + item.ShortDebugString() + "\n";
+    for (const auto& child : item.children()) out += "  " + text_at(child.ref()) + "\n";
+  }
+  return out;
+}
+
 // One routed PDF through both surfaces: the inspector classifies it for the
 // CV path, and a PDF backend reads one AcroForm widget in it. What
 // ConvertSource puts on the Document beside the CV path's items (the
 // inspector's source metadata, the route's typed warning) must reach the
 // stream's reader as the same typed data on the complete event, and the
-// widget step the stream does not run must be named there, typed. Both
-// routes are covered: the one settled by the inspector's trailer, and the
-// one the info event settles while the inspector still reads.
+// widget must reach it as the same field item, in the repair event that
+// brings the folded pages up to the whole document. Both routes are
+// covered: the one settled by the inspector's trailer, and the one the
+// info event settles while the inspector still reads.
 void verify_streamed_cv_route_carries_what_the_unary_route_does() {
   grparse_test::ScopedPdfBackend pdf_backend;
   grparse_test::FakePdfPage form_page = grparse_test::text_page({"Form"});
@@ -7217,11 +7265,82 @@ void verify_streamed_cv_route_carries_what_the_unary_route_does() {
 
     require_equal(document.field_items_size(), 1,
                   route + ": the unary Document holds the AcroForm widget");
-    require(omitted_steps(complete) ==
+    const docv1::Document streamed = rebuild_streamed_pdf(stream, route);
+    require_equal(streamed.field_items_size(), 1,
+                  route + ": the stream delivers the AcroForm widget as a field item");
+    require_equal(form_subtree(streamed), form_subtree(document),
+                  route + ": the streamed form subtree is the unary Document's");
+    require(std::ranges::any_of(streamed.body().children(),
+                                [&streamed](const docv1::RefItem& child) {
+                                  return child.ref() == streamed.field_regions(0).self_ref();
+                                }),
+            route + ": the field region sits in the streamed body");
+    require(omitted_steps(complete).empty(),
+            route + ": the stream ran the widget step, so it names no step it left out");
+
+    // A client that opts out of the repair event has nothing that could
+    // carry a field item, so for it the step is still named as left out.
+    const StreamPdfRun without_delta = run_stream_pdf(
+        inspector_server.target(), false, "%PDF-in-memory", {}, false, /*repair_delta=*/false);
+    require(without_delta.status.ok(),
+            route + ": stream without the repair event failed: " +
+                without_delta.status.error_message());
+    require(omitted_steps(without_delta.events.back().complete()) ==
                 std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS},
-            route + ": the complete event names the widget step the stream did not run, "
-                    "and no other");
+            route + ": without the repair event the widget step is named as left out");
   }
+}
+
+// The inspector's fast path: the PDF's collector Document carries the form
+// subtree ConvertSource builds, and a client that folds the pages gets the
+// same from the repair event.
+void verify_streamed_fast_path_carries_the_form_fields() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  grparse_test::FakePdfPage form_page = grparse_test::text_page({"Form"});
+  grparse_test::pdfv1::FormField field;
+  field.set_kind(grparse_test::pdfv1::FORM_FIELD_KIND_TEXT);
+  field.set_name("customer_name");
+  field.set_value("Jordan Example");
+  field.mutable_rect()->set_x0(300);
+  field.mutable_rect()->set_y0(300);
+  field.mutable_rect()->set_x1(450);
+  field.mutable_rect()->set_y1(320);
+  form_page.form_fields.push_back(field);
+  pdf_backend.backend().add_document(
+      "%PDF-in-memory",
+      {form_page, grparse_test::text_page({"Two"}), grparse_test::text_page({"Three"})});
+
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  PdfInspectorServer inspector_server(&inspector);
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target());
+  require(unary.status.ok(), "fast path: unary parse failed: " + unary.status.error_message());
+  const docv1::Document& document = unary.response.response().document().doc();
+  require_equal(document.field_items_size(), 1,
+                "fast path: the unary Document holds the AcroForm widget");
+
+  const StreamPdfRun stream = run_stream_pdf(inspector_server.target());
+  require(stream.status.ok(), "fast path: stream failed: " + stream.status.error_message());
+  const docv1::Document* whole = nullptr;
+  for (const auto& event : stream.events) {
+    if (event.has_collector_document()) whole = &event.collector_document().document();
+  }
+  require(whole != nullptr, "fast path: the text PDF's collector Document streams");
+  require_equal(form_subtree(*whole), form_subtree(document),
+                "fast path: the collector Document's form subtree is the unary Document's");
+  const docv1::Document streamed = rebuild_streamed_pdf(stream, "fast path");
+  require_equal(form_subtree(streamed), form_subtree(document),
+                "fast path: the folded pages and the repair event rebuild the same form subtree");
+  require(omitted_steps(stream.events.back().complete()).empty(),
+          "fast path: the stream ran the widget step");
+
+  // Slimmed, the collector Document leaves the form subtree to the repair
+  // event with everything else the events rebuild.
+  const StreamPdfRun slim = run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory",
+                                           {}, /*slim_collector_documents=*/true);
+  require(slim.status.ok(), "fast path, slim: stream failed: " + slim.status.error_message());
+  require_equal(form_subtree(rebuild_streamed_pdf(slim, "fast path, slim")),
+                form_subtree(document),
+                "fast path, slim: the events alone rebuild the form subtree");
 }
 
 // omitted_steps follows what ConvertSource would have run for the same
@@ -7255,10 +7374,19 @@ void verify_stream_names_the_unary_steps_it_does_not_run() {
     require(run.status.ok(), "fully configured stream failed: " + run.status.error_message());
     require(run.events.front().has_collector_document(),
             "the text PDF takes the inspector's fast path");
-    require(omitted_steps(run.events.back().complete()) ==
-                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS,
-                            pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
-            "a fast-path PDF names both steps, in enum order");
+    // The backend was asked for the widgets (it holds no such document, and
+    // the complete event says the form could not be read), so the widget
+    // step ran and only the enrichment leg is left out.
+    const auto& complete = run.events.back().complete();
+    require(omitted_steps(complete) ==
+                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
+            "a fast-path PDF names the enrichment leg alone");
+    require(std::ranges::any_of(complete.typed_warnings(),
+                                [](const docv1::CollectorWarning& warning) {
+                                  return warning.code() ==
+                                         docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE;
+                                }),
+            "a widget read that failed is said on the complete event, typed");
   }
 }
 
@@ -8604,6 +8732,7 @@ int main() {
         verify_pdf_mixed_recommendation_without_reasons_forces_every_page();
         verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_streamed_cv_route_carries_what_the_unary_route_does();
+        verify_streamed_fast_path_carries_the_form_fields();
         verify_stream_names_the_unary_steps_it_does_not_run();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
