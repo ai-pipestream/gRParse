@@ -25,7 +25,7 @@ namespace {
 // Payload text is capped: a WARC payload can be a whole video, and the
 // Document model is a text plane, not an archive. The cap matches the
 // server's default payload chunk, and record_end.payload_length still
-// reports the full size for the truncation note.
+// reports the full size for the truncation warning.
 constexpr size_t kPayloadTextBytes = 64U * 1024U;
 
 // Events per gRPC message. Small records (warcinfo, request, metadata) are a
@@ -86,21 +86,30 @@ bool is_latin1_charset(std::string charset) {
          charset == "latin-1" || charset == "l1";
 }
 
-// A payload as Document text. UTF-8 (and ASCII) passes through; a declared
-// ISO-8859-1 payload is transcoded, since every byte maps to one code
-// point. Any other charset is not decoded here: its invalid bytes become
-// U+FFFD and `undecoded` names the charset for the caller's warning.
-std::string payload_text(const warcv1::RecordMetadata& metadata, std::string_view bytes,
+// A payload as Document text, with how many of the payload's bytes the text
+// was made from.
+struct PayloadText {
+  std::string text;
+  size_t bytes_kept = 0;
+};
+
+// UTF-8 (and ASCII) passes through; a declared ISO-8859-1 payload is
+// transcoded, since every byte maps to one code point. Any other charset is
+// not decoded here: its invalid bytes become U+FFFD and `undecoded` names
+// the charset for the caller's warning.
+PayloadText payload_text(const warcv1::RecordMetadata& metadata, std::string_view bytes,
                          bool cut, std::optional<std::string>& undecoded) {
   const std::string_view whole = cut ? drop_split_tail(bytes) : bytes;
-  if (simdutf::validate_utf8(whole.data(), whole.size())) return std::string(whole);
+  if (simdutf::validate_utf8(whole.data(), whole.size())) {
+    return {std::string(whole), whole.size()};
+  }
   if (metadata.has_http_charset() && is_latin1_charset(metadata.http_charset())) {
     std::string out(simdutf::utf8_length_from_latin1(bytes.data(), bytes.size()), '\0');
     out.resize(simdutf::convert_latin1_to_utf8(bytes.data(), bytes.size(), out.data()));
-    return out;
+    return {std::move(out), bytes.size()};
   }
   undecoded = metadata.has_http_charset() ? metadata.http_charset() : "undeclared";
-  return utf8_text(whole);
+  return {utf8_text(whole), whole.size()};
 }
 
 // Header blocks arrive lossless: ordered name/value byte pairs, original
@@ -139,6 +148,27 @@ std::optional<int> status_code(const std::string& status_line) {
   }
   if (end - begin != 3) return std::nullopt;
   return std::stoi(status_line.substr(begin, 3));
+}
+
+// The coding the embedded HTTP message says its body is stored under,
+// lower-cased: "gzip", "br", "gzip, br". Unset when the record declares
+// none, or only "identity", which changes nothing. By convention an archiver
+// that decodes a body before storing it renames or drops the header, so a
+// declared coding means the payload bytes are still encoded.
+std::optional<std::string> content_encoding(const warcv1::RecordMetadata& metadata) {
+  if (!metadata.has_http_headers()) return std::nullopt;
+  auto declared = header_value(metadata.http_headers(), "Content-Encoding");
+  if (!declared) return std::nullopt;
+  std::string& coding = *declared;
+  std::ranges::transform(coding, coding.begin(),
+                         [](unsigned char letter) { return std::tolower(letter); });
+  const auto is_space = [](unsigned char letter) { return std::isspace(letter) != 0; };
+  coding.erase(coding.begin(), std::ranges::find_if_not(coding, is_space));
+  while (!coding.empty() && is_space(static_cast<unsigned char>(coding.back()))) {
+    coding.pop_back();
+  }
+  if (coding.empty() || coding == "identity") return std::nullopt;
+  return declared;
 }
 
 // Like lol-html, this wire carries no document event and no terminal
@@ -342,20 +372,39 @@ class WarcFold {
     }
     add_text(index, "content-length: " + std::to_string(metadata.content_length()));
     add_text(index, "payload-length: " + std::to_string(payload_length));
-    if (looks_textual(metadata) && payload_length > 0) {
-      std::optional<std::string> undecoded;
-      std::string text =
-          payload_text(metadata, payload, payload_length > payload.size(), undecoded);
-      if (undecoded && undecoded_charsets_.insert(*undecoded).second) {
-        outcome_.warnings.push_back("payload text in charset " + *undecoded +
-                                    " is not decoded; invalid UTF-8 bytes became U+FFFD");
-      }
-      if (payload_length > payload.size()) {
-        text += "\n[fastwarc: payload truncated to the first " +
-                std::to_string(kPayloadTextBytes) + " of " +
-                std::to_string(payload_length) + " bytes]";
-      }
-      add_text(index, std::move(text));
+    if (!looks_textual(metadata) || payload_length == 0) return;
+    const std::string at_record =
+        "record at stream offset " + std::to_string(metadata.stream_pos());
+    if (const auto coding = content_encoding(metadata)) {
+      // The bytes are a compressed stream, not text in any charset, and this
+      // leg does not decode them (see the request below). Run through the
+      // charset path they would come out as U+FFFD and read as the page's
+      // text, so the body is left out and the record says why.
+      outcome_.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAYLOAD_NOT_DECODED,
+                  at_record + ": payload stored under Content-Encoding " + *coding +
+                      " is not decoded; its text is left out")
+              .on_item(group->self_ref()));
+      return;
+    }
+    const bool cut = payload_length > payload.size();
+    std::optional<std::string> undecoded;
+    PayloadText text = payload_text(metadata, payload, cut, undecoded);
+    if (undecoded && undecoded_charsets_.insert(*undecoded).second) {
+      outcome_.warnings.push_back("payload text in charset " + *undecoded +
+                                  " is not decoded; invalid UTF-8 bytes became U+FFFD");
+    }
+    add_text(index, std::move(text.text));
+    if (cut) {
+      // The cut is said beside the text, never inside it: the item's text
+      // goes on to chunking and embedding as the record's content.
+      outcome_.warnings.push_back(
+          Warning(docv1::WARNING_CODE_PAYLOAD_TRUNCATED,
+                  at_record + ": payload text holds the first " +
+                      std::to_string(text.bytes_kept) + " of " +
+                      std::to_string(payload_length) + " bytes")
+              .on_item("#/texts/" + std::to_string(document_.texts_size() - 1))
+              .kept(text.bytes_kept, payload_length));
     }
   }
 
@@ -403,6 +452,13 @@ CollectorOutcome collect_fastwarc_document(const std::shared_ptr<grpc::Channel>&
   // their defaults (on), which enables magic-byte sniffing of gzip/zstd/lz4
   // streams.
   config->set_parse_http(true);
+  // decode_http_payload stays unset, so a body arrives as it was stored. The
+  // service can decode content encodings, but the contract makes a payload
+  // that fails to read a non-recoverable error that ends the stream, and
+  // fastwarc-grpc 2.0.1 ends it the same way at a record whose coding it has
+  // no decoder for: asking would let one damaged or oddly labelled body cost
+  // every record after it. The fold leaves a still-encoded body out instead,
+  // under WARNING_CODE_PAYLOAD_NOT_DECODED.
   config->set_response_batch_size(kResponseBatchSize);
   ConcurrentUpload upload(
       context, *stream, request, bytes, /*always_send_chunk=*/false,

@@ -2252,6 +2252,7 @@ class FakeWarcService final : public warcv1::WarcService::Service {
     kTransportErrorMidStream,
     kTruncated,
     kCharsets,
+    kContentEncoded,
     kRequestBeforeResponse
   };
   explicit FakeWarcService(Mode mode) : mode_(mode) {}
@@ -2360,6 +2361,35 @@ class FakeWarcService final : public warcv1::WarcService::Service {
       record("gbk", "\xC4\xE3\xBA\xC3 ok", 7);
       record("ISO-8859-1", "caf\xE9", 4);
       record("utf-8", std::string(65535, 'a') + "\xC3\xA9", 65537);
+      return send(*stream, out, config.response_batch_size());
+    }
+    if (mode_ == Mode::kContentEncoded) {
+      // Two HTML responses as a crawler stored them: one body still gzip
+      // compressed, as its Content-Encoding says, and one sent as it is.
+      const auto record = [&](uint64_t position, const std::string& encoding,
+                               const std::string& data) {
+        auto* meta = event.mutable_record_start()->mutable_metadata();
+        meta->set_record_type(warcv1::WARC_RECORD_TYPE_RESPONSE);
+        meta->set_stream_pos(position);
+        meta->set_is_http(true);
+        meta->set_http_parsed(true);
+        meta->set_http_content_type("text/html");
+        meta->set_content_length(data.size());
+        meta->mutable_http_headers()->set_status_line("HTTP/1.1 200 OK");
+        add_header(meta->mutable_http_headers(), "Content-Type", "text/html");
+        add_header(meta->mutable_http_headers(), "content-encoding", encoding);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_payload_chunk()->set_data(data);
+        out.push_back(event);
+        event.Clear();
+        event.mutable_record_end()->set_payload_length(data.size());
+        out.push_back(event);
+        event.Clear();
+      };
+      // A gzip member's first bytes: magic, deflate, no flags, then data.
+      record(0, "GZIP", std::string("\x1f\x8b\x08\x00\x00\x00\x00\x00\x00\x03\xcb\x48\xcd\xc9", 14));
+      record(512, "identity", "<p>plain</p>");
       return send(*stream, out, config.response_batch_size());
     }
     if (mode_ == Mode::kRequestBeforeResponse) {
@@ -2760,6 +2790,9 @@ void verify_fastwarc_transport_failure_after_records_is_typed() {
           "the transport message stays in the warning");
 }
 
+// The cut is a typed warning on the payload's item. The text itself is the
+// kept prefix and nothing else: a sentence about the cut inside it would be
+// chunked and embedded as if the page had said it.
 void verify_fastwarc_truncates_payload_text() {
   FakeWarcService service(FakeWarcService::Mode::kTruncated);
   ServerFixture server(&service);
@@ -2767,13 +2800,21 @@ void verify_fastwarc_truncates_payload_text() {
       grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
   require(outcome.success && outcome.document.groups_size() == 1,
           "the oversized record still folds");
-  const std::string suffix =
-      "\n[fastwarc: payload truncated to the first 65536 of 71680 bytes]";
-  const std::string& payload = outcome.document.texts(5).text().base().text();
-  require(payload.size() == 65536 + suffix.size() &&
-              payload.starts_with(std::string(16, 'a')) &&
-              payload.ends_with(suffix),
-          "the payload folds to the 64 KiB cap with the truncation noted");
+  const auto& payload_item = outcome.document.texts(5).text().base();
+  require(payload_item.text() == std::string(65536, 'a') &&
+              payload_item.orig() == payload_item.text(),
+          "the payload folds to the 64 KiB cap and holds nothing but the payload");
+  for (const auto& text : outcome.document.texts()) {
+    require(!text.text().base().text().contains("truncated"),
+            "no item's text speaks about the truncation");
+  }
+  require(outcome.warnings.size() == 1, "the cut raises one warning");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_TRUNCATED, "a payload cut at the cap is typed");
+  require(truncated.item_ref == payload_item.self_ref(),
+          "the warning names the item that holds the kept prefix: " + truncated.item_ref);
+  require(truncated.bytes_kept == uint64_t{65536} && truncated.bytes_total == uint64_t{71680},
+          "the kept and the full payload sizes are typed");
 }
 
 void verify_fastwarc_payload_text_is_utf8() {
@@ -2793,12 +2834,53 @@ void verify_fastwarc_payload_text_is_utf8() {
   require(payloads[0] == "\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD\xEF\xBF\xBD ok",
           "undecoded GBK bytes become U+FFFD, the ASCII around them stays");
   require(payloads[1] == "caf\xC3\xA9", "a declared latin-1 payload is transcoded");
-  require(payloads[2].starts_with(std::string(65535, 'a') + "\n[fastwarc: payload truncated"),
-          "a character split by the cap is dropped, not replaced");
+  require(payloads[2] == std::string(65535, 'a'),
+          "a character split by the cap is dropped, not replaced, and nothing is appended");
   std::string serialized;
   require(outcome.document.SerializeToString(&serialized), "the document serializes");
-  require(outcome.warnings.size() == 1 && outcome.warnings[0].message.contains("charset gbk"),
+  require(outcome.warnings.size() == 2 && outcome.warnings[0].message.contains("charset gbk"),
           "the undecoded charset is named once");
+  const grparse::Warning truncated = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_TRUNCATED, "the record cut at the cap is typed");
+  require(truncated.bytes_kept == uint64_t{65535} && truncated.bytes_total == uint64_t{65537},
+          "bytes_kept counts the bytes the text was made from, without the split character");
+}
+
+// A body stored under a Content-Encoding is compressed bytes, not text.
+// Nothing here decodes it, so it is left out and the record says so, typed;
+// it must not arrive as a run of U+FFFD that reads as the page's text.
+void verify_fastwarc_leaves_an_encoded_payload_out() {
+  FakeWarcService service(FakeWarcService::Mode::kContentEncoded);
+  ServerFixture server(&service);
+  const auto outcome =
+      grparse::collect_fastwarc_document(server.channel(), "WARC/1.0 fake bytes");
+  require(outcome.success && outcome.document.groups_size() == 2,
+          "both records fold: " + outcome.error);
+  for (const auto& text : outcome.document.texts()) {
+    require(!text.text().base().text().contains("\xEF\xBF\xBD"),
+            "no compressed byte reaches the document as a replacement character: " +
+                text.text().base().self_ref());
+  }
+  const auto& encoded = outcome.document.groups(0);
+  const std::string& last_ref = encoded.children(encoded.children_size() - 1).ref();
+  const int last = std::stoi(last_ref.substr(last_ref.rfind('/') + 1));
+  require(outcome.document.texts(last).text().base().text() == "payload-length: 14",
+          "the encoded record keeps its metadata items and carries no payload text");
+  require(outcome.warnings.size() == 1, "the one encoded body raises the one warning");
+  const grparse::Warning not_decoded = require_last_warning(
+      outcome, docv1::WARNING_CODE_PAYLOAD_NOT_DECODED,
+      "a body left out for its encoding is typed");
+  require(not_decoded.item_ref == "#/groups/0",
+          "the warning names the record whose payload was left out: " + not_decoded.item_ref);
+  require(not_decoded.message.contains("gzip"),
+          "the encoding is named: " + not_decoded.message);
+  const auto& plain = outcome.document.groups(1);
+  const std::string& plain_ref = plain.children(plain.children_size() - 1).ref();
+  require(outcome.document.texts(std::stoi(plain_ref.substr(plain_ref.rfind('/') + 1)))
+                  .text()
+                  .base()
+                  .text() == "<p>plain</p>",
+          "an identity encoding changes nothing: that body is text");
 }
 
 }  // namespace
@@ -4186,6 +4268,7 @@ int main() {
       verify_fastwarc_transport_failure_after_records_is_typed,
       verify_fastwarc_truncates_payload_text,
       verify_fastwarc_payload_text_is_utf8,
+      verify_fastwarc_leaves_an_encoded_payload_out,
       verify_fastwarc_streams_both_ways_without_deadlock,
       verify_fastwarc_deadline_is_a_failure,
       verify_calamine_folds_sheets,
