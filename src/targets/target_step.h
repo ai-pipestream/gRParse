@@ -20,14 +20,19 @@ namespace grparse::targets {
 // target and an explicit InBodyTarget are the same request: nothing to do.
 bool needs_delivery(const ai::pipestream::parse::v1::Target& target);
 
-// Runs the target and fills `result`.  Blocking (it compresses, and it
-// uploads), so it belongs on the same worker the conversion ran on, never on
-// a gRPC event thread.  Returns UNIMPLEMENTED for the targets this server
-// declares but does not serve, INVALID_ARGUMENT for a target whose own fields
-// are incomplete, and UNAVAILABLE when a store refused an object.
+// Runs the target and fills `result`.  `converted` is the response the
+// conversion answers with, its status and errors already settled: the bundle
+// is built from all of it (bundle.h), so what is delivered says what the
+// response says.  `result` may be converted's own target_result.  Besides
+// the archive or the objects written, `result` lists every image of the
+// document the bundle could not hold as an image member of a known type.
+// Blocking (it compresses, and it uploads), so it belongs on the same worker
+// the conversion ran on, never on a gRPC event thread.  Returns
+// UNIMPLEMENTED for the targets this server declares but does not serve,
+// INVALID_ARGUMENT for a target whose own fields are incomplete, and
+// UNAVAILABLE when a store refused an object.
 grpc::Status deliver(const ai::pipestream::parse::v1::Target& target,
-                     const ai::pipestream::document::v1::Document& document,
-                     const ai::pipestream::parse::v1::DocumentExports& exports,
+                     const ai::pipestream::parse::v1::ConvertDocumentResponse& converted,
                      ai::pipestream::parse::v1::TargetResult* result);
 
 // The credentials an S3 request signs with: the request's own pair (both or
