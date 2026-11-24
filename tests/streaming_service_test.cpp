@@ -36,6 +36,7 @@ extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
 
 #include <google/protobuf/util/message_differencer.h>
 #include <grpcpp/grpcpp.h>
+#include <opencv2/imgcodecs.hpp>
 
 #include "../src/parse_support.h"
 #include "../src/render/renderer_base.h"
@@ -45,6 +46,7 @@ extern "C" std::size_t __sanitizer_get_current_allocated_bytes();
 #include "../src/targets/sha256.h"
 #include "../src/targets/zip_writer.h"
 #include "ai/pipestream/email/v1/email_service.grpc.pb.h"
+#include "ai/pipestream/enrich/v1/enrich_service.grpc.pb.h"
 #include "ai/pipestream/parse/v1/parse_stream.grpc.pb.h"
 #include "ai/pipestream/pdf/v1/pdf_service.grpc.pb.h"
 #include "ai/pipestream/vlm/v1/vlm_convert.grpc.pb.h"
@@ -2859,6 +2861,41 @@ class RoutableDigitalSource final : public grparse::PageSource {
   }
 };
 
+// RoutableDigitalSource's three pages with a raster large enough to crop a
+// figure out of, for the runs that install the layout and figure passes.
+class ChartRasterSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return digital_.page_count(); }
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    return digital_.extract_digital_page(page_number);
+  }
+  // Every pixel is the page number, which is how FakeRecognizer tells the
+  // page, or a crop of it, apart.
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(200, 100, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+ private:
+  RoutableDigitalSource digital_;
+};
+
+// The layout pass of the chart runs: one picture on every page it is shown.
+class ChartRegionDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
+    return {{"picture", 0.9F, 10, 40, 90, 160}};
+  }
+};
+
+// The figure pass of the chart runs: every picture is a bar chart, the
+// verdict the enrichment leg sends a picture to its peer on.
+class BarChartClassifier final : public grparse::FigureClassifierBase {
+ public:
+  std::vector<grparse::FigureClass> classify(const cv::Mat&) override {
+    return {{"bar_chart", 0.9F}};
+  }
+};
+
 // Serves the inspector's routing contract: the classification first, then
 // one folded document, then the status trailer.
 class FakePdfInspector final : public pdfv1::PdfParseService::Service {
@@ -2886,6 +2923,9 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   // Holds the folded document and the status trailer back this long after
   // the info event: an inspector still reading a long document.
   void set_trailer_delay(std::chrono::milliseconds delay) { trailer_delay_ = delay; }
+  // Adds one picture the fold labels a chart and holds the pixels of: what
+  // the enrichment leg sends for its data table.
+  void set_chart_picture(std::string png) { chart_png_ = std::move(png); }
   // When the trailer went out (steady clock); the epoch until then.
   std::chrono::steady_clock::time_point trailer_sent_at() const {
     std::lock_guard<std::mutex> lock(trailer_mutex_);
@@ -2975,6 +3015,24 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
         page.mutable_size()->set_height(792);
       }
     }
+    if (!chart_png_.empty()) {
+      const std::string ref = "#/pictures/" + std::to_string(document.pictures_size());
+      auto* chart = document.add_pictures();
+      chart->set_self_ref(ref);
+      chart->mutable_parent()->set_ref("#/body");
+      chart->set_label(docv1::DOC_ITEM_LABEL_CHART);
+      chart->add_source()->mutable_collector()->set_collector("pdf");
+      chart->mutable_image()->set_mimetype("image/png");
+      chart->mutable_image()->set_data(chart_png_);
+      // On a page, so the stream has a page event to carry it on.
+      auto* placed = chart->add_prov();
+      placed->set_page_no(1);
+      placed->mutable_bbox()->set_l(72);
+      placed->mutable_bbox()->set_t(700);
+      placed->mutable_bbox()->set_r(300);
+      placed->mutable_bbox()->set_b(500);
+      document.mutable_body()->add_children()->set_ref(ref);
+    }
     if (searchable_scan_) base->set_content_layer(docv1::CONTENT_LAYER_INVISIBLE);
     *event.mutable_document() = std::move(document);
     stream->Write(event);
@@ -2998,6 +3056,7 @@ class FakePdfInspector final : public pdfv1::PdfParseService::Service {
   std::vector<pdfv1::OcrRecommendationReason> ocr_recommendation_reasons_;
   std::atomic<int> dials_{0};
   std::chrono::milliseconds trailer_delay_{0};
+  std::string chart_png_;
   mutable std::mutex trailer_mutex_;
   std::chrono::steady_clock::time_point trailer_sent_at_{};
 };
@@ -3046,15 +3105,24 @@ struct UnaryPdfRun {
 // call's metadata as the candidate for an encrypted document.
 UnaryPdfRun run_unary_pdf(const std::string& pdf_target, bool page_images = false,
                           const std::string& bytes = "%PDF-in-memory",
-                          const std::string& password = {}) {
+                          const std::string& password = {},
+                          const std::string& enrich_target = {}, bool chart_passes = false) {
   FakeRecognizer recognizer;
+  ChartRegionDetector detector;
+  BarChartClassifier classifier;
+  grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
+  options.capture_picture_images = chart_passes;
   grparse::PageScheduler scheduler(
-      recognizer, {2, 3, 2, 3, 2, 2, 2},
-      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+      recognizer, options,
+      [chart_passes](std::shared_ptr<const std::string>, bool, double,
+                     const std::string&) -> std::shared_ptr<grparse::PageSource> {
+        if (chart_passes) return std::make_shared<ChartRasterSource>();
         return std::make_shared<RoutableDigitalSource>();
-      });
+      },
+      chart_passes ? &detector : nullptr, nullptr, chart_passes ? &classifier : nullptr);
   grparse::CollectorTargets targets;
   targets.pdf = pdf_target;
+  targets.derender.target = enrich_target;
   grparse::DocumentParserService parser_service(
       scheduler, std::make_shared<grparse::CollectorEndpoints>(targets));
   int port = 0;
@@ -4330,15 +4398,21 @@ StreamPdfRun run_stream_pdf(
     const std::string& pdf_bytes = "%PDF-in-memory",
     const std::function<void(const pipestream::parse::v1::DocumentStreamEvent&)>& observe = {},
     bool slim_collector_documents = false, std::optional<bool> repair_delta = std::nullopt,
-    const std::string& enrich_target = {}) {
+    const std::string& enrich_target = {}, bool chart_passes = false) {
   FakeRecognizer recognizer;
+  ChartRegionDetector detector;
+  BarChartClassifier classifier;
   grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
   options.capture_page_images = capture_page_images;
+  options.capture_picture_images = chart_passes;
   grparse::PageScheduler scheduler(
       recognizer, options,
-      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+      [chart_passes](std::shared_ptr<const std::string>, bool, double,
+                     const std::string&) -> std::shared_ptr<grparse::PageSource> {
+        if (chart_passes) return std::make_shared<ChartRasterSource>();
         return std::make_shared<RoutableDigitalSource>();
-      });
+      },
+      chart_passes ? &detector : nullptr, nullptr, chart_passes ? &classifier : nullptr);
   grparse::CollectorTargets targets;
   targets.pdf = pdf_target;
   targets.derender.target = enrich_target;
@@ -7343,10 +7417,234 @@ void verify_streamed_fast_path_carries_the_form_fields() {
                 "fast path, slim: the events alone rebuild the form subtree");
 }
 
-// omitted_steps follows what ConvertSource would have run for the same
-// document on the same deployment: nothing when neither a PDF backend nor
-// the enrichment peer is configured, each step once its peer is, and on
-// every route a PDF takes, the inspector's fast path included.
+// A small real PNG: the pixels of the chart the enrichment tests send.
+std::string chart_png() {
+  std::vector<unsigned char> png;
+  require(cv::imencode(".png", cv::Mat(8, 8, CV_8UC3, cv::Scalar(40, 90, 200)), png),
+          "the chart fixture encodes");
+  return std::string(png.begin(), png.end());
+}
+
+// The enrichment peer: answers every picture it is sent with one chart
+// table, and counts its calls.
+class ChartTableEnrichService final : public ai::pipestream::enrich::v1::EnrichService::Service {
+ public:
+  grpc::Status EnrichDocument(
+      grpc::ServerContext*,
+      grpc::ServerReaderWriter<ai::pipestream::enrich::v1::EnrichDocumentResponse,
+                               ai::pipestream::enrich::v1::EnrichDocumentRequest>* stream)
+      override {
+    calls_.fetch_add(1);
+    std::vector<std::string> refs;
+    ai::pipestream::enrich::v1::EnrichDocumentRequest request;
+    while (stream->Read(&request)) {
+      if (request.has_image()) refs.push_back(request.image().self_ref());
+    }
+    ai::pipestream::enrich::v1::EnrichDocumentResponse event;
+    event.mutable_started()->set_chart_extractions(static_cast<uint32_t>(refs.size()));
+    stream->Write(event);
+    for (const std::string& ref : refs) {
+      event.Clear();
+      auto* annotation = event.mutable_annotation();
+      annotation->set_self_ref(ref);
+      annotation->set_model("chart-vlm");
+      auto* chart = annotation->mutable_chart_table();
+      chart->set_title("Revenue by region");
+      const char* texts[2][2] = {{"Region", "Q1"}, {"North", "120"}};
+      for (int row = 0; row < 2; ++row) {
+        for (int column = 0; column < 2; ++column) {
+          auto* cell = chart->mutable_table()->add_table_cells();
+          cell->set_start_row_offset_idx(row);
+          cell->set_end_row_offset_idx(row + 1);
+          cell->set_start_col_offset_idx(column);
+          cell->set_end_col_offset_idx(column + 1);
+          cell->set_row_span(1);
+          cell->set_col_span(1);
+          cell->set_text(texts[row][column]);
+          if (row == 0) cell->set_column_header(true);
+        }
+      }
+      stream->Write(event);
+    }
+    event.Clear();
+    event.mutable_complete()->set_succeeded(static_cast<uint32_t>(refs.size()));
+    stream->Write(event);
+    return grpc::Status::OK;
+  }
+
+  int calls() const { return calls_.load(); }
+
+ private:
+  std::atomic<int> calls_{0};
+};
+
+class EnrichServer {
+ public:
+  explicit EnrichServer(grpc::Service* service) {
+    grpc::ServerBuilder builder;
+    builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port_);
+    builder.RegisterService(service);
+    server_ = builder.BuildAndStart();
+    if (!server_ || port_ == 0) throw std::runtime_error("fake enrichment peer failed to start");
+  }
+  ~EnrichServer() {
+    if (server_) server_->Shutdown();
+  }
+  std::string target() const { return "127.0.0.1:" + std::to_string(port_); }
+
+ private:
+  int port_ = 0;
+  std::unique_ptr<grpc::Server> server_;
+};
+
+// The one picture of `document` the enrichment leg gave a chart table, as a
+// comparable string of what the leg adds (the meta table and the wire
+// annotations); empty when no picture has one.
+std::string derendered_chart(const docv1::Document& document) {
+  for (const auto& picture : document.pictures()) {
+    if (!picture.meta().has_tabular_chart()) continue;
+    std::string out = "meta " + picture.meta().tabular_chart().ShortDebugString();
+    for (const auto& annotation : picture.annotations()) {
+      if (annotation.has_tabular_chart()) {
+        out += "\nannotation " + annotation.tabular_chart().ShortDebugString();
+      }
+    }
+    return out;
+  }
+  return {};
+}
+
+// The enrichment leg on the inspector's fast path: the chart table
+// ConvertSource folds into the picture is in the stream's collector
+// Document, and a client folding the pages gets it from the repair event.
+void verify_streamed_fast_path_runs_the_enrichment_leg() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
+  inspector.set_chart_picture(chart_png());
+  PdfInspectorServer inspector_server(&inspector);
+  ChartTableEnrichService enrich;
+  EnrichServer enrich_server(&enrich);
+
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target(), false, "%PDF-in-memory", {},
+                                          enrich_server.target());
+  require(unary.status.ok(), "enriched unary parse failed: " + unary.status.error_message());
+  const std::string expected = derendered_chart(unary.response.response().document().doc());
+  require(!expected.empty() && enrich.calls() == 1,
+          "the unary Document's chart carries the table the enrichment peer answered");
+
+  const StreamPdfRun stream =
+      run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                     std::nullopt, enrich_server.target());
+  require(stream.status.ok(), "enriched stream failed: " + stream.status.error_message());
+  require_equal(enrich.calls(), 2, "the stream dials the enrichment peer once, as unary does");
+  const docv1::Document* whole = nullptr;
+  for (const auto& event : stream.events) {
+    if (event.has_collector_document()) whole = &event.collector_document().document();
+  }
+  require(whole != nullptr, "the text PDF's collector Document streams");
+  require_equal(derendered_chart(*whole), expected,
+                "the collector Document's chart carries the unary Document's table");
+  require_equal(derendered_chart(rebuild_streamed_pdf(stream, "enriched fast path")), expected,
+                "the folded pages and the repair event rebuild the chart with its table");
+  require(omitted_steps(stream.events.back().complete()).empty(),
+          "the stream ran the enrichment leg, so it names no step it left out");
+}
+
+// The enrichment leg on the CV route: the pages streamed before anything
+// whole-document ran, so the chart's table reaches the client in the
+// repair event, and it is the table ConvertSource folds in.
+void verify_streamed_cv_route_runs_the_enrichment_leg() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  PdfInspectorServer inspector_server(&inspector);
+  ChartTableEnrichService enrich;
+  EnrichServer enrich_server(&enrich);
+
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target(), false, "%PDF-in-memory", {},
+                                          enrich_server.target(), true);
+  require(unary.status.ok(), "enriched unary CV parse failed: " + unary.status.error_message());
+  const std::string expected = derendered_chart(unary.response.response().document().doc());
+  require(!expected.empty() && enrich.calls() == 1,
+          "the unary Document's recognized chart carries the enrichment peer's table");
+
+  const StreamPdfRun stream =
+      run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                     std::nullopt, enrich_server.target(), true);
+  require(stream.status.ok(), "enriched CV stream failed: " + stream.status.error_message());
+  require_equal(enrich.calls(), 2, "the CV stream dials the enrichment peer once");
+  bool chart_streamed_bare = false;
+  for (const auto& event : stream.events) {
+    if (!event.has_page()) continue;
+    for (const auto& picture : event.page().pictures()) {
+      chart_streamed_bare = chart_streamed_bare || !picture.meta().has_tabular_chart();
+    }
+  }
+  require(chart_streamed_bare, "the chart's page went out before the enrichment leg ran");
+  require_equal(derendered_chart(rebuild_streamed_pdf(stream, "enriched CV route")), expected,
+                "the repair event brings the chart the table the unary Document has");
+  require(omitted_steps(stream.events.back().complete()).empty(),
+          "the CV stream ran the enrichment leg");
+
+  // No repair event, no way to deliver the table: the leg is not run for
+  // nobody, and the complete event says the step was left out.
+  const StreamPdfRun without_delta =
+      run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                     /*repair_delta=*/false, enrich_server.target(), true);
+  require(without_delta.status.ok(),
+          "CV stream without the repair event failed: " + without_delta.status.error_message());
+  require_equal(enrich.calls(), 2, "a stream that cannot deliver the table does not ask for it");
+  require(omitted_steps(without_delta.events.back().complete()) ==
+              std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
+          "without the repair event the enrichment leg is named as left out");
+}
+
+// An enrichment leg that fails is said, in the words and with the code the
+// unary Document carries, on the complete event: the step ran, so it is not
+// named as left out, and its failure does not pass for a chart without data.
+void verify_streamed_enrichment_failure_is_stated() {
+  FakePdfInspector inspector(pdfv1::PDF_TYPE_MIXED, {2});
+  PdfInspectorServer inspector_server(&inspector);
+  const std::string nobody = "127.0.0.1:1";
+
+  const UnaryPdfRun unary = run_unary_pdf(inspector_server.target(), false, "%PDF-in-memory", {},
+                                          nobody, true);
+  require(unary.status.ok(), "unary parse with a dead enrichment peer failed: " +
+                                 unary.status.error_message());
+  std::vector<std::string> expected;
+  for (const auto& warning : unary.response.response().document().doc().warnings()) {
+    if (warning.message().starts_with("document enrich")) {
+      expected.push_back(warning.ShortDebugString());
+    }
+  }
+  require(!expected.empty(), "the unary Document says the enrichment leg failed");
+
+  const StreamPdfRun stream =
+      run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
+                     std::nullopt, nobody, true);
+  require(stream.status.ok(), "stream with a dead enrichment peer failed: " +
+                                  stream.status.error_message());
+  const auto& complete = stream.events.back().complete();
+  std::vector<std::string> said;
+  for (const auto& warning : complete.typed_warnings()) {
+    if (warning.message().starts_with("document enrich")) {
+      docv1::CollectorWarning as_unary = warning;
+      // The complete event files its warnings under the CV collector, as
+      // the unary Document files this leg's.
+      said.push_back(as_unary.ShortDebugString());
+    }
+  }
+  require(said == expected,
+          "the complete event states the failed enrichment leg as the unary Document does, "
+          "got " + std::to_string(said.size()) + " statements for " +
+              std::to_string(expected.size()));
+  require(derendered_chart(rebuild_streamed_pdf(stream, "failed enrichment")).empty(),
+          "a failed leg leaves the chart without a table");
+  require(omitted_steps(complete).empty(), "a leg that ran and failed is not named as left out");
+}
+
+// omitted_steps names a step ConvertSource would have run for the same
+// document on the same deployment only when the stream did not run it:
+// nothing when neither a PDF backend nor the enrichment peer is configured,
+// nothing when the stream ran both (whatever they found), and each step
+// when the stream had no event to deliver it on.
 void verify_stream_names_the_unary_steps_it_does_not_run() {
   FakePdfInspector inspector(pdfv1::PDF_TYPE_TEXT_BASED, {});
   PdfInspectorServer inspector_server(&inspector);
@@ -7357,14 +7655,13 @@ void verify_stream_names_the_unary_steps_it_does_not_run() {
             "a deployment with neither peer has no step for the stream to leave out");
   }
   {
-    // Nothing dials the enrichment peer on a stream, so no fake serves it.
+    // The Document has no picture to send, so the leg runs and dials nobody.
     const StreamPdfRun run =
         run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {}, false,
                        std::nullopt, "127.0.0.1:1");
     require(run.status.ok(), "enrich-configured stream failed: " + run.status.error_message());
-    require(omitted_steps(run.events.back().complete()) ==
-                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
-            "with the enrichment peer configured the stream names the leg it did not run");
+    require(omitted_steps(run.events.back().complete()).empty(),
+            "with the enrichment peer configured the stream runs the leg and names nothing");
   }
   {
     grparse_test::ScopedPdfBackend pdf_backend;
@@ -7375,18 +7672,30 @@ void verify_stream_names_the_unary_steps_it_does_not_run() {
     require(run.events.front().has_collector_document(),
             "the text PDF takes the inspector's fast path");
     // The backend was asked for the widgets (it holds no such document, and
-    // the complete event says the form could not be read), so the widget
-    // step ran and only the enrichment leg is left out.
+    // the complete event says the form could not be read), and the
+    // enrichment leg ran over a Document with nothing to send.
     const auto& complete = run.events.back().complete();
-    require(omitted_steps(complete) ==
-                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
-            "a fast-path PDF names the enrichment leg alone");
+    require(omitted_steps(complete).empty(), "a fast-path PDF had both steps run");
     require(std::ranges::any_of(complete.typed_warnings(),
                                 [](const docv1::CollectorWarning& warning) {
                                   return warning.code() ==
                                          docv1::WARNING_CODE_FORM_FIELDS_UNREADABLE;
                                 }),
             "a widget read that failed is said on the complete event, typed");
+  }
+  {
+    // Slimmed and without the repair event, nothing on the stream carries
+    // an item the steps would change, so neither runs and both are named.
+    grparse_test::ScopedPdfBackend pdf_backend;
+    const StreamPdfRun run =
+        run_stream_pdf(inspector_server.target(), false, "%PDF-in-memory", {},
+                       /*slim_collector_documents=*/true, /*repair_delta=*/false, "127.0.0.1:1");
+    require(run.status.ok(), "slim stream without the repair event failed: " +
+                                 run.status.error_message());
+    require(omitted_steps(run.events.back().complete()) ==
+                std::vector{pipestream::parse::v1::STREAM_OMITTED_STEP_FORM_FIELDS,
+                            pipestream::parse::v1::STREAM_OMITTED_STEP_ENRICHMENT},
+            "a stream with no event to deliver them on names both steps");
   }
 }
 
@@ -8733,6 +9042,9 @@ int main() {
         verify_streaming_pdf_mixed_recommendation_stays_on_named_pages();
         verify_streamed_cv_route_carries_what_the_unary_route_does();
         verify_streamed_fast_path_carries_the_form_fields();
+        verify_streamed_fast_path_runs_the_enrichment_leg();
+        verify_streamed_cv_route_runs_the_enrichment_leg();
+        verify_streamed_enrichment_failure_is_stated();
         verify_stream_names_the_unary_steps_it_does_not_run();
         verify_pdf_collector_failure_degrades_to_the_cv_path();
         verify_queued_then_cancelled_call_never_dials_a_collector();
