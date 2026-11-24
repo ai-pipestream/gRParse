@@ -202,6 +202,10 @@ class PageScheduler final {
     uint64_t pages_rerecognized = 0;
     uint64_t rerecognition_passes = 0;
     std::array<uint64_t, kRotationDegrees.size()> rotations_applied = {};
+    // Pages whose image areas were read from the page raster because the
+    // sharper render at Options::ocr_image_dpi failed. Each is also a typed
+    // warning on its document; this is the same loss, seen across documents.
+    uint64_t pages_picture_ocr_at_page_resolution = 0;
   };
 
   class Ticket {

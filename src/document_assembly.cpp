@@ -184,6 +184,16 @@ std::vector<std::string> deviating_legs(const OcrPage& page,
   return names;
 }
 
+// What a failed sharper render (OcrPage::sharper_render_failure) is called
+// in every warning about it, with the cause when the page kept one.
+std::string sharper_render_failed(const OcrPage& page) {
+  std::string text = "the sharper render for picture OCR failed";
+  if (page.sharper_render_failure.has_value() && !page.sharper_render_failure->cause.empty()) {
+    text += " (" + page.sharper_render_failure->cause + ")";
+  }
+  return text;
+}
+
 }  // namespace
 
 // Embed a captured crop as a data URI.  The pixel size comes from the PNG
@@ -231,6 +241,29 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
   }
   if (source.text_layer_replaced) {
     output->mutable_page_meta()->mutable_quality()->set_text_layer_replaced(true);
+  }
+  // The sharper render this page's image areas were to be read from failed,
+  // and they were read from the page raster. Each picture item read that way
+  // says so for itself where it is emitted below. The other reads are the
+  // PDF's own image placements: their lines join the page as ordinary text
+  // and no item stands for them, so the page says it for those.
+  if (source.sharper_render_failure.has_value() && warnings != nullptr) {
+    const size_t reads = source.sharper_render_failure->reads;
+    const auto pictures = static_cast<size_t>(
+        std::ranges::count_if(source.regions, [](const LayoutRegion& region) {
+          return region.label == "picture" && region.read_at_page_resolution;
+        }));
+    if (reads > pictures) {
+      const size_t others = reads - pictures;
+      warnings->push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+                  "page " + std::to_string(page_number) + ": " + sharper_render_failed(source) +
+                      "; " + std::to_string(others) +
+                      (others == 1 ? " image area that is no picture item was"
+                                   : " image areas that are no picture item were") +
+                      " read from the page raster at page resolution")
+              .on_page(page_number));
+    }
   }
   // Multi-backend reconciliation (consensus mode only): the page's word
   // links to the other backends' streams ride onto the wire as transport
@@ -322,6 +355,19 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
     provenance->set_page_no(page_number);
     set_region_bounding_box(region, provenance->mutable_bbox());
     add_collector_source(layout_model, region.confidence, picture->mutable_source());
+    // This picture's text was to be read from a sharper render of the page;
+    // that render failed and the text came from the page raster. The item
+    // reads like any other picture, so the weaker read is said here, typed,
+    // on the page and on the item.
+    if (region.read_at_page_resolution && warnings != nullptr) {
+      warnings->push_back(
+          Warning(pipestream::document::v1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+                  "page " + std::to_string(page_number) + ": picture " + self_ref + ": " +
+                      sharper_render_failed(source) +
+                      "; its text was read from the page raster at page resolution")
+              .on_page(page_number)
+              .on_item(self_ref));
+    }
     if (!region.image_png.empty()) set_picture_image(region.image_png, picture->mutable_image());
     if (!region.figure_classes.empty()) {
       // Meta is the export contract: the canonical dialect reads item meta

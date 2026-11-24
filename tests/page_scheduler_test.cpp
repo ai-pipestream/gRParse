@@ -306,6 +306,165 @@ void verify_layout_labels_digital_pages_without_ocr() {
   require(metrics.pages_recognized == 0, "OCR remains selective under layout");
 }
 
+// One text-layer PDF page with a chart on it: the embedded layer settles the
+// page, so only its image areas are recognized. The detector below finds the
+// chart as a picture; the PDF also places an image no region covers, large
+// enough to be read on its own.
+class ChartPageSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    grparse::OcrPage page{200, 200,
+                          {{"digital text", {{0, 0}, {40, 0}, {40, 8}, {0, 8}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    page.image_placements = {cv::Rect(130, 150, 60, 40)};
+    return page;
+  }
+
+  cv::Mat render_page(int) const override { return cv::Mat(200, 200, CV_8UC3, cv::Scalar(255)); }
+};
+
+// The same document at the OCR DPI (300 over 200): a raster half again as
+// large, or a backend that refuses the render.
+class SharperChartSource final : public grparse::PageSource {
+ public:
+  explicit SharperChartSource(bool fails) : fails_(fails) {}
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int) const override {
+    if (fails_) throw std::runtime_error("sharper render refused");
+    return cv::Mat(300, 300, CV_8UC3, cv::Scalar(255));
+  }
+
+ private:
+  bool fails_;
+};
+
+// Reads one label out of every crop and remembers how large the crop was,
+// which is how the tests tell a read of the sharper raster from a read of
+// the page raster.
+class CropRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex);
+      crops.push_back(image.size());
+    }
+    return grparse::OcrPage{image.cols, image.rows,
+                            {{"label", {{6, 6}, {24, 6}, {24, 14}, {6, 14}}, 0.9F}}};
+  }
+
+  std::mutex mutex;
+  std::vector<cv::Size> crops;
+};
+
+struct ChartRun {
+  std::shared_ptr<const grparse::OcrPage> page;
+  std::vector<cv::Size> crops;
+  uint64_t pages_at_page_resolution = 0;
+  // What assembly says about the page, the form the caller receives.
+  std::vector<grparse::Warning> warnings;
+  std::string picture_ref;
+};
+
+ChartRun read_chart_page(bool pdf, double ocr_image_dpi, bool sharper_render_fails) {
+  CropRecognizer recognizer;
+  FakeDetector detector;
+  detector.regions = {grparse::LayoutRegion{"picture", 0.9F, 20, 40, 120, 140}};
+  grparse::PageScheduler::Options options{2, 2, 2, 2, 1, 1, 1};
+  options.ocr_image_dpi = ocr_image_dpi;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [sharper_render_fails](std::shared_ptr<const std::string>, bool, double render_dpi,
+                             const std::string&) -> std::shared_ptr<grparse::PageSource> {
+        if (render_dpi > grparse::kDefaultRenderDpi) {
+          return std::make_shared<SharperChartSource>(sharper_render_fails);
+        }
+        return std::make_shared<ChartPageSource>();
+      },
+      &detector);
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), pdf, callbacks_for(&result));
+  wait_until_finished(&result);
+  require(!result.failure, "a chart page is read whether or not its sharper render works");
+  require(result.pages.size() == 1, "the chart page is delivered");
+
+  ChartRun run;
+  run.page = result.pages.at(1);
+  run.crops = recognizer.crops;
+  run.pages_at_page_resolution = scheduler.metrics().pages_picture_ocr_at_page_resolution;
+  grparse::AssemblyCursor cursor;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(*run.page, 1, &cursor, &data, &run.warnings);
+  require(data.pictures_size() == 1, "the chart is the page's one picture item");
+  run.picture_ref = data.pictures(0).self_ref();
+  return run;
+}
+
+// Text-layer PDF pages read their image areas from a second, sharper render
+// (Options::ocr_image_dpi). When that render fails the areas are still
+// read, from the page raster, where small text in a chart reads worse or
+// not at all. That weaker read must not pass for the configured one: the
+// page carries the failure and its cause, the picture read that way is
+// marked, the fallback is counted, and assembly turns both into typed
+// warnings. A source with nothing sharper to render (a raster input, or no
+// OCR DPI above the render DPI) reads the page raster by design and says
+// nothing.
+void verify_a_failed_sharper_render_is_kept_on_the_page() {
+  namespace docv1 = ai::pipestream::document::v1;
+  const std::vector<cv::Size> page_raster_crops = {cv::Size(100, 100), cv::Size(60, 40)};
+
+  const ChartRun failed = read_chart_page(/*pdf=*/true, 300.0, /*sharper_render_fails=*/true);
+  require(failed.crops == page_raster_crops,
+          "with the sharper render gone both image areas are read from the page raster");
+  require(failed.page->sharper_render_failure.has_value(),
+          "the page must say its sharper render failed");
+  require(failed.page->sharper_render_failure->cause.contains("sharper render refused") &&
+              failed.page->sharper_render_failure->reads == 2,
+          "with the backend's reason and how many reads fell back: '" +
+              failed.page->sharper_render_failure->cause + "', " +
+              std::to_string(failed.page->sharper_render_failure->reads));
+  require(failed.page->regions.size() == 1 && failed.page->regions[0].read_at_page_resolution,
+          "the picture read from the page raster is marked");
+  require(failed.pages_at_page_resolution == 1, "the fallback is counted, once for the page");
+  require(failed.warnings.size() == 2,
+          "one warning for the picture, one for the placement no item stands for: " +
+              std::to_string(failed.warnings.size()));
+  bool picture_named = false;
+  bool page_named = false;
+  for (const grparse::Warning& warning : failed.warnings) {
+    require(warning.code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+                warning.page_no == 1,
+            "each warning is typed and names the page: " + warning.message);
+    if (warning.item_ref == failed.picture_ref) picture_named = true;
+    if (warning.item_ref.empty()) page_named = true;
+  }
+  require(picture_named && page_named, "the picture item is named, and the page for the rest");
+
+  const ChartRun sharp = read_chart_page(/*pdf=*/true, 300.0, /*sharper_render_fails=*/false);
+  require(sharp.crops == std::vector<cv::Size>{cv::Size(150, 150), cv::Size(90, 60)},
+          "a sharper render that works is what the image areas are read from");
+  require(!sharp.page->sharper_render_failure.has_value() &&
+              !sharp.page->regions[0].read_at_page_resolution &&
+              sharp.pages_at_page_resolution == 0 && sharp.warnings.empty(),
+          "and nothing is reported");
+
+  const ChartRun raster = read_chart_page(/*pdf=*/false, 300.0, /*sharper_render_fails=*/true);
+  require(raster.crops == page_raster_crops, "a raster input has only its own pixels to read");
+  require(!raster.page->sharper_render_failure.has_value() &&
+              !raster.page->regions[0].read_at_page_resolution &&
+              raster.pages_at_page_resolution == 0 && raster.warnings.empty(),
+          "which is no failure: nothing sharper was there to render");
+
+  const ChartRun unconfigured = read_chart_page(/*pdf=*/true, 0.0, /*sharper_render_fails=*/true);
+  require(unconfigured.crops == page_raster_crops &&
+              !unconfigured.page->sharper_render_failure.has_value() &&
+              unconfigured.pages_at_page_resolution == 0 && unconfigured.warnings.empty(),
+          "a deployment that asks for no sharper render reads the page raster and reports nothing");
+}
+
 class FakeStructurer final : public grparse::TableStructurer {
  public:
   grparse::TableStructure recognize(const cv::Mat& crop) override {
@@ -1780,6 +1939,7 @@ int main() {
       verify_cancellation_drains_bounded_work,
       verify_digital_pages_bypass_render_and_inference,
       verify_layout_labels_digital_pages_without_ocr,
+      verify_a_failed_sharper_render_is_kept_on_the_page,
       verify_table_structure_runs_on_crops,
       verify_do_table_structure_false_skips_structure,
       verify_figure_classification_runs_on_crops,

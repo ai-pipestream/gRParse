@@ -818,6 +818,89 @@ void verify_recovered_rotation_reaches_page_quality() {
           "an unturned page claims no rotation");
 }
 
+// A picture whose text was to be read from a sharper render of the page,
+// and was read from the page raster because that render failed, reads like
+// any other picture. The loss is said, typed: on the page and on the picture
+// item where there is one, on the page alone for the image areas that are no
+// picture item of their own (the PDF's image placements). A page whose reads
+// came as configured says nothing.
+void verify_a_failed_sharper_render_is_a_typed_warning() {
+  namespace docv1 = ai::pipestream::document::v1;
+  grparse::AssemblyCursor cursor;
+  grparse::OcrPage page{1000, 1000, {line("body text", 10)}};
+  grparse::LayoutRegion chart{"picture", 0.9F, 0, 200, 500, 600};
+  chart.read_at_page_resolution = true;
+  // Too small to have been read at all, so it has nothing to report.
+  const grparse::LayoutRegion icon{"picture", 0.9F, 600, 200, 620, 220};
+  page.regions = {chart, icon};
+  page.sharper_render_failure = grparse::OcrPage::SharperRenderFailure{"backend down", 1};
+
+  std::vector<grparse::Warning> warnings;
+  ai::pipestream::parse::v1::PageData data;
+  grparse::append_page_data(page, 4, &cursor, &data, &warnings);
+  require(data.pictures_size() == 2, "both pictures are still items");
+  std::string chart_ref;
+  for (const auto& picture : data.pictures()) {
+    if (picture.prov(0).bbox().r() == 500) chart_ref = picture.self_ref();
+  }
+  require(warnings.size() == 1,
+          "the picture read at page resolution is one warning: " + std::to_string(warnings.size()));
+  require(warnings[0].code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+          "the warning is typed: " + docv1::WarningCode_Name(warnings[0].code));
+  require(warnings[0].page_no == 4 && !chart_ref.empty() && warnings[0].item_ref == chart_ref,
+          "it names the page and the picture item: '" + warnings[0].item_ref + "'");
+  require(warnings[0].message.contains("page 4") && warnings[0].message.contains(chart_ref) &&
+              warnings[0].message.contains("backend down") &&
+              warnings[0].message.contains("page resolution"),
+          "its words say what happened and why: " + warnings[0].message);
+
+  // Three reads, one of them the picture: the other two were image
+  // placements, which stand for no item, so the page says it for them.
+  page.sharper_render_failure->reads = 3;
+  warnings.clear();
+  grparse::AssemblyCursor mixed_cursor;
+  ai::pipestream::parse::v1::PageData mixed;
+  grparse::append_page_data(page, 4, &mixed_cursor, &mixed, &warnings);
+  require(warnings.size() == 2, "one warning for the picture and one for the page: " +
+                                    std::to_string(warnings.size()));
+  int for_the_picture = 0;
+  int for_the_page = 0;
+  for (const grparse::Warning& warning : warnings) {
+    require(warning.code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+                warning.page_no == 4,
+            "every one is typed and names the page: " + warning.message);
+    if (warning.item_ref.empty()) {
+      ++for_the_page;
+      require(warning.message.contains("2 image areas") && warning.message.contains("backend down"),
+              "the page's warning counts the reads no item stands for: " + warning.message);
+    } else {
+      ++for_the_picture;
+    }
+  }
+  require(for_the_picture == 1 && for_the_page == 1, "one of each");
+
+  // Only placements were read: the page alone says so.
+  grparse::OcrPage placements{1000, 1000, {line("body text", 10)}};
+  placements.sharper_render_failure = grparse::OcrPage::SharperRenderFailure{"backend down", 1};
+  warnings.clear();
+  grparse::AssemblyCursor placements_cursor;
+  ai::pipestream::parse::v1::PageData placements_data;
+  grparse::append_page_data(placements, 2, &placements_cursor, &placements_data, &warnings);
+  require(warnings.size() == 1 && warnings[0].page_no == 2 && warnings[0].item_ref.empty() &&
+              warnings[0].code == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION &&
+              warnings[0].message.contains("1 image area "),
+          "a page with no picture item still says its reads were weaker");
+
+  // The reads came from the sharper render, or the source has none.
+  grparse::OcrPage sharp{1000, 1000, {line("body text", 10)}};
+  sharp.regions = {{"picture", 0.9F, 0, 200, 500, 600}};
+  warnings.clear();
+  grparse::AssemblyCursor sharp_cursor;
+  ai::pipestream::parse::v1::PageData sharp_data;
+  grparse::append_page_data(sharp, 1, &sharp_cursor, &sharp_data, &warnings);
+  require(warnings.empty(), "a picture read as configured raises nothing");
+}
+
 // Consecutive body list items become one LIST group, in body order and
 // across what were page boundaries; a single item gets its own group, and
 // everything else stays where it was.
@@ -1019,6 +1102,7 @@ int main() {
       verify_body_order_and_column_anchoring,
       verify_lonely_floats_anchor_by_their_top_edge,
       verify_recovered_rotation_reaches_page_quality,
+      verify_a_failed_sharper_render_is_a_typed_warning,
       verify_list_items_join_a_list_group,
       verify_derived_offsets_match_the_assembled_rows,
       verify_ledger_amount_in_a_nested_box_lands_in_its_cell,

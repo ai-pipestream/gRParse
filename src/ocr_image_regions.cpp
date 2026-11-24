@@ -26,6 +26,13 @@ bool mostly_shared(const cv::Rect& a, const cv::Rect& b) {
 
 }  // namespace
 
+bool read_as_picture(const LayoutRegion& region, int raster_width, int raster_height, int min_side) {
+  if (region.label != "picture") return false;
+  const cv::Rect rect = clipped(region.left, region.top, region.right, region.bottom, raster_width,
+                                raster_height);
+  return rect.area() > 0 && rect.width >= min_side && rect.height >= min_side;
+}
+
 std::vector<cv::Rect> ocr_image_rects(const std::vector<LayoutRegion>& regions,
                                       const std::vector<cv::Rect>& placements,
                                       int raster_width, int raster_height, int min_side,
@@ -37,9 +44,7 @@ std::vector<cv::Rect> ocr_image_rects(const std::vector<LayoutRegion>& regions,
                                   raster_height);
     if (rect.area() == 0) continue;
     region_rects.push_back(rect);
-    if (region.label == "picture" && rect.width >= min_side && rect.height >= min_side) {
-      pictures.push_back(rect);
-    }
+    if (read_as_picture(region, raster_width, raster_height, min_side)) pictures.push_back(rect);
   }
   // Placements the picture regions do not already read: a strip of chart
   // panels is read panel by panel as before, since one wide read of the

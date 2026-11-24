@@ -552,6 +552,10 @@ std::string render_prometheus_metrics(const PageScheduler::Metrics& metrics,
   counter(out, "grparse_pages_ocr_total", "Pages that went through OCR.", metrics.pages_recognized);
   counter(out, "grparse_pages_layout_total", "Pages that went through layout region detection.",
           metrics.pages_layout_labelled);
+  counter(out, "grparse_pages_picture_ocr_at_page_resolution_total",
+          "Pages whose image areas were read from the page raster because the sharper render "
+          "at the OCR image DPI failed.",
+          metrics.pages_picture_ocr_at_page_resolution);
   counter(out, "grparse_tables_structured_total",
           "Table regions that went through structure recognition.", metrics.tables_structured);
   counter(out, "grparse_figures_classified_total",

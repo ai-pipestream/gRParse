@@ -69,7 +69,8 @@ std::string format_metrics(const grparse::PageScheduler::Metrics& current,
        << ",tables=" << current.tables_structured
        << ",figures=" << current.figures_classified
        << ",barcodes=" << current.barcodes_decoded
-       << ",cancelled=" << current.pages_cancelled << "}"
+       << ",cancelled=" << current.pages_cancelled
+       << ",picture_ocr_at_page_resolution=" << current.pages_picture_ocr_at_page_resolution << "}"
        << " rotation{rerecognized=" << current.pages_rerecognized
        << ",passes=" << current.rerecognition_passes;
   for (size_t turn = 0; turn < grparse::PageScheduler::kRotationDegrees.size(); ++turn) {

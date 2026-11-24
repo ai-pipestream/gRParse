@@ -1495,6 +1495,129 @@ void verify_stream_resolves_recognition_options() {
   server->Wait();
 }
 
+// One text-layer PDF page with a chart on it. The embedded layer settles
+// the page, so recognition reads only the chart, which the detector below
+// finds as a picture.
+class ChartPdfSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 1; }
+  std::optional<grparse::OcrPage> extract_digital_page(int) const override {
+    grparse::OcrPage page{200, 200,
+                          {{"Quarterly results", {{4, 4}, {120, 4}, {120, 16}, {4, 16}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = true;
+    return page;
+  }
+  cv::Mat render_page(int) const override { return cv::Mat(200, 200, CV_8UC3, cv::Scalar(255)); }
+};
+
+// The same PDF opened a second time at the OCR image DPI: the render the
+// chart was to be read from, which the backend either gives or refuses.
+class SharperChartPdfSource final : public grparse::PageSource {
+ public:
+  explicit SharperChartPdfSource(bool fails) : fails_(fails) {}
+  int page_count() const override { return 1; }
+  cv::Mat render_page(int) const override {
+    if (fails_) throw std::runtime_error("render refused at 300 DPI");
+    return cv::Mat(300, 300, CV_8UC3, cv::Scalar(255));
+  }
+
+ private:
+  bool fails_;
+};
+
+class ChartDetector final : public grparse::RegionDetector {
+ public:
+  std::vector<grparse::LayoutRegion> detect_regions(const cv::Mat&) override {
+    return {grparse::LayoutRegion{"picture", 0.9F, 20, 40, 120, 140}};
+  }
+};
+
+class ChartLabelRecognizer final : public grparse::PageRecognizer {
+ public:
+  grparse::OcrPage extract_page(const cv::Mat& image) override {
+    return {image.cols, image.rows, {{"Revenue", {{6, 6}, {40, 6}, {40, 16}, {6, 16}}, 0.9F}}};
+  }
+};
+
+pipestream::parse::v1::DocumentComplete stream_chart_pdf(bool sharper_render_fails) {
+  ChartLabelRecognizer recognizer;
+  ChartDetector detector;
+  grparse::PageScheduler::Options options{2, 3, 2, 3, 2, 2, 2};
+  options.ocr_image_dpi = 300.0;
+  grparse::PageScheduler scheduler(
+      recognizer, options,
+      [sharper_render_fails](std::shared_ptr<const std::string>, bool, double render_dpi,
+                             const std::string&) -> std::shared_ptr<grparse::PageSource> {
+        if (render_dpi > grparse::kDefaultRenderDpi) {
+          return std::make_shared<SharperChartPdfSource>(sharper_render_fails);
+        }
+        return std::make_shared<ChartPdfSource>();
+      },
+      &detector);
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "chart test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  pipestream::parse::v1::DocumentChunk source;
+  source.set_document_id("chart-stream");
+  source.set_filename("chart.pdf");
+  source.set_content_type("application/pdf");
+  source.set_data("%PDF-chart-fixture");
+  source.set_complete(true);
+  const StreamRun run = run_chunks(client.get(), {source});
+  server->Shutdown(std::chrono::system_clock::now() + 2s);
+  server->Wait();
+  require(run.status.ok(), "chart stream failed: " + run.status.error_message());
+  require(run.events.size() == 2 && run.events.front().has_page() &&
+              run.events.front().page().pictures_size() == 1 &&
+              run.events.front().page().pictures(0).self_ref() == "#/pictures/0" &&
+              run.events.back().has_complete(),
+          "the chart stream is one page with its picture, then the complete event");
+  return run.events.back().complete();
+}
+
+// The chart on a text-layer PDF page is read from a sharper render of the
+// page. When the backend refuses that render the chart is still read, from
+// the page raster, and nothing about the picture item shows it. The caller
+// must be told, typed, by page and by picture; a render that worked says
+// nothing.
+void verify_a_failed_sharper_picture_render_reaches_the_caller_typed() {
+  const pipestream::parse::v1::DocumentComplete failed =
+      stream_chart_pdf(/*sharper_render_fails=*/true);
+  std::vector<docv1::CollectorWarning> found;
+  for (const docv1::CollectorWarning& warning : failed.typed_warnings()) {
+    if (warning.code() == docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION) found.push_back(warning);
+  }
+  require(found.size() == 1,
+          "the failed sharper render is one typed warning on the complete event: " +
+              std::to_string(found.size()) + " of " + std::to_string(failed.typed_warnings_size()) +
+              " typed warnings");
+  require(found[0].has_page_no() && found[0].page_no() == 1 && found[0].has_item_ref() &&
+              found[0].item_ref() == "#/pictures/0" &&
+              found[0].source().collector() == "grparse-cv",
+          "the warning names its page and the picture item: " + found[0].ShortDebugString());
+  require(found[0].message().contains("render refused at 300 DPI"),
+          "its words carry the backend's reason: " + found[0].message());
+  require(std::ranges::find(failed.warnings(), found[0].message()) != failed.warnings().end(),
+          "the same words ride the string list");
+
+  const pipestream::parse::v1::DocumentComplete sharp =
+      stream_chart_pdf(/*sharper_render_fails=*/false);
+  for (const docv1::CollectorWarning& warning : sharp.typed_warnings()) {
+    require(warning.code() != docv1::WARNING_CODE_PICTURE_OCR_AT_PAGE_RESOLUTION,
+            "a sharper render that worked raises no warning: " + warning.message());
+  }
+}
+
 // A storage body small enough to pin exactly: one heading, one paragraph
 // with inline formatting, one task.
 constexpr char kStorageBody[] =
@@ -6387,6 +6510,7 @@ int main() {
         verify_unary_unimplemented_targets_are_refused(&server);
         verify_stream_resolves_recognition_options();
         verify_unary_digital_path_bypasses_ocr();
+        verify_a_failed_sharper_picture_render_reaches_the_caller_typed();
         verify_wide_page_window_streams_completely();
         verify_deadline_cancels_scheduler_work();
         verify_unary_storage_suffix_routes_in_process(&server);
