@@ -255,6 +255,11 @@ class PageScheduler::Impl final {
     std::shared_ptr<PageSource> source;
     std::shared_ptr<Ticket::State> request;
     int page_number = 0;
+    // What the source said about its read of this page's text layer
+    // (PageSource::page_warnings), held from the render stage until the
+    // page is assembled, so it reaches the delivered page whichever way the
+    // page ends up being read. Stage-ordered like the timings below.
+    std::vector<Warning> source_warnings;
     // Set when the page enters the render queue; delivery latency is measured
     // from here so it includes every queue wait, not just compute.
     std::chrono::steady_clock::time_point scheduled_at{};
@@ -723,6 +728,7 @@ class PageScheduler::Impl final {
           const BusyTimer timer(render_busy_ns_);
           const StageTimer stage(page->timings.digital_ms);
           digital = page->source->extract_digital_page(page->page_number);
+          page->source_warnings = page->source->page_warnings(page->page_number);
         }
         if (digital.has_value()) {
           pages_read_digitally_.fetch_add(1);
@@ -738,6 +744,7 @@ class PageScheduler::Impl final {
                   : mode == OcrTuning::Mode::kOff || digital->skip_ocr;
           if (embedded_settles && region_detector_ == nullptr &&
               !captures_page_images(page->request->tuning)) {
+            digital->source_warnings = std::move(page->source_warnings);
             enqueue_assembly(page, std::make_shared<const OcrPage>(std::move(*digital)));
             page.reset();
             continue;
@@ -983,6 +990,7 @@ class PageScheduler::Impl final {
           job.image.release();
           assembled.regions = std::move(regions);
           assembled.layout_model = std::move(layout_model);
+          assembled.source_warnings = std::move(job.page->source_warnings);
           result = std::make_shared<const OcrPage>(std::move(assembled));
         }
         enqueue_assembly(job.page, std::move(result));

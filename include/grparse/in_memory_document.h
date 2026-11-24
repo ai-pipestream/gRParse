@@ -7,11 +7,13 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include <opencv2/core.hpp>
 
 #include "grparse/document_passwords.h"
 #include "grparse/ocr_types.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -71,6 +73,14 @@ class PageSource {
   // without one. Like the request ties above, set before the source's first
   // use. Sources that open nothing encrypted ignore them.
   virtual void set_passwords(const DocumentPasswords&) {}
+  // What the source learned about its own read of `page_number` that the
+  // caller must hear: a PDF backend that said it skipped or repaired
+  // content, a backend answer whose trailer totals do not match what
+  // arrived. Each warning names the page it is about where the source
+  // knows one. Asked after extract_digital_page() for the page, because a
+  // page that came back with no text layer at all (nullopt) can still have
+  // been reported on. Empty for sources that read nothing remotely.
+  virtual std::vector<Warning> page_warnings(int) const { return {}; }
 };
 
 // The largest raster page, in pixels, an image input may decode to:

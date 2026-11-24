@@ -7,6 +7,8 @@
 
 #include <opencv2/core.hpp>
 
+#include "grparse/warning.h"
+
 namespace grparse {
 
 enum class TextOrigin { kOcr, kDigitalPdf };
@@ -187,6 +189,12 @@ struct OcrPage {
   // Set when replace_broken_text_layer caused this page's embedded layer to
   // be dropped and replaced by full-page OCR. Wire: PageQuality.text_layer_replaced.
   bool text_layer_replaced = false;
+  // What the page's source said about its own read of the page: a PDF
+  // backend that skipped or repaired content, a backend answer whose
+  // trailer totals do not match what arrived. The scheduler copies them
+  // from PageSource::page_warnings() onto the page it delivers, whichever
+  // way the page was read, and the fold hands them to its caller's warnings.
+  std::vector<Warning> source_warnings = {};
 };
 
 // Merge OCR lines into a digital page without duplicating geometry-overlapping text.

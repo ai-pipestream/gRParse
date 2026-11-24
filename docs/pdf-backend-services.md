@@ -336,6 +336,34 @@ without a form) ends the call at the header. The streaming page events
 (`StreamProcessDocument`) do not include field items yet; `PageData` has
 no slot for them.
 
+## The trailer (read since 2026-11-24, gRParse#401)
+
+Every Parse answer ends with a `ParseTrailer`: per-family totals and a
+`ParseWarning` for each thing the engine skipped or repaired without
+failing the stream. Both clients read it (`src/pdf_backend_trailer.cpp`,
+`PdfParseTally`), the page source for each page's answer and the AcroForm
+step for its one call:
+
+- Each `ParseWarning` becomes a `CollectorWarning` with
+  `WARNING_CODE_BACKEND_CONTENT_SKIPPED`, on the page the engine named
+  (`page_no`, one-based) when it named one. The engine's message and the
+  family it named stay in the warning's words.
+- A total that differs from the number of items that arrived becomes a
+  `WARNING_CODE_BACKEND_COUNT_MISMATCH`, on the page whose answer it was
+  (the AcroForm call covers every page and names none). Only families a
+  client can count on the wire are compared: the repeated fields of a
+  `PageChunk` and the font table. The parse stands with what arrived; a
+  mismatch is not a failed page.
+- A page whose text the backend cut short (a warning naming the page and
+  the text family or no family, or fewer cells than the trailer counts)
+  does not skip recognition on the strength of its text layer.
+
+The warnings ride on the page (`OcrPage::source_warnings`, from
+`PageSource::page_warnings`) into `Document.warnings` and, on the
+streaming surface, `DocumentComplete.typed_warnings`. In consensus mode
+every leg's warnings are kept, whichever leg won the page. An answer with
+no trailer is not flagged: the call's status is then the only word on it.
+
 ## Open items (from the 2026-09-04 review)
 
 Fixed the same day: consensus failure isolation (a backend dying

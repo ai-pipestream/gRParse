@@ -10,6 +10,7 @@
 #include <mutex>
 #include <optional>
 #include <print>
+#include <set>
 #include <stdexcept>
 #include <string>
 #include <thread>
@@ -922,6 +923,74 @@ void verify_partial_digital_merges_with_ocr() {
   require(metrics.pages_rendered == 1, "render metric");
 }
 
+// Three pages, each read a different way, and a source that has something
+// to say about its read of every one of them: page 1's text layer settles
+// the page, page 2's is weak and merges with recognition, page 3 has none
+// and is recognized from its raster. Like a PDF backend's trailer, the
+// warning for a page exists only once the page's text layer was asked for.
+class WarnedSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 3; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    {
+      const std::lock_guard<std::mutex> lock(mutex_);
+      asked_.insert(page_number);
+    }
+    if (page_number == 3) return std::nullopt;
+    grparse::OcrPage page{100, 100,
+                          {{"digital-" + std::to_string(page_number),
+                            {{0, 0}, {40, 0}, {40, 10}, {0, 10}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    page.skip_ocr = page_number == 1;
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+  std::vector<grparse::Warning> page_warnings(int page_number) const override {
+    const std::lock_guard<std::mutex> lock(mutex_);
+    if (!asked_.contains(page_number)) return {};
+    return {grparse::Warning(
+                ai::pipestream::document::v1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+                "backend skipped content on page " + std::to_string(page_number))
+                .on_page(page_number)};
+  }
+
+ private:
+  mutable std::mutex mutex_;
+  mutable std::set<int> asked_;
+};
+
+// What a source says about its read of a page rides on the page the
+// scheduler delivers, whichever of the three ways the page was read.
+void verify_source_warnings_ride_on_every_delivered_page() {
+  BodyRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {1, 2, 1, 2, 1, 1, 1},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<WarnedSource>();
+      });
+  Result result;
+  scheduler.submit(std::make_shared<const std::string>("memory"), true, callbacks_for(&result));
+  wait_until_finished(&result);
+  require(!result.failure && result.pages.size() == 3, "all three pages delivered");
+  const char* const how[] = {"settled by its text layer", "merged with recognition",
+                             "recognized from its raster"};
+  for (int page_number = 1; page_number <= 3; ++page_number) {
+    const auto& warnings = result.pages.at(page_number)->source_warnings;
+    const std::string what = "page " + std::to_string(page_number) + ", " + how[page_number - 1];
+    require(warnings.size() == 1, what + ": the source's warning is on the delivered page");
+    require(warnings[0].code ==
+                    ai::pipestream::document::v1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                warnings[0].page_no == page_number,
+            what + ": typed, and about that page");
+  }
+}
+
 // Collects each delivered page alongside the shared Result bookkeeping.
 grparse::PageScheduler::Callbacks capturing_callbacks_for(
     Result* result, std::mutex* pages_mutex,
@@ -1789,6 +1858,7 @@ int main() {
       verify_barcode_decode_triggers_on_class,
       verify_barcode_gate_and_forced_mode,
       verify_partial_digital_merges_with_ocr,
+      verify_source_warnings_ride_on_every_delivered_page,
       verify_inspector_page_set_restricts_ocr,
       verify_recognition_modes_outrank_the_page_set,
       verify_ocr_off_reads_only_the_embedded_layer,

@@ -880,6 +880,7 @@ add_library(grparse_core STATIC
   src/remote_page_source.cpp
   src/pdf_page_frame.cpp
   src/pdf_form_widgets.cpp
+  src/pdf_backend_trailer.cpp
   src/ocr_engine.cpp
   src/layout_decode.cpp
   src/layout_engine.cpp

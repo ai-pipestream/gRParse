@@ -912,6 +912,37 @@ std::vector<std::string> body_refs(const ai::pipestream::parse::v1::PageData& da
 // p772: the detector drew a text box around one End Bal amount, scoring it
 // above the table. The amount belongs to its cell, not after the table's
 // stray ".00" from a lower row.
+// What a page's source said about its read of the page (a PDF backend that
+// skipped content) leaves the fold through the caller's warnings, typed as
+// it came. A backend repeats a document-level finding on every page call,
+// so the same warning on a later page is not said again.
+void verify_source_warnings_reach_the_folds_caller() {
+  namespace docv1 = ai::pipestream::document::v1;
+  const grparse::Warning document_wide(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+                                       "backend repaired the cross-reference table");
+  const grparse::Warning on_first =
+      grparse::Warning(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED, "backend skipped a stream")
+          .on_page(1);
+  const grparse::Warning on_second =
+      grparse::Warning(docv1::WARNING_CODE_BACKEND_COUNT_MISMATCH, "3 text cells lost")
+          .on_page(2);
+  grparse::OcrPage first{1000, 1000, {line("first page", 100)}};
+  first.source_warnings = {document_wide, on_first};
+  grparse::OcrPage second{1000, 1000, {line("second page", 100)}};
+  second.source_warnings = {document_wide, on_second};
+
+  ai::pipestream::document::v1::Document document;
+  grparse::AssemblyCursor cursor;
+  std::string plain_text;
+  std::vector<grparse::Warning> warnings;
+  grparse::append_page_to_document(first, 1, &cursor, &document, &plain_text, nullptr, &warnings);
+  grparse::append_page_to_document(second, 2, &cursor, &document, &plain_text, nullptr,
+                                   &warnings);
+  require(warnings == std::vector<grparse::Warning>{document_wide, on_first, on_second},
+          "each source warning reaches the caller once, typed, in page order (got " +
+              std::to_string(warnings.size()) + ")");
+}
+
 void verify_ledger_amount_in_a_nested_box_lands_in_its_cell() {
   grparse::AssemblyCursor cursor;
   grparse::OcrPage page{2200, 1701,
@@ -1001,6 +1032,7 @@ int main() {
       verify_whitespace_only_line_is_no_item,
       verify_layout_regions_map_labels_and_emit_items,
       verify_unknown_region_label_falls_back_loudly,
+      verify_source_warnings_reach_the_folds_caller,
       verify_every_region_label_reaches_the_document,
       verify_headers_and_footers_are_furniture,
       verify_structured_cells_override_geometry,

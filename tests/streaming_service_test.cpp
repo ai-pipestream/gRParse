@@ -1395,6 +1395,70 @@ StreamRun run_chunks(pipestream::parse::v1::ParseStreamingService::Stub* client,
   return run;
 }
 
+// A weak embedded layer whose source, like a PDF backend that skipped part
+// of the page, has a typed warning about its read of every page.
+class WarnedDigitalSource final : public grparse::PageSource {
+ public:
+  int page_count() const override { return 2; }
+
+  std::optional<grparse::OcrPage> extract_digital_page(int page_number) const override {
+    grparse::OcrPage page{100, 200,
+                          {{"native-" + std::to_string(page_number),
+                            {{1, 30}, {20, 30}, {20, 40}, {1, 40}}, std::nullopt,
+                            grparse::TextOrigin::kDigitalPdf}}};
+    page.source = grparse::OcrPage::Source::kDigitalPdf;
+    return page;
+  }
+
+  cv::Mat render_page(int page_number) const override {
+    return cv::Mat(1, 1, CV_8UC1, cv::Scalar(page_number)).clone();
+  }
+
+  std::vector<grparse::Warning> page_warnings(int page_number) const override {
+    return {grparse::Warning(docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+                             "PDF backend skipped content on page " + std::to_string(page_number))
+                .on_page(page_number)};
+  }
+};
+
+// What a page's source says about its read of the page reaches the stream's
+// caller on the complete event, typed and with its page: the streamed pages
+// have no warning slot of their own.
+void verify_stream_carries_source_warnings_typed() {
+  FakeRecognizer recognizer;
+  grparse::PageScheduler scheduler(
+      recognizer, {2, 3, 2, 3, 2, 2, 2},
+      [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+        return std::make_shared<WarnedDigitalSource>();
+      });
+  grparse::DocumentStreamingService streaming_service(
+      scheduler, std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{}));
+  int port = 0;
+  grpc::ServerBuilder builder;
+  builder.AddListeningPort("127.0.0.1:0", grpc::InsecureServerCredentials(), &port);
+  builder.RegisterService(&streaming_service);
+  auto server = builder.BuildAndStart();
+  require(server && port != 0, "source-warning test server failed to start");
+  auto client = pipestream::parse::v1::ParseStreamingService::NewStub(
+      grpc::CreateChannel("127.0.0.1:" + std::to_string(port), grpc::InsecureChannelCredentials()));
+
+  const StreamRun run = run_chunks(client.get(), {recognition_chunk("in-memory-source", true)});
+  require(run.status.ok(), "warned stream failed: " + run.status.error_message());
+  require(!run.events.empty() && run.events.back().has_complete(),
+          "the warned stream closes with the complete event");
+  const auto& complete = run.events.back().complete();
+  for (int page_number = 1; page_number <= 2; ++page_number) {
+    const bool carried =
+        std::ranges::any_of(complete.typed_warnings(), [&](const docv1::CollectorWarning& warning) {
+          return warning.code() == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                 warning.has_page_no() && warning.page_no() == page_number;
+        });
+    require(carried, "the complete event carries page " + std::to_string(page_number) +
+                         "'s source warning, typed and on its page");
+  }
+  server->Shutdown();
+}
+
 // The streaming chunk fields do_ocr, force_ocr, and render_scale resolve from
 // the first chunk that sets each one, steer the CV leg exactly like the unary
 // options, and fail the stream by name when invalid.
@@ -6386,6 +6450,7 @@ int main() {
         verify_unary_zip_target_delivers_an_archive(&server);
         verify_unary_unimplemented_targets_are_refused(&server);
         verify_stream_resolves_recognition_options();
+        verify_stream_carries_source_warnings_typed();
         verify_unary_digital_path_bypasses_ocr();
         verify_wide_page_window_streams_completely();
         verify_deadline_cancels_scheduler_work();

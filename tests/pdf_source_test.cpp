@@ -6,6 +6,7 @@
 // without a PDF engine in the test.
 #include <atomic>
 #include <cstdlib>
+#include <functional>
 #include <memory>
 #include <optional>
 #include <print>
@@ -27,8 +28,11 @@ namespace {
 using grparse_test::FakePdfPage;
 using grparse_test::FakeTextCell;
 using grparse_test::require;
+using grparse_test::require_equal;
 using grparse_test::ScopedPdfBackend;
 using grparse_test::text_page;
+
+namespace docv1 = ai::pipestream::document::v1;
 
 constexpr double kRenderScale = grparse::kDefaultRenderDpi / 72.0;
 constexpr double kMediaWidth = 612.0;
@@ -448,6 +452,97 @@ void verify_two_column_digital_pdf_reads_in_column_order() {
   require(texts == expected, "two-column PDF must read column-by-column");
 }
 
+// A page whose text layer clears the OCR-skip gate on its own.
+FakePdfPage dense_page() {
+  return text_page({"The quick brown fox jumps over the lazy dog",
+                    "Pack my box with five dozen liquor jugs",
+                    "How vexingly quick daft zebras jump",
+                    "Sphinx of black quartz judge my vow",
+                    "Jackdaws love my big sphinx of quartz"});
+}
+
+// Runs `check` against a backend on the unary Parse call and against one on
+// ParseStream: the trailer closes a page's answer on both wires.
+void on_both_wires(const std::function<void(ScopedPdfBackend&, const std::string&)>& check) {
+  {
+    ScopedPdfBackend unary;
+    check(unary, "unary Parse");
+  }
+  ScopedPdfBackend stream;
+  stream.backend().enable_parse_stream();
+  check(stream, "ParseStream");
+}
+
+// The engine read the page but says, in the trailer, that it skipped part
+// of the text. That must reach the caller as a typed warning naming the
+// page, and the page must not count as a complete text layer: the gate that
+// lets a dense layer skip recognition stays shut.
+void verify_backend_skipped_content_is_a_typed_page_warning() {
+  on_both_wires([](ScopedPdfBackend& pdf_backend, const std::string& wire) {
+    FakePdfPage damaged = dense_page();
+    damaged.warnings = {{"content stream 7 0 R is damaged; 12 text objects skipped",
+                         grparse_test::pdfv1::PDF_FAMILY_TEXT_CELLS}};
+    const auto source = open_pages(pdf_backend, {dense_page(), damaged});
+
+    const auto clean = source->extract_digital_page(1);
+    require(clean.has_value() && clean->skip_ocr, wire + ": the clean page skips recognition");
+    require(source->page_warnings(1).empty(), wire + ": a clean page has no warning");
+
+    const auto page = source->extract_digital_page(2);
+    require(page.has_value() && page->lines.size() == 5, wire + ": the page holds what was read");
+    const std::vector<grparse::Warning> warnings = source->page_warnings(2);
+    require_equal(warnings.size(), size_t{1}, wire + ": the engine's warning is kept");
+    require(warnings[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED,
+            wire + ": typed as content the backend skipped");
+    require(warnings[0].page_no == 2, wire + ": it names the page, one-based");
+    require(warnings[0].message.contains("12 text objects skipped") &&
+                warnings[0].message.contains("fake-pdf-backend"),
+            wire + ": the engine's words and its name are kept: " + warnings[0].message);
+    require(!page->skip_ocr,
+            wire + ": a text layer the engine cut short does not skip recognition");
+  });
+}
+
+// An engine that fails on a page sends no chunk for it at all, only the
+// warning (grpc-qparse's "page skipped"). The page has no text layer to
+// return, and the warning must outlive that.
+void verify_a_page_the_backend_gave_up_on_keeps_its_warning() {
+  on_both_wires([](ScopedPdfBackend& pdf_backend, const std::string& wire) {
+    FakePdfPage failed = dense_page();
+    failed.warnings = {{"page skipped: bad xref entry"}};
+    failed.no_chunk = true;
+    const auto source = open_pages(pdf_backend, {failed});
+    require(!source->extract_digital_page(1).has_value(), wire + ": no text layer came back");
+    const std::vector<grparse::Warning> warnings = source->page_warnings(1);
+    require_equal(warnings.size(), size_t{1}, wire + ": the warning outlives the empty page");
+    require(warnings[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                warnings[0].page_no == 1 && warnings[0].message.contains("bad xref entry"),
+            wire + ": typed, on its page, in the engine's words");
+  });
+}
+
+// The trailer counts more text cells than the stream carried: cells were
+// lost on the way. The page stands with what arrived, the loss is a typed
+// warning on the page whose read it was, and the page is no full read.
+void verify_trailer_count_mismatch_is_a_typed_page_warning() {
+  on_both_wires([](ScopedPdfBackend& pdf_backend, const std::string& wire) {
+    FakePdfPage short_read = dense_page();
+    short_read.lost_cells = 3;
+    const auto source = open_pages(pdf_backend, {dense_page(), short_read});
+    const auto page = source->extract_digital_page(2);
+    require(page.has_value() && page->lines.size() == 5, wire + ": the cells that arrived stay");
+    const std::vector<grparse::Warning> warnings = source->page_warnings(2);
+    require_equal(warnings.size(), size_t{1}, wire + ": the short read is one warning");
+    require(warnings[0].code == docv1::WARNING_CODE_BACKEND_COUNT_MISMATCH,
+            wire + ": typed as a trailer count that does not match");
+    require(warnings[0].page_no == 2, wire + ": on the page whose read was short");
+    require(warnings[0].message.contains("PDF_FAMILY_TEXT_CELLS") &&
+                warnings[0].message.contains("8") && warnings[0].message.contains("5"),
+            wire + ": the family and both totals are said: " + warnings[0].message);
+    require(!page->skip_ocr, wire + ": a short read does not skip recognition");
+  });
+}
+
 }  // namespace
 
 int main() {
@@ -466,5 +561,8 @@ int main() {
       verify_concurrent_page_access,
       verify_raster_source,
       verify_two_column_digital_pdf_reads_in_column_order,
+      verify_backend_skipped_content_is_a_typed_page_warning,
+      verify_a_page_the_backend_gave_up_on_keeps_its_warning,
+      verify_trailer_count_mismatch_is_a_typed_page_warning,
   });
 }
