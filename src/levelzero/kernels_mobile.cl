@@ -117,3 +117,19 @@ __kernel void binary_same(__global const real* a, __global const real* b, __glob
   const float x = RLOAD(a, i), y = RLOAD(b, i);
   RSTORE(out, i, op == 0 ? x + y : x * y);
 }
+
+// Mean of each H x W plane, one plane per work item: sixteen running sums
+// over whole loads of 16, folded pairwise, then the tail.
+__kernel void global_average_pool(__global const real* in, __global real* out, int planes, int hw) {
+  const int plane = get_global_id(0);
+  if (plane >= planes) return;
+  const size_t base = (size_t)plane * hw;
+  float16 sums = (float16)(0.0f);
+  int i = 0;
+  for (; i + 16 <= hw; i += 16) sums += RLOAD16(in, base + i);
+  const float8 s8 = sums.lo + sums.hi;
+  const float4 s4 = s8.lo + s8.hi;
+  float acc = (s4.s0 + s4.s1) + (s4.s2 + s4.s3);
+  for (; i < hw; ++i) acc += RLOAD(in, base + i);
+  RSTORE(out, plane, acc / (float)hw);
+}

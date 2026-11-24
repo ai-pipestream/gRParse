@@ -612,7 +612,7 @@ void GraphModel::record(const float* input, const std::vector<int64_t>& input_sh
               const float* x = ptr(a_ref, arena);
               float* dst = ptr(o_ref, arena);
               args(kernels_->global_average_pool, {P(x), P(dst), P(planes), P(hw)});
-              launch(kernels_->global_average_pool, {groups_for(size_t(planes), 16), 1, 1});
+              launch(kernels_->global_average_pool, {groups_for(size_t(planes), 256), 1, 1});
             };
             break;
           }
