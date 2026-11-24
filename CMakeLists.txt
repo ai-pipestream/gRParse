@@ -811,6 +811,7 @@ add_library(grparse_core STATIC
   src/workbook_cells.cpp
   src/json_reader.cpp
   src/structured_data.cpp
+  src/image_ref.cpp
   src/warning.cpp
   src/document_repair.cpp
   src/structure_repair.cpp
@@ -1473,6 +1474,7 @@ if(BUILD_TESTING)
     doctags-renderer-test
     document-geometry-test
     html-renderer-test
+    image-ref-test
     json-key-order-test
     json-reader-test
     latex-renderer-test

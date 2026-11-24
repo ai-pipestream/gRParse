@@ -860,6 +860,37 @@ void verify_doclang_namespace_switch() {
                 "include_namespace=false writes a bare root");
 }
 
+// A producer that holds an image's bytes puts them in ImageRef.data. Every
+// image mode and the archive must come out exactly as they do for the same
+// bytes spelled as data: URIs: the picture's own image, the page images the
+// archive stores, and the page image a picture without one is cropped from.
+void verify_images_held_as_bytes_render_the_same() {
+  const Fixture fixture = image_fixture();
+  docv1::Document held = fixture.document;
+  const std::string prefix = "data:image/png;base64,";
+  int moved = 0;
+  const auto move_to_data = [&prefix, &moved](docv1::ImageRef* image) {
+    if (!image->uri().starts_with(prefix)) return;
+    image->set_data(grparse::decode_base64(image->uri().substr(prefix.size())));
+    image->clear_uri();
+    ++moved;
+  };
+  for (auto& [page_no, page] : *held.mutable_pages()) move_to_data(page.mutable_image());
+  for (auto& picture : *held.mutable_pictures()) {
+    if (picture.has_image()) move_to_data(picture.mutable_image());
+  }
+  require(moved == 3, "two page images and one picture image moved to the data field");
+
+  for (const auto mode :
+       {DoclangOptions::ImageMode::kReferenced, DoclangOptions::ImageMode::kEmbedded}) {
+    require_equal(render_doclang(held, with_mode(mode)),
+                  render_doclang(fixture.document, with_mode(mode)),
+                  "an image held as bytes renders as the same data: URI");
+  }
+  require(render_dclx(held) == render_dclx(fixture.document),
+          "the archive stores the same members from bytes as from data: URIs");
+}
+
 void verify_dclx_is_a_zip_with_document_xml() {
   const docv1::Document document = base_document("archive.pdf");
   const std::string archive = render_dclx(document);
@@ -1005,6 +1036,7 @@ int main() {
       verify_an_excluded_float_leaves_its_satellites_to_the_body,
       verify_doclang_image_modes,
       verify_doclang_namespace_switch,
+      verify_images_held_as_bytes_render_the_same,
       verify_dclx_is_a_zip_with_document_xml,
       verify_dclx_referenced_stores_assets_and_pages,
       verify_dclx_placeholder_keeps_pages_only,

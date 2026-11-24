@@ -447,6 +447,23 @@ void verify_pages_without_usable_images_are_skipped() {
           "the unreadable page among readable ones is the one named");
 }
 
+// A producer that holds the render's bytes puts them in ImageRef.data, not
+// in a data: URI. The page is read all the same.
+void verify_a_render_in_the_data_field_is_read() {
+  WholePageFigureDetector detector;
+  grparse::OfficeCvEnrichment enrichment;
+  enrichment.detector = &detector;
+  docv1::Document document = office_document_with_qr_page(222, 2220);
+  docv1::ImageRef* image = (*document.mutable_pages())[1].mutable_image();
+  const std::string prefix = "data:image/png;base64,";
+  image->set_data(grparse::decode_base64(image->uri().substr(prefix.size())));
+  image->clear_uri();
+  const grparse::OfficeCvReport report = grparse::enrich_office_document(enrichment, &document);
+  require(detector.calls == 1, "a render held as bytes reaches the detector");
+  require(report.pictures_added == 1 && report.pages_unreadable == 0 && report.warnings.empty(),
+          "and its figure is added with nothing reported unreadable");
+}
+
 }  // namespace
 
 int main() {
@@ -458,5 +475,6 @@ int main() {
       verify_deck_figures_join_their_slide,
       verify_detections_dedupe_against_existing_pictures,
       verify_pages_without_usable_images_are_skipped,
+      verify_a_render_in_the_data_field_is_read,
   });
 }

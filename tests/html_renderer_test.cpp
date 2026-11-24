@@ -186,6 +186,16 @@ void verify_a_captioned_picture_with_no_image_keeps_the_placeholder() {
                "a picture with no image keeps the placeholder and still shows its caption");
 }
 
+void verify_an_image_held_as_bytes_is_shown() {
+  docv1::Document document = base_document("figure.pdf");
+  auto* picture = add_picture(&document, "#/body", "");
+  picture->mutable_image()->set_mimetype("image/png");
+  picture->mutable_image()->set_data("abc");
+  require_body(document,
+               "<figure><img src=\"data:image/png;base64,YWJj\" alt=\"Image\"/></figure>\n",
+               "bytes in ImageRef.data are the image's source as a data: URI");
+}
+
 void verify_two_captions_each_get_their_own_figcaption() {
   docv1::Document document = base_document("figure.pdf");
   auto* picture = add_picture(&document, "#/body", "a.png");
@@ -359,6 +369,7 @@ int main() {
       verify_row_headers_and_row_sections_are_header_cells,
       verify_a_table_with_neither_cells_nor_caption_renders_nothing,
       verify_a_captioned_picture_with_no_image_keeps_the_placeholder,
+      verify_an_image_held_as_bytes_is_shown,
       verify_two_captions_each_get_their_own_figcaption,
       verify_an_undecoded_formula_says_so,
       verify_code_rides_a_preformatted_block,

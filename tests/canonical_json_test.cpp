@@ -496,6 +496,14 @@ void verify_picture_meta_and_annotations() {
   require_contains(rendered, "\"uri\": \"data:image/png;base64,iVBORw0KGgo=\"",
                    "data URIs pass through unchanged");
   require_absent(rendered, "legacy", "wire annotations are never echoed");
+
+  // The dialect has only `uri` to hold an image, so bytes kept in
+  // ImageRef.data are spelled as a data: URI there.
+  image->clear_uri();
+  image->set_data(std::string("\x89PNG\r\n\x1a\n", 8));
+  require_contains(grparse::render_canonical_json(document),
+                   "\"uri\": \"data:image/png;base64,iVBORw0KGgo=\"",
+                   "bytes in the data field render as the data URI they are");
   require_contains(rendered, "\"label\": \"chart\"", "chart labels are accepted");
   const std::size_t annotation_lists = [&rendered] {
     std::size_t count = 0;
