@@ -1,7 +1,11 @@
 // The Level Zero table decoder against a double-precision reference of the
 // SLAHead step written here from the step model's own weights (the graph
-// scripts/split_slanet.py builds), on seeded encoder features: the same token
-// at every step, logits and boxes within float noise.  Tables decoded
+// scripts/split_slanet.py builds), on seeded encoder features.  The reference
+// is fed the decoder's own previous tokens, so the two cannot drift apart:
+// every step's logits and boxes must agree within float noise, and the token
+// must agree wherever the reference's top two are not a near tie (random
+// features make near ties that real tables, see the acm-table receipts in
+// README, do not).  Tables decoded
 // concurrently, which share launches, must come back bit-identical to the
 // same tables decoded alone.  Needs the models and an Intel GPU (skip 77
 // without either).
@@ -35,7 +39,8 @@ struct Reference {
 };
 
 // Matrices as the model stores them: [in][out].
-Reference reference_decode(const std::map<std::string, lz::OnnxTensor>& w, const std::vector<float>& f) {
+Reference reference_decode(const std::map<std::string, lz::OnnxTensor>& w, const std::vector<float>& f,
+                           const std::vector<int>& forced) {
   const auto& i2h = w.at("i2h").values;
   const auto mat = [&](const char* name, const std::vector<double>& x, int in, int out, const char* bias) {
     const auto& m = w.at(name).values;
@@ -58,7 +63,7 @@ Reference reference_decode(const std::map<std::string, lz::OnnxTensor>& w, const
   std::vector<double> hidden(H, 0.0);
   int previous = 0;
   Reference out;
-  for (int step = 0; step < lz::kMaxSteps; ++step) {
+  for (size_t step = 0; step < forced.size(); ++step) {
     const auto q = mat("h2h_w", hidden, H, H, "h2h_b");
     std::vector<double> energy(P);
     for (int p = 0; p < P; ++p) {
@@ -84,9 +89,8 @@ Reference reference_decode(const std::map<std::string, lz::OnnxTensor>& w, const
     const auto location = mat("l2_w", mat("l1_w", hidden, H, H, "l1_b"), H, 8, "l2_b");
     out.logits.insert(out.logits.end(), logits.begin(), logits.end());
     for (double l : location) out.location.push_back(sig(l));
-    previous = int(std::max_element(logits.begin(), logits.end()) - logits.begin());
-    out.tokens.push_back(previous);
-    if (step > 0 && previous == V - 1) break;
+    out.tokens.push_back(int(std::max_element(logits.begin(), logits.end()) - logits.begin()));
+    previous = forced[step];
   }
   return out;
 }
@@ -121,12 +125,19 @@ int main() {
     for (unsigned seed = 1; seed <= 6; ++seed) {
       const auto features = seeded_features(seed);
       const lz::DecodedTable got = decoder->decode(features);
-      const Reference want = reference_decode(weights, features);
-      require(got.steps == int(want.tokens.size()), "seed " + std::to_string(seed) + ": step count differs");
+      std::vector<int> tokens;
+      for (int s = 0; s < got.steps; ++s) {
+        const float* row = got.logits.data() + size_t(s) * V;
+        tokens.push_back(int(std::max_element(row, row + V) - row));
+      }
+      require(got.steps == lz::kMaxSteps || tokens.back() == V - 1, "a decode ends at eos or the step bound");
+      const Reference want = reference_decode(weights, features, tokens);
       double logit_error = 0, box_error = 0;
       for (int s = 0; s < got.steps; ++s) {
         const float* row = got.logits.data() + size_t(s) * V;
-        require(int(std::max_element(row, row + V) - row) == want.tokens[s],
+        std::vector<double> sorted(want.logits.begin() + s * V, want.logits.begin() + (s + 1) * V);
+        std::sort(sorted.begin(), sorted.end());
+        require(sorted[V - 1] - sorted[V - 2] < 1e-2 || tokens[s] == want.tokens[s],
                 "seed " + std::to_string(seed) + ": token differs at step " + std::to_string(s));
         for (int v = 0; v < V; ++v) logit_error = std::max(logit_error, std::abs(row[v] - want.logits[size_t(s) * V + v]));
         for (int k = 0; k < 8; ++k)
