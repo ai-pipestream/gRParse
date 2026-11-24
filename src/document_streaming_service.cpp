@@ -85,6 +85,20 @@ bool is_stream_rejection_code(grpc::StatusCode code) {
   }
 }
 
+// One collector that could not contribute, as both stream surfaces report
+// it: on the complete event of StreamProcessDocument and on the
+// source_result of StreamDocument. The category is the one
+// failure_category_for gives the leg's status class, which is what the
+// unary surface puts on that collector's ErrorItem, so no surface can
+// classify the same failure differently.
+void report_collector_failure(pipestream::parse::v1::Collector collector, grpc::StatusCode code,
+                              const std::string& error,
+                              pipestream::parse::v1::CollectorFailure* failure) {
+  failure->set_collector(collector);
+  failure->set_error(error);
+  failure->set_category(failure_category_for(code));
+}
+
 // One queued write. The message lives on the heap, as the Documents and
 // pages moved into it do: a message on an arena of its own would turn each
 // of those moves into a deep copy, a second Document held until the write.
@@ -1329,10 +1343,8 @@ class DocumentStreamReactor final
 
   void record_part_failure_locked(pipestream::parse::v1::Collector collector,
                                   grpc::Status status) {
-    auto* failure = collector_failures_.Add();
-    failure->set_collector(collector);
-    failure->set_error(status.error_message());
-    failure->set_category(failure_category_for(status.error_code()));
+    report_collector_failure(collector, status.error_code(), status.error_message(),
+                             collector_failures_.Add());
     if (first_failure_status_.ok()) first_failure_status_ = std::move(status);
   }
 
@@ -1876,25 +1888,36 @@ class SourceStreamReactor final
       result.set_filename(!parsed.filename.empty() || !single.sources(0).has_file()
                               ? parsed.filename.string()
                               : single.sources(0).file().filename());
+      // success says a Document was produced; status is what tells a full
+      // conversion from one a collector is missing from.
       result.set_success(status.ok());
       std::unique_lock<std::mutex> lock(mutex_);
       ++processed_;
       if (status.ok()) {
-        ++(parsed.result.failures.empty() ? succeeded_ : partially_succeeded_);
+        const auto& failures = parsed.result.failures;
+        ++(failures.empty() ? succeeded_ : partially_succeeded_);
+        result.set_status(failures.empty()
+                              ? pipestream::parse::v1::CONVERSION_STATUS_SUCCESS
+                              : pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS);
         result.set_document_name(final_document->final_document().name());
-        // A partial success names the collectors that could not contribute.
-        std::string failures;
-        for (const auto& failure : parsed.result.failures) {
-          if (!failures.empty()) failures += "; ";
-          failures += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
+        // A partial success names the collectors that could not contribute:
+        // one typed entry each, and the same list joined into error_message
+        // for the readers that predate collector_failures.
+        std::string joined;
+        for (const auto& failure : failures) {
+          report_collector_failure(failure.id, failure.code, failure.error,
+                                   result.add_collector_failures());
+          if (!joined.empty()) joined += "; ";
+          joined += std::string("collector:") + collector_name(failure.id) + ": " + failure.error;
         }
-        if (!failures.empty()) result.set_error_message(failures);
+        if (!joined.empty()) result.set_error_message(joined);
         final_document->set_source_index(source_index);
         queue_locked(std::move(final_document));
         source_outputs->set_source_index(source_index);
         queue_locked(std::move(source_outputs));
       } else {
         ++failed_;
+        result.set_status(pipestream::parse::v1::CONVERSION_STATUS_FAILURE);
         result.set_error_message(status.error_message());
         auto error = std::make_unique<Envelope>();
         error->set_source_index(source_index);

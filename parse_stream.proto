@@ -456,12 +456,39 @@ message DocumentNode {
 message StreamSourceResult {
   uint32 source_index = 1;
   string filename = 2;
+  // True when a Document was produced for this source, that is, when its
+  // final_document was sent. It does not say the Document is whole: a
+  // source one collector failed on while another succeeded still converts,
+  // with success true. `status` is the field that tells a full conversion
+  // from a thinner one; `success` keeps this meaning for the clients that
+  // predate `status`.
   bool success = 3;
+  // A line for logs and for readers that predate the typed fields: the
+  // failure of a failed source, or the failed collectors of a partial one
+  // joined into one string. Nothing is carried here alone: a failed
+  // source's status and classification are on the error envelope sent
+  // before this result, and a partial one's collectors are in
+  // collector_failures.
   optional string error_message = 4;
   // Present on success when the document is also (or instead) emitted as
   // final_document. Keeping it optional avoids double-shipping large docs
   // when the client only wants the final_document payload.
   optional string document_name = 5;
+  // How the source's conversion ended, in the vocabulary the unary
+  // ConvertDocumentResponse.status uses for the same event:
+  // CONVERSION_STATUS_SUCCESS when every planned collector contributed,
+  // CONVERSION_STATUS_PARTIAL_SUCCESS when a Document was produced without
+  // the collectors collector_failures names, CONVERSION_STATUS_FAILURE when
+  // no Document was produced (the error envelope before this result says
+  // why). CONVERSION_STATUS_UNSPECIFIED comes only from a server that
+  // predates this field, where `success` is all there is to read.
+  ConversionStatus status = 6;
+  // The collectors that failed while another produced the Document, one
+  // entry each with the classification the unary surface puts on that
+  // collector's ErrorItem. Non-empty exactly when status is
+  // CONVERSION_STATUS_PARTIAL_SUCCESS: the final_document lacks what these
+  // collectors would have contributed.
+  repeated CollectorFailure collector_failures = 7;
 }
 
 // StreamSourceOutputs is the rest of one source's conversion: the exports,
