@@ -681,6 +681,47 @@ int main() {
     }
   }
 
+  // What one leg's backend says about its own read survives the vote: a leg
+  // that skipped part of a page, or gave up on it, still took part in (or
+  // dropped out of) deciding that page, and the caller hears it whichever
+  // leg won and wherever the leg sits in the configured order.
+  {
+    const grparse_test::FakePdfPage clean =
+        grparse_test::text_page({"The survey team returned", "the equipment on time"});
+    grparse_test::FakePdfPage damaged = clean;
+    damaged.warnings = {{"content stream damaged; 4 text objects skipped",
+                         grparse_test::pdfv1::PDF_FAMILY_TEXT_CELLS}};
+    grparse_test::FakePdfPage gave_up = clean;
+    gave_up.warnings = {{"page skipped: bad xref entry"}};
+    gave_up.no_chunk = true;
+    const std::string pdf = "%PDF-leg-warnings";
+    grparse_test::ScopedPdfBackend clean_leg;
+    grparse_test::ScopedPdfBackend warned_leg;
+    clean_leg.backend().add_document(pdf, {clean, clean});
+    warned_leg.backend().add_document(pdf, {damaged, gave_up});
+    const auto pdf_bytes = std::make_shared<const std::string>(pdf);
+    namespace docv1 = ai::pipestream::document::v1;
+    for (const auto& order : std::vector<std::vector<std::string>>{
+             {clean_leg.target(), warned_leg.target()}, {warned_leg.target(), clean_leg.target()}}) {
+      const std::string what =
+          order.front() == warned_leg.target() ? "warned leg first" : "clean leg first";
+      const auto source = grparse::open_consensus_pdf_document(pdf_bytes, order, 144.0);
+      require(source->extract_digital_page(1).has_value(), what + ": page one is read");
+      const auto first = source->page_warnings(1);
+      require(first.size() == 1 && first[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                  first[0].page_no == 1 && first[0].message.contains("4 text objects skipped"),
+              what + ": the leg that skipped content says so through the vote");
+      const auto second_page = source->extract_digital_page(2);
+      require(second_page.has_value() && second_page->lines.size() == 2,
+              what + ": page two is read by the leg that could");
+      const auto second = source->page_warnings(2);
+      require(second.size() == 1 &&
+                  second[0].code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED &&
+                  second[0].page_no == 2 && second[0].message.contains("bad xref entry"),
+              what + ": the leg that gave up on the page says so through the vote");
+    }
+  }
+
   // Consensus Probe and Parse fan out concurrently across all legs instead of
   // serializing their RPC latencies.
   {

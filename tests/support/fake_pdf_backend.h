@@ -56,6 +56,15 @@ struct FakeTextCell {
   double font_size = 12.0;
 };
 
+// What the engine says, in the trailer, about content it skipped or repaired
+// on a page: a ParseWarning naming that page.
+struct FakeParseWarning {
+  std::string message;
+  // PDF_FAMILY_UNSPECIFIED leaves ParseWarning.family unset, the way
+  // grpc-qparse reports a page it could not decode at all.
+  pdfv1::PdfFamily family = pdfv1::PDF_FAMILY_UNSPECIFIED;
+};
+
 // One page: the unrotated MediaBox (which is also the CropBox unless one is
 // set), the /Rotate value, and the text layer.
 struct FakePdfPage {
@@ -68,6 +77,16 @@ struct FakePdfPage {
   // AcroForm widgets, rects in user space; answered for
   // PDF_FAMILY_FORM_FIELDS.
   std::vector<pdfv1::FormField> form_fields = {};
+  // Trailer warnings about this page, sent on every Parse whose range
+  // covers it.
+  std::vector<FakeParseWarning> warnings = {};
+  // The engine failed on the page: no PageChunk is sent for it, only the
+  // warnings above (grpc-qparse's "page skipped").
+  bool no_chunk = false;
+  // Text cells and form fields the trailer counts but the stream never
+  // carried: items lost between the engine and the client.
+  uint64_t lost_cells = 0;
+  uint64_t lost_form_fields = 0;
 };
 
 // Lines of 24pt text from the top of a Letter page down, one cell per line,
@@ -370,9 +389,13 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     verdict->set_family(pdfv1::PDF_FAMILY_FORM_FIELDS);
     verdict->set_support(any_fields ? pdfv1::FAMILY_SUPPORT_SUPPORTED
                                     : pdfv1::FAMILY_SUPPORT_ABSENT_IN_DOCUMENT);
+    // An empty family list asks for every family; form fields stay opt-in
+    // here, as they were before the fake read the list for anything else.
     bool wants_fields = false;
+    bool wants_cells = request->families().empty();
     for (const int family : request->families()) {
       wants_fields = wants_fields || family == pdfv1::PDF_FAMILY_FORM_FIELDS;
+      wants_cells = wants_cells || family == pdfv1::PDF_FAMILY_TEXT_CELLS;
     }
     const pdfv1::PageSpace space = page_space();
     // Per page, what the frame subtracts from user space.
@@ -409,40 +432,64 @@ class FakePdfBackend final : public pdfv1::PdfBackendService::Service {
     const uint32_t end = request->has_pages() ? request->pages().end()
                                               : static_cast<uint32_t>(pages.size());
     std::map<std::string, uint32_t> fonts;
+    // The trailer a real backend closes the answer with: how many items of
+    // each family the stream carried, and what the engine skipped.
+    pdfv1::ParseResponse trailer;
+    uint64_t cells_counted = 0;
+    uint64_t fields_counted = 0;
     for (uint32_t index = begin; index < end && index < pages.size(); ++index) {
+      const FakePdfPage& page = pages[index];
+      for (const FakeParseWarning& said : page.warnings) {
+        auto* warning = trailer.mutable_trailer()->add_warnings();
+        warning->set_page_index(index);
+        if (said.family != pdfv1::PDF_FAMILY_UNSPECIFIED) warning->set_family(said.family);
+        warning->set_message(said.message);
+      }
+      if (page.no_chunk) continue;
       const auto [dx, dy] = shifts[index];
       pdfv1::ParseResponse chunk;
       chunk.mutable_page()->set_page_index(index);
       if (wants_fields) {
-        for (const pdfv1::FormField& source : pages[index].form_fields) {
+        for (const pdfv1::FormField& source : page.form_fields) {
           auto* field = chunk.mutable_page()->add_form_fields();
           *field = source;
           shift(field->mutable_rect(), dx, dy);
         }
+        fields_counted += page.form_fields.size() + page.lost_form_fields;
       }
-      for (const FakeTextCell& source : pages[index].cells) {
-        auto [font, added] = fonts.emplace(source.font, static_cast<uint32_t>(fonts.size()));
-        if (added) {
-          pdfv1::ParseResponse table;
-          auto* ref = table.mutable_fonts()->add_fonts();
-          ref->set_font_id(font->second);
-          ref->set_base_name(source.font);
-          emit(table);
+      if (wants_cells) {
+        for (const FakeTextCell& source : page.cells) {
+          auto [font, added] = fonts.emplace(source.font, static_cast<uint32_t>(fonts.size()));
+          if (added) {
+            pdfv1::ParseResponse table;
+            auto* ref = table.mutable_fonts()->add_fonts();
+            ref->set_font_id(font->second);
+            ref->set_base_name(source.font);
+            emit(table);
+          }
+          auto* cell = chunk.mutable_page()->add_text_cells();
+          cell->set_text(source.text);
+          cell->mutable_bbox()->set_x0(source.x0);
+          cell->mutable_bbox()->set_y0(source.y0);
+          cell->mutable_bbox()->set_x1(source.x1);
+          cell->mutable_bbox()->set_y1(source.y1);
+          shift(cell->mutable_bbox(), dx, dy);
+          cell->set_font_id(font->second);
+          cell->set_font_size(source.font_size);
         }
-        auto* cell = chunk.mutable_page()->add_text_cells();
-        cell->set_text(source.text);
-        cell->mutable_bbox()->set_x0(source.x0);
-        cell->mutable_bbox()->set_y0(source.y0);
-        cell->mutable_bbox()->set_x1(source.x1);
-        cell->mutable_bbox()->set_y1(source.y1);
-        shift(cell->mutable_bbox(), dx, dy);
-        cell->set_font_id(font->second);
-        cell->set_font_size(source.font_size);
+        cells_counted += page.cells.size() + page.lost_cells;
       }
       emit(chunk);
     }
-    pdfv1::ParseResponse trailer;
-    trailer.mutable_trailer();
+    const auto count = [&trailer](pdfv1::PdfFamily family, uint64_t items) {
+      auto* entry = trailer.mutable_trailer()->add_counts();
+      entry->set_family(family);
+      entry->set_count(items);
+    };
+    count(pdfv1::PDF_FAMILY_PAGE_INVENTORY, pages.size());
+    count(pdfv1::PDF_FAMILY_TEXT_CELLS, cells_counted);
+    count(pdfv1::PDF_FAMILY_FONTS, fonts.size());
+    count(pdfv1::PDF_FAMILY_FORM_FIELDS, fields_counted);
     emit(trailer);
     return grpc::Status::OK;
   }

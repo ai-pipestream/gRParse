@@ -42,11 +42,15 @@ target_include_directories(fuzz_flags INTERFACE
   "${GRPARSE_ROOT}/include" "${GRPARSE_ROOT}/src" "${CMAKE_CURRENT_SOURCE_DIR}")
 
 # ---- raster ingest door ------------------------------------------------------
+# fuzz_protos (defined below) is linked for its generated headers: a page
+# carries the typed warnings of its source (OcrPage::source_warnings), and a
+# warning's code is the Document's WarningCode, so the door's headers read
+# document.pb.h.
 add_executable(raster-source-fuzzer
   raster_source_fuzzer.cpp
   "${GRPARSE_ROOT}/src/in_memory_document.cpp")
 target_link_libraries(raster-source-fuzzer PRIVATE
-  ${OpenCV_LIBS} Threads::Threads fuzz_flags)
+  ${OpenCV_LIBS} Threads::Threads fuzz_protos fuzz_flags)
 
 # ---- the messages the doors build ------------------------------------------
 # The flat protos staged under their import paths, as the top-level build

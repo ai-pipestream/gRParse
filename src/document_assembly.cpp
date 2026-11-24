@@ -212,6 +212,15 @@ void append_page_data(const OcrPage& source, int page_number, AssemblyCursor* cu
                       pipestream::parse::v1::PageData* output,
                       std::vector<Warning>* warnings) {
   if (cursor == nullptr || output == nullptr) throw std::invalid_argument("Page assembly output is required");
+  // What the page's source said about its read of the page goes to the
+  // caller as it came, typed. A PDF backend repeats what it has to say
+  // about the document on every page call, so a warning an earlier page
+  // already brought is not said again.
+  if (warnings != nullptr) {
+    for (const Warning& warning : source.source_warnings) {
+      if (std::ranges::find(*warnings, warning) == warnings->end()) warnings->push_back(warning);
+    }
+  }
   output->set_page_number(page_number);
   output->mutable_page_meta()->set_page_no(page_number);
   output->mutable_page_meta()->mutable_size()->set_width(source.width);

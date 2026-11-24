@@ -2323,6 +2323,23 @@ void derender_charts_if_configured(const std::shared_ptr<CollectorEndpoints>& co
   }
 }
 
+// The AcroForm step's warnings join the parse under the CV collector, the
+// part of gRParse that reads a PDF through its backend. A backend repeats
+// what it has to say about a page on every call that touches the page, so
+// a warning the CV leg already raised in the same words is not said twice.
+void add_form_widget_warnings(std::vector<Warning> warnings, CoordinatorResult* result) {
+  for (Warning& warning : warnings) {
+    const bool already_said = std::ranges::any_of(result->warnings, [&warning](const auto& entry) {
+      return entry.first == pipestream::parse::v1::COLLECTOR_GRPARSE_CV &&
+             entry.second == warning;
+    });
+    if (already_said) continue;
+    result->warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
+                                  std::move(warning));
+    record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
+  }
+}
+
 // Collector warnings are not failures; they stay on the document, each
 // under the collector that raised it, so nothing the collectors reported is
 // dropped.
@@ -2585,12 +2602,9 @@ grpc::Status parse_source(const ParseCall& call,
       // The VLM body gets AcroForm widgets only when the request asks:
       // unset keeps this path's output as it was.
       if (pdf && form_fields_requested && !call.cancelled()) {
-        if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                              &result.document)) {
-          result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                       std::move(*warning));
-          record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
-        }
+        add_form_widget_warnings(
+            fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline, &result.document),
+            &result);
       }
       if (!pdf && form_fields_requested) {
         result.warnings.emplace_back(
@@ -2654,13 +2668,10 @@ grpc::Status parse_source(const ParseCall& call,
       record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
     }
     if (pdf && !form_fields_off && !call.cancelled()) {
-      if (auto warning = fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline,
-                                                            &result.document,
-                                                            run_cv.computed_sha256())) {
-        result.warnings.emplace_back(pipestream::parse::v1::COLLECTOR_GRPARSE_CV,
-                                     std::move(*warning));
-        record_collector_warnings(pipestream::parse::v1::COLLECTOR_GRPARSE_CV, 1);
-      }
+      add_form_widget_warnings(
+          fold_pdf_form_widgets_from_backend(*bytes, inputs.inbound_deadline, &result.document,
+                                             run_cv.computed_sha256()),
+          &result);
     }
     // The document is final here: every surface renders, chunks or delivers
     // exactly this, so the structural rules check this.

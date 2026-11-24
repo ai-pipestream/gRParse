@@ -27,6 +27,7 @@
 
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_service.grpc.pb.h"
 #include "grparse/document_parser_service.h"
+#include "grparse/pdf_backend_trailer.h"
 #include "grparse/pdf_page_frame.h"
 #include "targets/sha256.h"
 
@@ -296,8 +297,12 @@ struct ParsedPage {
   std::map<uint32_t, std::string> font_names;
   std::vector<pdfv1::TextCell> cells;
   std::vector<pdfv1::BoundingBox> images;
+  // The answer against its own trailer: what the engine says it skipped,
+  // and whether everything the trailer counts arrived.
+  PdfParseTally tally;
 
   void absorb(const pdfv1::ParseResponse& message, int page_number) {
+    tally.absorb(message);
     switch (message.payload_case()) {
       case pdfv1::ParseResponse::kHeader:
         load_status = message.header().capabilities().load_status();
@@ -382,7 +387,8 @@ class RemotePdfPageSource final : public PageSource {
         if (message.has_parse()) parsed.absorb(message.parse(), page_number);
       }
       check_parse_load(parsed);
-      return digital_page(std::move(parsed));
+      keep_warnings(page_number, parsed.tally);
+      return digital_page(std::move(parsed), page_number);
     }
     bool sent_bytes = !handshake_;
     for (;;) {
@@ -409,8 +415,15 @@ class RemotePdfPageSource final : public PageSource {
         continue;
       }
       check_parse_load(parsed);
-      return digital_page(std::move(parsed));
+      keep_warnings(page_number, parsed.tally);
+      return digital_page(std::move(parsed), page_number);
     }
+  }
+
+  std::vector<Warning> page_warnings(int page_number) const override {
+    const std::lock_guard<std::mutex> lock(warnings_mutex_);
+    const auto found = page_warnings_.find(page_number);
+    return found == page_warnings_.end() ? std::vector<Warning>{} : found->second;
   }
 
   // Families a page's digital text needs: cells, the font table, and image
@@ -436,7 +449,23 @@ class RemotePdfPageSource final : public PageSource {
     }
   }
 
-  std::optional<OcrPage> digital_page(ParsedPage parsed) const {
+  // Keeps what the page's Parse answer says about itself (the trailer's
+  // warnings, a total that does not match what arrived) for page_warnings().
+  // It is kept here and not on the page returned, because a page the engine
+  // gave up on comes back with no text layer and so with no page to carry
+  // it. A later read of the same page replaces what an earlier one left.
+  void keep_warnings(int page_number, const PdfParseTally& tally) const {
+    std::vector<Warning> warnings =
+        tally.warnings(backend_name_.empty() ? target_ : backend_name_, page_number);
+    const std::lock_guard<std::mutex> lock(warnings_mutex_);
+    if (warnings.empty()) {
+      page_warnings_.erase(page_number);
+    } else {
+      page_warnings_[page_number] = std::move(warnings);
+    }
+  }
+
+  std::optional<OcrPage> digital_page(ParsedPage parsed, int page_number) const {
     {
       auto& frame = parsed.frame;
       auto& cells = parsed.cells;
@@ -512,7 +541,14 @@ class RemotePdfPageSource final : public PageSource {
 
       const double vertical_coverage =
           (text_bottom - text_top) / frame->display_height();
-      result.skip_ocr = non_whitespace_bytes >= kMinDigitalNonWhitespace &&
+      // A layer the backend says it read only part of (a trailer warning on
+      // this page's text, or fewer cells than the trailer counts) is not
+      // full coverage however dense the part that arrived is: the page
+      // stays open to recognition, which reads what the layer lacks.
+      const bool layer_cut_short = parsed.tally.reads_short(
+          pdfv1::PDF_FAMILY_TEXT_CELLS, static_cast<uint32_t>(page_number - 1));
+      result.skip_ocr = !layer_cut_short &&
+                        non_whitespace_bytes >= kMinDigitalNonWhitespace &&
                         result.lines.size() >= kMinDigitalLines &&
                         (vertical_coverage >= kMinDigitalVerticalCoverage ||
                          non_whitespace_bytes >= kStrongDigitalNonWhitespace);
@@ -1066,6 +1102,10 @@ class RemotePdfPageSource final : public PageSource {
   std::chrono::system_clock::time_point deadline_ = std::chrono::system_clock::time_point::max();
   bool cancelled_ = false;
   mutable std::set<grpc::ClientContext*> calls_;
+  // What each page's latest Parse answer said about itself, by one-based
+  // page number; pages are read from several threads.
+  mutable std::mutex warnings_mutex_;
+  mutable std::map<int, std::vector<Warning>> page_warnings_;
 };
 
 }  // namespace

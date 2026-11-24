@@ -412,8 +412,8 @@ void folds_from_the_configured_backends() {
   // answers and wins.
   ::setenv("GRPARSE_PDF_BACKEND", (no_forms + "," + with_forms).c_str(), 1);
   docv1::Document document = cv_document();
-  auto warning = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
-  require(!warning.has_value(), "no warning when a backend answered");
+  auto warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &document);
+  require(warnings.empty(), "no warning when a backend answered");
   require_equal(document.field_items_size(), 2, "widgets folded from the second target");
   require_equal(document.field_items(0).prov(0).page_no(), 2, "page two widgets");
   require_equal(document.body().children(2).ref(), std::string("#/field_regions/0"),
@@ -423,15 +423,15 @@ void folds_from_the_configured_backends() {
   ::setenv("GRPARSE_PDF_BACKEND", "127.0.0.1:1", 1);
   docv1::Document untouched = cv_document();
   const docv1::Document before = untouched;
-  warning = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &untouched);
-  require(warning.has_value() && warning->find("127.0.0.1:1") != std::string::npos,
+  warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &untouched);
+  require(warnings.size() == 1 && warnings[0].message.contains("127.0.0.1:1"),
           "the warning names the failed target");
   require(same(untouched, before), "a failed fetch changes nothing");
 
   // Unset: the in-process path has no forms surface; nothing happens.
   ::unsetenv("GRPARSE_PDF_BACKEND");
-  warning = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &untouched);
-  require(!warning.has_value() && untouched.field_items_size() == 0,
+  warnings = grparse::fold_pdf_form_widgets_from_backend("%PDF-fake", soon(), &untouched);
+  require(warnings.empty() && untouched.field_items_size() == 0,
           "no backend configured, no widgets and no warning");
   first->Shutdown();
   second->Shutdown();
@@ -522,11 +522,15 @@ class OneWordRecognizer final : public grparse::PageRecognizer {
 
 class ParseServer final {
  public:
-  ParseServer()
-      : scheduler_(recognizer_, {},
-                   [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
-                     return std::make_shared<BlankSource>();
-                   }),
+  // Reads every document as one blank page unless `factory` says otherwise;
+  // an empty factory is the scheduler's own, which reads a PDF through
+  // GRPARSE_PDF_BACKEND.
+  explicit ParseServer(
+      grparse::PageSourceFactory factory =
+          [](std::shared_ptr<const std::string>, bool, double, const std::string&) {
+            return std::make_shared<BlankSource>();
+          })
+      : scheduler_(recognizer_, {}, std::move(factory)),
         service_(scheduler_,
                  std::make_shared<grparse::CollectorEndpoints>(grparse::CollectorTargets{})) {
     grpc::ServerBuilder builder;
@@ -636,6 +640,91 @@ void extract_form_fields_unset_true_false_on_a_pdf() {
   require(!false_folds, "false extract_form_fields never dials the widget backend");
 }
 
+// The backend's trailer closes the form-field answer too. An engine that
+// says it skipped a widget, and a trailer that counts more form fields than
+// arrived, are typed warnings on the fetch, and the fold passes them to its
+// caller with the widgets that did arrive: a part of a form is not handed
+// over as the form.
+void verify_widget_trailer_warnings_are_typed() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  grparse_test::FakePdfPage first;
+  first.form_fields = {text_field(), check_box()};
+  first.lost_form_fields = 1;
+  grparse_test::FakePdfPage second;
+  second.form_fields = {combo_box()};
+  second.warnings = {{"widget 12 0 R has no /Rect; skipped", pdfv1::PDF_FAMILY_FORM_FIELDS}};
+  const std::string bytes = "%PDF-widget-trailer";
+  pdf_backend.backend().add_document(bytes, {first, second});
+
+  const auto fetch = grparse::fetch_pdf_form_widgets(bytes, pdf_backend.target(), soon());
+  require(fetch.ok && fetch.pages.size() == 2, "the widgets that arrived are fetched: " + fetch.error);
+  require_equal(fetch.warnings.size(), size_t{2}, "the trailer's two findings are kept");
+  const grparse::Warning& skipped = fetch.warnings[0];
+  require(skipped.code == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED && skipped.page_no == 2 &&
+              skipped.message.contains("has no /Rect"),
+          "the engine's skipped widget is typed and names page two: " + skipped.message);
+  const grparse::Warning& mismatch = fetch.warnings[1];
+  require(mismatch.code == docv1::WARNING_CODE_BACKEND_COUNT_MISMATCH &&
+              !mismatch.page_no.has_value() &&
+              mismatch.message.contains("PDF_FAMILY_FORM_FIELDS") &&
+              mismatch.message.contains("4") && mismatch.message.contains("3"),
+          "the short form-field count is typed, with the family and both totals: " +
+              mismatch.message);
+
+  docv1::Document document = cv_document();
+  const std::vector<grparse::Warning> warnings =
+      grparse::fold_pdf_form_widgets_from_backend(bytes, soon(), &document);
+  require_equal(document.field_items_size(), 3, "the widgets that arrived are folded");
+  require(warnings == fetch.warnings, "and the fold hands the backend's warnings to its caller");
+}
+
+// The whole way out: a PDF converted over the service, read through a
+// backend whose trailer says it skipped part of page one's text. The
+// warning is on the Document the caller gets, typed, with its page, under
+// the collector that read the PDF.
+void verify_backend_warnings_reach_the_converted_document() {
+  grparse_test::ScopedPdfBackend pdf_backend;
+  grparse_test::FakePdfPage damaged = grparse_test::text_page(
+      {"The quick brown fox jumps over the lazy dog", "Pack my box with five dozen liquor jugs",
+       "How vexingly quick daft zebras jump", "Sphinx of black quartz judge my vow",
+       "Jackdaws love my big sphinx of quartz"});
+  damaged.warnings = {{"content stream 7 0 R is damaged; 12 text objects skipped",
+                       pdfv1::PDF_FAMILY_TEXT_CELLS}};
+  // A widget on the page, so the AcroForm step reads the backend's trailer
+  // for the same document as well.
+  damaged.form_fields = {text_field()};
+  grparse_test::FakePdfPage short_read = damaged;
+  short_read.warnings.clear();
+  short_read.lost_cells = 2;
+  // "%PDF-1.4\n", the bytes the request below carries.
+  pdf_backend.backend().add_document("%PDF-1.4\n", {damaged, short_read});
+
+  ParseServer server{grparse::PageSourceFactory{}};
+  parsev1::ConvertSourceResponse response;
+  const grpc::Status status = server.convert("damaged.pdf", "JVBERi0xLjQK", std::nullopt, &response);
+  require(status.ok(), "the damaged PDF still converts: " + status.error_message());
+  const auto& document = response.response().document().doc();
+  const docv1::CollectorWarning* skipped = nullptr;
+  const docv1::CollectorWarning* mismatch = nullptr;
+  for (const auto& warning : document.warnings()) {
+    if (warning.code() == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED) skipped = &warning;
+    if (warning.code() == docv1::WARNING_CODE_BACKEND_COUNT_MISMATCH) mismatch = &warning;
+  }
+  require(skipped != nullptr, "Document.warnings carries WARNING_CODE_BACKEND_CONTENT_SKIPPED (" +
+                                  std::to_string(document.warnings_size()) + " warnings)");
+  require(skipped->has_page_no() && skipped->page_no() == 1, "on page one");
+  require(skipped->source().collector() == "grparse-cv" &&
+              skipped->message().contains("12 text objects skipped"),
+          "from the collector that read the PDF, in the engine's words");
+  require(mismatch != nullptr && mismatch->has_page_no() && mismatch->page_no() == 2,
+          "Document.warnings carries WARNING_CODE_BACKEND_COUNT_MISMATCH on page two");
+  int said = 0;
+  for (const auto& warning : document.warnings()) {
+    said += warning.code() == docv1::WARNING_CODE_BACKEND_CONTENT_SKIPPED ? 1 : 0;
+  }
+  require_equal(said, 1, "the widget fetch hears the same warning and does not repeat it");
+}
+
 }  // namespace
 
 int main() {
@@ -646,5 +735,6 @@ int main() {
        canonical_json_keeps_extensions_out, nothing_to_fold, fetches_over_the_wire,
        absent_and_unsupported_families, folds_from_the_configured_backends,
        widget_frames_agree_on_cropped_and_rotated_pages, extract_form_fields_is_typed,
-       extract_form_fields_unset_true_false_on_a_pdf});
+       extract_form_fields_unset_true_false_on_a_pdf, verify_widget_trailer_warnings_are_typed,
+       verify_backend_warnings_reach_the_converted_document});
 }

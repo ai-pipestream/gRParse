@@ -409,6 +409,25 @@ class ConsensusPdfPageSource final : public PageSource {
     return page;
   }
 
+  // What each leg's backend said about its own read of the page, in the
+  // configured order. A leg's warning stands whether or not the leg won the
+  // vote, and when the leg had no page to vote with at all: it is that
+  // backend's account of what it left out, and the page was decided with
+  // one voter reading less than the others.
+  std::vector<Warning> page_warnings(int page_number) const override {
+    {
+      const std::lock_guard<std::mutex> lock(open_mutex_);
+      if (!opened_) return {};
+    }
+    std::vector<Warning> warnings;
+    for (const Entry& entry : sources_) {
+      for (Warning& warning : entry.source->page_warnings(page_number)) {
+        warnings.push_back(std::move(warning));
+      }
+    }
+    return warnings;
+  }
+
   cv::Mat render_page(int page_number) const override {
     // Raster priority is the configured order, with the same failure
     // isolation as the text path: a dead first target must not fail a page

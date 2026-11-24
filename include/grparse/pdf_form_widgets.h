@@ -8,6 +8,7 @@
 
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/protomolt/parse/pdf/v1/pdf_backend_types.pb.h"
+#include "grparse/warning.h"
 
 namespace grparse {
 
@@ -70,6 +71,13 @@ struct PdfWidgetFetch {
   std::string engine;
   // Pages that carry at least one widget, in page order.
   std::vector<PdfPageWidgets> pages;
+  // What the backend's trailer says about this answer when ok: one
+  // WARNING_CODE_BACKEND_CONTENT_SKIPPED for each thing the engine said it
+  // skipped or repaired (naming the page where the engine named one), and a
+  // WARNING_CODE_BACKEND_COUNT_MISMATCH when the trailer counts a number of
+  // form fields other than the number that arrived. `pages` then holds what
+  // did arrive, not the whole form.
+  std::vector<Warning> warnings;
 };
 
 // One Parse call for PDF_FAMILY_FORM_FIELDS over every page, with the
@@ -83,10 +91,12 @@ PdfWidgetFetch fetch_pdf_form_widgets(const std::string& bytes, const std::strin
 // names backends, asks them in configured order for the widgets (the
 // first that answers wins; consensus mode needs no vote, the widgets are
 // stored state, not a reading) and folds them into `document`. Returns
-// nothing when there was nothing to do or the fold ran, and a warning
-// naming the failure when every backend failed; the document is then left
-// as it was. With GRPARSE_PDF_BACKEND unset no PDF is read at all, so
-// there are no widgets to fold.
+// the warnings the step leaves for the caller: none when there was nothing
+// to do or the fold ran on a clean answer, the answering backend's own
+// (PdfWidgetFetch::warnings) when it said the widgets it sent are not the
+// whole form, and one naming the failure when every backend failed; the
+// document is then left as it was. With GRPARSE_PDF_BACKEND unset no PDF is
+// read at all, so there are no widgets to fold.
 // False when GRPARSE_PDF_BACKEND names no backend, so no PDF is read here
 // and fold_pdf_form_widgets_from_backend has nothing to ask. A malformed
 // setting counts as configured: the fold then names the failure.
@@ -94,7 +104,7 @@ bool pdf_form_widget_backend_configured();
 
 // `precomputed_sha256`, when non-empty, is the hex SHA-256 of `bytes` a
 // caller already has (the CV leg's), used in place of hashing them again.
-std::optional<std::string> fold_pdf_form_widgets_from_backend(
+std::vector<Warning> fold_pdf_form_widgets_from_backend(
     const std::string& bytes, std::chrono::system_clock::time_point deadline,
     ai::pipestream::document::v1::Document* document,
     const std::string& precomputed_sha256 = {});
