@@ -194,8 +194,9 @@ std::string_view ocr_net_name(OcrNet net) {
 // (src/tensorrt/ocr_profiles.cpp holds the functions and the TensorRT half):
 // empty unless the selection is OpenVINO in a native OpenVINO build.
 ModelShapePolicy openvino_ocr_net_shapes(OcrNet net) {
-  if (!native_openvino() || net == OcrNet::kDetection) return {};
-  return ModelShapePolicy{{kNativeBatch}};
+  ModelShapePolicy policy;
+  if (native_openvino() && net != OcrNet::kDetection) policy.batch_ladder = {kNativeBatch};
+  return policy;
 }
 
 std::vector<std::vector<TensorSpec>> openvino_ocr_prewarm_sets(OcrNet net) {
