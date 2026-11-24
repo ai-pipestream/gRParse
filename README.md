@@ -697,7 +697,15 @@ code: the `exports` `to_formats` asked for, the `chunks`, the
 for every converted source, so an empty field means the conversion
 produced nothing for it. A source whose outputs fail to render, or whose
 `final_document` or `source_outputs` is past the message limit, fails as a
-whole. Every
+whole. Every `source_result` types how its source ended in `status`, with
+the `ConversionStatus` the unary response uses: `SUCCESS`,
+`PARTIAL_SUCCESS` when a collector failed while another produced the
+Document, or `FAILURE`. A partial conversion lists each failed collector in
+`collector_failures` (its `Collector`, error and `FailureCategory`, the
+classification the unary `ErrorItem` carries). `success` says only that a
+Document was produced, so it is true for a partial conversion too, and
+`error_message` repeats the typed fields as one line for older readers.
+Every
 envelope echoes `request_id` and carries `sequence_number`, counting from 1
 with no gaps, and `timestamp_ms`; source-scoped envelopes set
 `source_index`. The `part` arm is not sent: what streams is each source's
