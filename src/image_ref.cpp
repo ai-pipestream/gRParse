@@ -5,6 +5,7 @@
 #include <exception>
 #include <string>
 #include <string_view>
+#include <utility>
 
 #include "grparse/base64.h"
 
@@ -66,6 +67,37 @@ HeldImage held_image(const docv1::ImageRef& image) {
   }
   held.hold = held.bytes.empty() ? ImageHold::kUndecodable : ImageHold::kBytes;
   return held;
+}
+
+bool hold_bytes(docv1::ImageRef* image) {
+  if (image->has_data() && !image->data().empty()) return false;
+  if (!image->uri().starts_with(kDataUriPrefix)) return false;
+  HeldImage held = held_image(*image);
+  if (held.hold != ImageHold::kBytes) return false;
+  image->set_data(std::move(held.bytes));
+  // held.mimetype is the URI's own type when it stated one, else the ref's:
+  // the ref's own spelling stands unless the URI said something else.
+  if (held.mimetype != media_type_name(image->mimetype())) {
+    image->set_mimetype(std::move(held.mimetype));
+  }
+  image->clear_uri();
+  return true;
+}
+
+int hold_image_bytes(docv1::Document* document) {
+  int moved = 0;
+  const auto hold = [&moved](auto* item) {
+    if (item->has_image() && hold_bytes(item->mutable_image())) ++moved;
+  };
+  for (auto& picture : *document->mutable_pictures()) hold(&picture);
+  for (auto& table : *document->mutable_tables()) hold(&table);
+  for (auto& key_value : *document->mutable_key_value_items()) hold(&key_value);
+  for (auto& form : *document->mutable_form_items()) hold(&form);
+  for (auto& text : *document->mutable_texts()) {
+    if (text.has_code()) hold(text.mutable_code());
+  }
+  for (auto& page : *document->mutable_pages()) hold(&page.second);
+  return moved;
 }
 
 std::string image_uri(const docv1::ImageRef& image) {

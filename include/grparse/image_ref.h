@@ -5,6 +5,11 @@
 // a base64 data: URI in `uri`, and readers must keep accepting that. Every
 // reader of an image goes through held_image(), so none parses a data: URI
 // on its own and none misses the bytes when a producer moves to `data`.
+//
+// gRParse itself never writes the old spelling, and a collector's Document
+// is brought to the new one as it is merged (hold_image_bytes), so a
+// Document gRParse answers with spells held bytes one way. What is left
+// for held_image() to read from a URI is a Document a caller hands in.
 #ifndef GRPARSE_IMAGE_REF_H
 #define GRPARSE_IMAGE_REF_H
 
@@ -51,6 +56,20 @@ std::string image_uri(const ai::pipestream::document::v1::ImageRef& image);
 
 // A declared media type in the form HeldImage.mimetype uses.
 std::string media_type_name(std::string_view declared);
+
+// Moves the bytes of a base64 data: URI out of `uri` and into `data`, where
+// the schema says held bytes go: `data` takes the decoded payload,
+// `mimetype` takes the media type the URI stated (when it stated one), and
+// `uri` is cleared. A ref that already holds bytes, a reference, and a
+// data: URI that does not decode are left exactly as they are. True when
+// the ref changed.
+bool hold_bytes(ai::pipestream::document::v1::ImageRef* image);
+
+// hold_bytes over every image a Document carries: pictures, tables,
+// key-value and form items, code items and pages. Returns how many moved.
+// Run where a Document from another producer enters gRParse, so that
+// nothing downstream meets a data: URI gRParse could have read.
+int hold_image_bytes(ai::pipestream::document::v1::Document* document);
 
 }  // namespace grparse
 
