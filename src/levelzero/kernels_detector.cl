@@ -110,17 +110,21 @@ CONV_TRANSPOSE2(conv_transpose2_1, 1)
 // normalized as RapidOCR's substractMeanNormalize does on the host:
 // pixel * norm - mean * norm in float, each product rounded before the
 // subtraction (no contraction), so the FP32 module stores the host's bits.
+// Columns from valid[image] on are padding and take 0.0, what a batch of
+// text lines of unequal width holds past each line's end.
 typedef struct {
   float mean[3], norm[3];
 } image_t;
 #pragma OPENCL FP_CONTRACT OFF
-__kernel void image_to_real(__global const uchar* in, __global real* out, int images, int pixels, image_t p) {
+__kernel void image_to_real(__global const uchar* in, __global real* out, int images, int pixels, image_t p,
+                            __global const int* valid, int width) {
   const size_t index = get_global_id(0);  // image * pixels + pixel
   if (index >= (size_t)images * pixels) return;
   const size_t image = index / pixels, pixel = index % pixels;
+  const bool padding = (int)(pixel % width) >= valid[image];
   for (int c = 0; c < 3; ++c) {
     const float scaled = (float)in[index * 3 + c] * p.norm[c], offset = p.mean[c] * p.norm[c];
-    RSTORE(out, (image * 3 + c) * pixels + pixel, scaled - offset);
+    RSTORE(out, (image * 3 + c) * pixels + pixel, padding ? 0.0f : scaled - offset);
   }
 }
 #pragma OPENCL FP_CONTRACT DEFAULT

@@ -124,13 +124,19 @@ size_t tensor_element_size(TensorElement element) {
 size_t Tensor::element_count() const { return element_count_of(shape); }
 
 std::vector<Tensor> InferenceModel::run_image(const uint8_t* pixels, int count, int height, int width,
-                                              const float mean[3], const float norm[3]) {
+                                              const float mean[3], const float norm[3],
+                                              std::span<const int> valid_widths) {
+  if (!valid_widths.empty() && valid_widths.size() != static_cast<size_t>(count)) {
+    throw std::invalid_argument("run_image takes one valid width per image");
+  }
   const size_t plane = static_cast<size_t>(height) * static_cast<size_t>(width);
-  std::vector<float> values(static_cast<size_t>(count) * plane * 3);
+  std::vector<float> values(static_cast<size_t>(count) * plane * 3, 0.0F);
   for (size_t image = 0; image < static_cast<size_t>(count); ++image) {
     const uint8_t* from = pixels + image * plane * 3;
     float* to = values.data() + image * plane * 3;
+    const size_t valid = valid_widths.empty() ? static_cast<size_t>(width) : static_cast<size_t>(valid_widths[image]);
     for (size_t pixel = 0; pixel < plane; ++pixel) {
+      if (pixel % static_cast<size_t>(width) >= valid) continue;  // padding stays 0.0
       for (size_t channel = 0; channel < 3; ++channel) {
         to[channel * plane + pixel] =
             static_cast<float>(from[pixel * 3 + channel] * norm[channel] - mean[channel] * norm[channel]);
@@ -226,8 +232,8 @@ class LevelZeroModel final : public InferenceModel {
 
   // The device normalizes: the bytes are uploaded as they are.
   std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
-                                const float norm[3]) override {
-    return tensors(graph_.run_image(pixels, count, height, width, mean, norm));
+                                const float norm[3], std::span<const int> valid_widths) override {
+    return tensors(graph_.run_image(pixels, count, height, width, mean, norm, valid_widths));
   }
 
   void prewarm(std::span<const std::vector<TensorSpec>>) override {}

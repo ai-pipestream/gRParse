@@ -14,6 +14,7 @@
 #include <memory>
 #include <mutex>
 #include <optional>
+#include <span>
 #include <string>
 #include <vector>
 
@@ -68,9 +69,11 @@ class GraphModel {
   // and the graph's input is [count, 3, height, width] with
   // input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c] in float, the
   // expression RapidOCR computes on the host.  The bytes are a quarter of
-  // the float tensor and no host pass touches the pixels.
+  // the float tensor and no host pass touches the pixels.  With
+  // `valid_widths`, one per image, columns from an image's valid width on
+  // are padding whatever their bytes: the input holds 0.0 there.
   std::vector<HostTensor> run_image(const uint8_t* pixels, int count, int height, int width, const float mean[3],
-                                    const float norm[3]);
+                                    const float norm[3], std::span<const int> valid_widths = {});
 
   // The same, with each node's GPU time: per IR node, microseconds summed
   // over its launches.  For benchmarks.
@@ -104,8 +107,9 @@ class GraphModel {
   Plan& plan_for(const std::vector<int64_t>& shape, const std::optional<ImageScale>& image = std::nullopt);
   void record(const std::vector<int64_t>& shape, Plan* plan);
   void drop_plans();
-  // `input` is the plan's floats, or its image's bytes.
-  std::vector<HostTensor> execute(const Plan& plan, const void* input);
+  // `input` is the plan's floats, or its image's bytes with each image's
+  // valid width (none given: every image is full width).
+  std::vector<HostTensor> execute(const Plan& plan, const void* input, std::span<const int> valid_widths = {});
   void build_fp16_weights();
   void build_plane_weights();
 

@@ -76,6 +76,10 @@ uint16_t half_bits(float value) {
   return bits;
 }
 
+// Where an image call's valid widths start in the input staging buffer:
+// after the bytes, on a 4-byte boundary.
+size_t image_widths_at(const Shape& shape) { return (numel(shape) + 3) / 4 * 4; }
+
 uint32_t groups_for(size_t count, uint32_t group) { return uint32_t((count + group - 1) / group); }
 
 }  // namespace
@@ -217,12 +221,21 @@ std::vector<HostTensor> GraphModel::run(const float* input, const std::vector<in
 }
 
 std::vector<HostTensor> GraphModel::run_image(const uint8_t* pixels, int count, int height, int width,
-                                              const float mean[3], const float norm[3]) {
+                                              const float mean[3], const float norm[3],
+                                              std::span<const int> valid_widths) {
+  if (!valid_widths.empty() && valid_widths.size() != size_t(count)) {
+    throw std::invalid_argument(std::format("{} valid widths for {} images", valid_widths.size(), count));
+  }
+  for (const int valid : valid_widths) {
+    if (valid < 0 || valid > width) {
+      throw std::invalid_argument(std::format("a valid width of {} in images {} wide", valid, width));
+    }
+  }
   std::lock_guard lock(mutex_);
   const ImageScale scale{{mean[0], mean[1], mean[2]}, {norm[0], norm[1], norm[2]}};
   const Plan& plan = plan_for({count, 3, height, width}, scale);
   try {
-    return execute(plan, pixels);
+    return execute(plan, pixels, valid_widths);
   } catch (...) {
     drop_plans();
     throw;
@@ -296,13 +309,22 @@ void GraphModel::drop_plans() {
 // The input into its staging buffer, the plan's launches, the outputs out
 // of theirs.  The staging buffers are host memory the kernels read and
 // write directly, so the one list submitted is the plan's.
-std::vector<HostTensor> GraphModel::execute(const Plan& plan, const void* input) {
+std::vector<HostTensor> GraphModel::execute(const Plan& plan, const void* input,
+                                            std::span<const int> valid_widths) {
   const auto step = [&](ze_result_t result, const char* what) {
     if (result != ZE_RESULT_SUCCESS) {
       throw InferenceDeviceError(std::format("{}: {} failed ({})", device_.description(), what, ze_name(result)));
     }
   };
   std::memcpy(io_in_, input, numel(plan.shape) * (plan.image ? sizeof(uint8_t) : sizeof(float)));
+  if (plan.image) {
+    // The valid widths follow the bytes in the staging buffer, which is
+    // sized for floats and so three quarters empty on an image call.
+    int* valid = reinterpret_cast<int*>(io_in_ + image_widths_at(plan.shape));
+    for (size_t i = 0; i < size_t(plan.shape[0]); ++i) {
+      valid[i] = valid_widths.empty() ? int(plan.shape[3]) : valid_widths[i];
+    }
+  }
   ze_command_list_handle_t list = plan.list;
   step(zeCommandQueueExecuteCommandLists(queue_, 1, &list, fence_), "graph submission");
   step(zeFenceHostSynchronize(fence_, UINT64_MAX), "graph run");
@@ -1060,7 +1082,9 @@ void GraphModel::record(const std::vector<int64_t>& input_shape, Plan* plan) {
       }
       const int images = int(input_shape[0]), pixels = int(input_shape[2] * input_shape[3]);
       const ImageScale scale = *plan->image;
-      args(kernels_->image_to_real, {P(src), P(dst), P(images), P(pixels), P(scale)});
+      const char* valid = io_in_ + image_widths_at(input_shape);
+      const int width = int(input_shape[3]);
+      args(kernels_->image_to_real, {P(src), P(dst), P(images), P(pixels), P(scale), P(valid), P(width)});
       launch(kernels_->image_to_real, {groups_for(size_t(images) * size_t(pixels), 256), 1, 1});
     } else {
       args(kernels_->to_real, {P(src), P(dst), P(count)});

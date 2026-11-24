@@ -107,9 +107,13 @@ class InferenceModel {
   // pixel by pixel: input[i][c][y][x] = pixel * norm[c] - mean[c] * norm[c]
   // in float, RapidOCR's normalization.  Here the host computes that tensor
   // and calls run(); a backend whose device normalizes overrides it and
-  // must return the same floats in FP32.
+  // must return the same floats in FP32.  `valid_widths`, when given, has
+  // one entry per image: columns from that width on are padding, whatever
+  // their bytes, and the input holds 0.0 there (a batch of text lines of
+  // unequal width).
   virtual std::vector<Tensor> run_image(const uint8_t* pixels, int count, int height, int width,
-                                        const float mean[3], const float norm[3]);
+                                        const float mean[3], const float norm[3],
+                                        std::span<const int> valid_widths = {});
   // Runs once every listed input set, so no first-use setup happens under
   // load.  A no-op for ONNX Runtime.
   virtual void prewarm(std::span<const std::vector<TensorSpec>> input_sets) = 0;

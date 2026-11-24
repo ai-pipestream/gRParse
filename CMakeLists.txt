@@ -113,7 +113,10 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # as before (grparse::InferenceModel::run_image).
         COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-device-normalize.patch"
         # The direction net hands its crops over as bytes the same way.
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-bytes.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-bytes.patch"
+        # And the recognizer its lines, each with its valid width: the
+        # padding past it is zero after normalization.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-recognition-bytes.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -156,6 +159,14 @@ if(GRPARSE_CRNN_LIMITS_AT EQUAL -1)
 endif()
 # A tree cached before the reduced-scores patch would read a reduced output
 # as scores per class and decode garbage.
+# A tree cached before the recognition-bytes patch would normalize every
+# line on the host and upload the float tensor.
+string(FIND "${GRPARSE_CRNN_SOURCE}" "model->run_image" GRPARSE_CRNN_IMAGE_AT)
+if(GRPARSE_CRNN_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-recognition-bytes.patch. Delete _deps/rapidocr-* from the build directory "
+    "(or the docker build cache) and re-run CMake.")
+endif()
 string(FIND "${GRPARSE_CRNN_SOURCE}" "grparse::ocr_rec_reduced" GRPARSE_CRNN_REDUCED_AT)
 if(GRPARSE_CRNN_REDUCED_AT EQUAL -1)
   message(FATAL_ERROR "src/CrnnNet.cpp is unpatched: the rapidocr source tree predates "
