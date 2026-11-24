@@ -35,6 +35,10 @@ struct Warning {
   // How many occurrences this one warning stands for, when repeats of the
   // same finding were folded into it; unset means one.
   std::optional<uint64_t> count;
+  // For a recording that was cut: how much of its timeline is in the
+  // document and how long the media says it is, in milliseconds.
+  std::optional<uint64_t> duration_kept_ms;
+  std::optional<uint64_t> duration_total_ms;
 
   Warning() = default;
   // Implicit on purpose: a free-text warning is still a warning, and every
@@ -59,6 +63,14 @@ struct Warning {
   Warning kept(uint64_t kept_bytes, std::optional<uint64_t> total_bytes = std::nullopt) && {
     bytes_kept = kept_bytes;
     bytes_total = total_bytes;
+    return std::move(*this);
+  }
+
+  // The same warning, with how much of the recording's timeline was kept.
+  Warning kept_duration(uint64_t kept_ms,
+                        std::optional<uint64_t> total_ms = std::nullopt) && {
+    duration_kept_ms = kept_ms;
+    duration_total_ms = total_ms;
     return std::move(*this);
   }
 

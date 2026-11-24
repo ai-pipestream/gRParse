@@ -59,6 +59,23 @@ void verify_a_typed_warning_keeps_its_code_page_and_item() {
   require_equal(wire.message(), "pdf collector failed", "the words still ride beside the code");
 }
 
+// A recording that was cut states how much of its timeline is in the
+// document, beside how long the media says it is.
+void verify_a_cut_recording_keeps_its_durations() {
+  const Warning warning =
+      Warning(docv1::WARNING_CODE_SOURCE_INPUT_INCOMPLETE, "the audio ends early")
+          .kept_duration(41000, 60000);
+  docv1::CollectorWarning wire;
+  grparse::stamp_warning(warning, "asr", &wire);
+  require(wire.has_duration_kept_ms() && wire.duration_kept_ms() == 41000,
+          "the kept duration is written");
+  require(wire.has_duration_total_ms() && wire.duration_total_ms() == 60000,
+          "the stated duration is written");
+  grparse::stamp_warning(Warning("words only"), "asr", &wire);
+  require(!wire.has_duration_kept_ms() && !wire.has_duration_total_ms(),
+          "a warning that states no duration writes none");
+}
+
 void verify_stamping_replaces_whatever_the_message_held() {
   docv1::CollectorWarning wire;
   wire.set_page_no(2);
@@ -77,6 +94,7 @@ int main() {
       verify_words_alone_claim_no_code_page_or_item,
       verify_a_typed_warning_keeps_its_code_page_and_item,
       verify_a_folded_warning_keeps_its_count,
+      verify_a_cut_recording_keeps_its_durations,
       verify_stamping_replaces_whatever_the_message_held,
   });
 }
