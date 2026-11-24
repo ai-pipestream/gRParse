@@ -111,7 +111,9 @@ FetchContent_Declare(rapidocr SOURCE_SUBDIR disabled
         # The detector hands the model its page as bytes; a backend that
         # normalizes on its device does, the others normalize on the host
         # as before (grparse::InferenceModel::run_image).
-        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-device-normalize.patch")
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-device-normalize.patch"
+        # The direction net hands its crops over as bytes the same way.
+        COMMAND git apply "${CMAKE_CURRENT_SOURCE_DIR}/patches/rapidocr-direction-bytes.patch")
 FetchContent_MakeAvailable(rapidocr)
 # FetchContent only patches when it populates, so a dependency tree cached
 # before the patch existed would build the upstream provider wiring and the
@@ -180,6 +182,14 @@ string(FIND "${GRPARSE_ANGLE_SOURCE}" "grparse::ocr_direction_batch_size" GRPARS
 if(GRPARSE_ANGLE_BATCH_AT EQUAL -1)
   message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
     "patches/rapidocr-direction-batch.patch. Delete _deps/rapidocr-* from the build "
+    "directory (or the docker build cache) and re-run CMake.")
+endif()
+# A tree cached before the direction-bytes patch would normalize the crops
+# on the host and upload the float tensor.
+string(FIND "${GRPARSE_ANGLE_SOURCE}" "model->run_image" GRPARSE_ANGLE_IMAGE_AT)
+if(GRPARSE_ANGLE_IMAGE_AT EQUAL -1)
+  message(FATAL_ERROR "src/AngleNet.cpp is unpatched: the rapidocr source tree predates "
+    "patches/rapidocr-direction-bytes.patch. Delete _deps/rapidocr-* from the build "
     "directory (or the docker build cache) and re-run CMake.")
 endif()
 string(FIND "${GRPARSE_ANGLE_SOURCE}" "kFlipScore" GRPARSE_ANGLE_VOTE_AT)

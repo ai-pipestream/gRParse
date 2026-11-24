@@ -1,0 +1,55 @@
+diff --git a/src/AngleNet.cpp b/src/AngleNet.cpp
+index be26a46..ad80103 100644
+--- a/src/AngleNet.cpp
++++ b/src/AngleNet.cpp
+@@ -5,6 +5,8 @@
+ #include <span>
+ #include <algorithm>
+ #include <numeric>
++#include <stdexcept>
++#include <cstdint>
+ 
+ void AngleNet::setGpuIndex(int gpuIndex) {
+     // gRParse: execution-provider selection is centralized so CUDA, OpenVINO,
+@@ -82,21 +84,27 @@ Angle AngleNet::getAngle(cv::Mat &src) {
+ std::vector<Angle> AngleNet::getAngleBatch(const std::vector<cv::Mat> &angleImgs) {
+     const size_t count = angleImgs.size();
+     const size_t channels = angleImgs.front().channels();
+-    const size_t imageSize = static_cast<size_t>(dstWidth) * dstHeight * channels;
+-    std::vector<float> inputTensorValues;
+-    inputTensorValues.reserve(count * imageSize);
+-    for (const cv::Mat &angleImg: angleImgs) {
+-        cv::Mat img = angleImg;
+-        std::vector<float> values = substractMeanNormalize(img, meanValues, normValues);
+-        inputTensorValues.insert(inputTensorValues.end(), values.begin(), values.end());
++    // gRParse: the crops go to the model as bytes, one after another, and it
++    // normalizes them where its device can
++    // (patches/rapidocr-direction-bytes.patch); elsewhere run_image is
++    // substractMeanNormalize's expression and run().
++    if (channels != 3) {
++        throw std::invalid_argument("text direction takes 3-channel crops");
+     }
+-    std::array<int64_t, 4> inputShape{static_cast<int64_t>(count), static_cast<int64_t>(channels),
+-                                      dstHeight, dstWidth};
+-    // gRParse: one typed run through grparse::InferenceModel
+-    // (patches/rapidocr-model-backend.patch).
+-    const grparse::TensorView inputView{grparse::TensorElement::kFloat32, inputTensorValues.data(),
+-                                        {inputShape.begin(), inputShape.end()}};
+-    const std::vector<grparse::Tensor> outputTensor = model->run(std::span(&inputView, 1));
++    const size_t imageBytes = static_cast<size_t>(dstWidth) * dstHeight * channels;
++    std::vector<uint8_t> pixels(count * imageBytes);
++    for (size_t i = 0; i < count; ++i) {
++        const cv::Mat &crop = angleImgs[i];
++        if (crop.rows != dstHeight || crop.cols != dstWidth) {
++            throw std::invalid_argument("a text direction crop is not 192 x 48");
++        }
++        for (int y = 0; y < dstHeight; ++y) {
++            std::copy_n(crop.ptr<uint8_t>(y), static_cast<size_t>(dstWidth) * channels,
++                        pixels.data() + i * imageBytes + static_cast<size_t>(y) * dstWidth * channels);
++        }
++    }
++    const std::vector<grparse::Tensor> outputTensor =
++        model->run_image(pixels.data(), static_cast<int>(count), dstHeight, dstWidth, meanValues, normValues);
+     std::vector<int64_t> outputShape = outputTensor[0].shape;
+     const size_t classes = static_cast<size_t>(outputShape.back());
+     const float *floatArray = outputTensor.front().floats();
