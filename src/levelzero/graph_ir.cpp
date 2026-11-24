@@ -135,6 +135,11 @@ class Lowering {
       done_.insert(*relu);
       return node(*relu).outputs[0];
     }
+    if (auto hard_swish = sole(name, "HardSwish")) {
+      out->activation = Activation::kHardSwishOp;
+      done_.insert(*hard_swish);
+      return node(*hard_swish).outputs[0];
+    }
     if (auto sigmoid = sole(name, "Sigmoid")) {
       out->activation = Activation::kSigmoid;
       done_.insert(*sigmoid);
@@ -377,13 +382,14 @@ class Lowering {
       emit(std::move(node_ir), out);
       return;
     }
-    if (op == "Relu" || op == "Sigmoid" || op == "HardSigmoid" || op == "Clip" || op == "Sqrt") {
+    if (op == "Relu" || op == "Sigmoid" || op == "HardSigmoid" || op == "Clip" || op == "Sqrt" || op == "HardSwish") {
       IrNode node_ir{.op = IrOp::kUnary, .onnx_op = op, .inputs = {value_of(n.inputs[0])}};
       node_ir.unary = op == "Relu" ? UnaryOp::kRelu
                       : op == "Sigmoid" ? UnaryOp::kSigmoid
                       : op == "HardSigmoid" ? UnaryOp::kHardSigmoid
                       : op == "Clip" ? UnaryOp::kClip
-                                     : UnaryOp::kSqrt;
+                      : op == "HardSwish" ? UnaryOp::kHardSwish
+                                          : UnaryOp::kSqrt;
       node_ir.alpha = op == "HardSigmoid" ? attr_float(n, "alpha", 0.2F) : 0.0F;
       node_ir.beta = op == "HardSigmoid" ? attr_float(n, "beta", 0.5F) : 0.0F;
       if (op == "Clip") {

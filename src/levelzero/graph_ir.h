@@ -21,7 +21,11 @@
 
 namespace grparse::levelzero::graph {
 
-enum class Activation { kNone = 0, kHardSwish = 1, kRelu = 2, kHardSigmoid = 3, kSigmoid = 4, kSwish = 5 };
+// kHardSwish is Paddle's exported pattern, x * clip(x + 3, 0, 6) / 6; kHardSwishOp the ONNX
+// operator, x * clip(x / 6 + 0.5, 0, 1).  They round differently, so each keeps its own.
+enum class Activation {
+  kNone = 0, kHardSwish = 1, kRelu = 2, kHardSigmoid = 3, kSigmoid = 4, kSwish = 5, kHardSwishOp = 6
+};
 
 enum class IrOp {
   kConv,           // NCHW, any groups, BN and bias folded, fused activation
@@ -47,7 +51,7 @@ enum class IrOp {
 };
 
 enum class BinaryOp { kAdd = 0, kSub = 1, kMul = 2, kDiv = 3, kPow = 4 };
-enum class UnaryOp { kRelu = 0, kSigmoid = 1, kHardSigmoid = 2, kClip = 3, kSqrt = 4 };
+enum class UnaryOp { kRelu = 0, kSigmoid = 1, kHardSigmoid = 2, kClip = 3, kSqrt = 4, kHardSwish = 5 };
 
 struct IrNode {
   IrOp op = IrOp::kView;

@@ -8,6 +8,7 @@
 #define ACT_HARD_SIGMOID 3
 #define ACT_SIGMOID 4
 #define ACT_SWISH 5
+#define ACT_HARD_SWISH_OP 6
 
 static inline float activate(float x, int act, float alpha, float beta) {
   switch (act) {
@@ -16,6 +17,7 @@ static inline float activate(float x, int act, float alpha, float beta) {
     case ACT_HARD_SIGMOID: return fmin(fmax(alpha * x + beta, 0.0f), 1.0f);
     case ACT_SIGMOID: return 1.0f / (1.0f + exp(-x));
     case ACT_SWISH: return x / (1.0f + exp(-x));
+    case ACT_HARD_SWISH_OP: return x * fmin(fmax(x * (1.0f / 6.0f) + 0.5f, 0.0f), 1.0f);
     default: return x;
   }
 }
@@ -307,7 +309,7 @@ __kernel void binary(__global const real* a, __global const real* b, __global re
   RSTORE(out, index, v);
 }
 
-// op: 0 relu, 1 sigmoid, 2 hard sigmoid, 3 clip [alpha, beta], 4 sqrt.
+// op: 0 relu, 1 sigmoid, 2 hard sigmoid, 3 clip [alpha, beta], 4 sqrt, 5 hard swish (the ONNX operator).
 __kernel void unary(__global const real* in, __global real* out, int count, int op, float alpha, float beta) {
   const int index = get_global_id(0);
   if (index >= count) return;
@@ -318,6 +320,7 @@ __kernel void unary(__global const real* in, __global real* out, int count, int 
     case 1: v = 1.0f / (1.0f + exp(-x)); break;
     case 2: v = fmin(fmax(alpha * x + beta, 0.0f), 1.0f); break;
     case 3: v = fmin(fmax(x, alpha), beta); break;
+    case 5: v = x * fmin(fmax(x * (1.0f / 6.0f) + 0.5f, 0.0f), 1.0f); break;
     default: v = sqrt(x); break;
   }
   RSTORE(out, index, v);
