@@ -2974,7 +2974,8 @@ std::vector<calaminev1::StreamWorksheetRangeResponse> calamine_sheet_events(uint
     batch = event.mutable_rows();
     calaminev1::WorksheetRow* data = batch->add_rows();
     data->set_row_index(2);
-    data->add_values()->set_int_value(7);
+    // One past 2^53: the first integer a double cannot hold.
+    data->add_values()->set_int_value(9007199254740993);
     auto* formula_cell = data->add_values();
     formula_cell->set_float_value(2.5);
     formula_cell->set_formula("5/2");
@@ -3197,9 +3198,13 @@ void require_calamine_fold(const grparse::CollectorOutcome& outcome) {
       cells[cell.start_col_offset_idx()] = &cell;
     }
   }
-  require(cells[0] != nullptr && cells[0]->text() == "7" &&
-              cells[0]->value().number() == 7,
-          "an int cell folds as a number");
+  // The source states an integer, so the cell holds that integer: a double
+  // would hold 9007199254740992 and say nothing.
+  require(cells[0] != nullptr && cells[0]->text() == "9007199254740993" &&
+              cells[0]->value().kind_case() == docv1::CellValue::kInteger &&
+              cells[0]->value().integer() == 9007199254740993,
+          "an int cell folds as the exact integer, got " +
+              (cells[0] != nullptr ? cells[0]->value().ShortDebugString() : std::string("no cell")));
   require(cells[1] != nullptr && cells[1]->text() == "2.5" &&
               cells[1]->value().number() == 2.5 && cells[1]->value().formula_source() == "5/2",
           "a float cell folds as a number with its shortest spelling");

@@ -1462,7 +1462,7 @@ void require_gap(const grparse::DoclingMapper& mapper, const std::string& proble
 // its gap reported, on its page. Nothing is merged: the object and its
 // inner table are two gaps and two warnings.
 void verify_every_extraction_gap_of_a_text_document_is_a_typed_warning() {
-  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_PART_READ_FAILED;
   grparse::DoclingMapper mapper;
   mapper.consume(document_info_event());
   {
@@ -1639,7 +1639,7 @@ void verify_every_extraction_gap_of_a_text_document_is_a_typed_warning() {
 // and its cell's gap is still reported. A slide's table and a deck object
 // no shape claimed report theirs once they are placed.
 void verify_sheet_and_slide_gaps_are_typed_warnings() {
-  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED;
+  constexpr docv1::WarningCode kCut = docv1::WARNING_CODE_SOURCE_PART_READ_FAILED;
   {
     grparse::DoclingMapper mapper;
     mapper.consume(spreadsheet_info_event());
@@ -2186,7 +2186,7 @@ void verify_embedded_workbook_keeps_every_sheet() {
   }
   require(attached, "the workbook's attachment points at its group");
   require(single_is_a_table, "a single-sheet workbook stays one table");
-  require_gap(mapper, "detail-lost", docv1::WARNING_CODE_SOURCE_CONTENT_TRUNCATED, 1,
+  require_gap(mapper, "detail-lost", docv1::WARNING_CODE_SOURCE_PART_READ_FAILED, 1,
               detail_table);
   require_equal(typed_warning_count(mapper), 1, "one gap, one typed warning");
   require(grparse::docling_integrity_errors(document).empty(),

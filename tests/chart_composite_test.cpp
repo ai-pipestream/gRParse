@@ -236,6 +236,11 @@ void verify_multi_series_bar_gets_one_annotation_per_series() {
   require(bars[0]->title() == "Revenue by region" && bars[1]->title() == "Revenue by region" &&
               bars[0]->x_axis_label() == "Region" && bars[1]->y_axis_label() == "kUSD",
           "title and axis titles are the chart's own on every annotation");
+  // Each annotation holds one series and says which: without the name two
+  // annotations of one chart can only be told apart by their position.
+  require(bars[0]->series_name() == "Q1" && bars[1]->series_name() == "Q2",
+          "each bar annotation names its series, got '" + bars[0]->series_name() + "' and '" +
+              bars[1]->series_name() + "'");
   const docv1::TableData& data = document.tables(1).data();
   require(data.num_rows() == 5 && data.num_cols() == 3,
           "the bound table has the label row plus one row per category");
@@ -266,12 +271,17 @@ void verify_pie_without_title_names_corner_from_sheet_and_mints_no_caption() {
   require(picture.captions_size() == 0, "no title, no caption invented");
   require(document.texts_size() == 0, "no caption text item either");
   bool pie = false;
+  std::string pie_series;
   bool tabular_title_empty = false;
   for (const docv1::PictureAnnotation& annotation : picture.annotations()) {
-    if (annotation.has_pie_chart()) pie = annotation.pie_chart().slices_size() == 4;
+    if (annotation.has_pie_chart()) {
+      pie = annotation.pie_chart().slices_size() == 4;
+      pie_series = annotation.pie_chart().series_name();
+    }
     if (annotation.has_tabular_chart()) tabular_title_empty = annotation.tabular_chart().title().empty();
   }
   require(pie && tabular_title_empty, "the pie annotation rides along with an untitled projection");
+  require(pie_series == "Share", "the pie annotation names its series, got '" + pie_series + "'");
   const docv1::TableData& data = document.tables(1).data();
   const docv1::TableCell* corner = cell_at(data, 0, 0);
   require(corner != nullptr && corner->text() == "Segment" && corner->column_header(),
@@ -443,6 +453,8 @@ void verify_bubble_sizes_survive_the_fold() {
           "a point with no size on the wire carries none, not a default");
   require(found->points(2).value().first() == 3 && found->points(2).value().second() == 30,
           "the point's coordinates still fold");
+  require(found->series_name() == "Team",
+          "the scatter annotation names its series, got '" + found->series_name() + "'");
   require(mapper.warnings().size() == 1 && mapper.warnings()[0].contains("sizes"),
           "the short size vector is named once per series: "
           + (mapper.warnings().empty() ? std::string("no warning")

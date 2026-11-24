@@ -376,6 +376,41 @@ void verify_formatted_values_and_formula_caches() {
                 "typed formula source retained");
 }
 
+// calamine states an integer cell as an integer and libreoffice states every
+// number as a double. The two agree when they name the same value, so the
+// display string libreoffice read survives, as it does for two doubles; an
+// integer a double cannot hold is not the same value as its rounded double.
+void verify_an_integer_agrees_with_the_same_number() {
+  Workbook libre("libreoffice");
+  auto* left = libre.sheet("S");
+  number(left, 0, 0, 1234, "1,234")->mutable_value()->set_number_format("#,##0");
+  number(left, 0, 1, 9, "9.00")->mutable_value()->set_number_format("0.00");
+  number(left, 0, 2, 9007199254740992.0, "9.00719925474099E+15")
+      ->mutable_value()
+      ->set_number_format("0.00000000000000E+00");
+  Workbook calamine("calamine");
+  auto* right = calamine.sheet("S");
+  text(right, 0, 0, "1234")->mutable_value()->set_integer(1234);
+  text(right, 0, 1, "10")->mutable_value()->set_integer(10);
+  text(right, 0, 2, "9007199254740993")->mutable_value()->set_integer(9007199254740993);
+  std::vector<grparse::Warning> warnings;
+  grparse::adopt_calamine_cells(calamine.document(), {}, &libre.document(), &warnings);
+  const auto& result = libre.document().tables(0).data();
+  require_equal(at(result, 0, 0)->text(), std::string("1,234"),
+                "the display of a number both readers agree on is retained");
+  require(at(result, 0, 0)->value().kind_case() == docv1::CellValue::kInteger &&
+              at(result, 0, 0)->value().integer() == 1234,
+          "the stored value is calamine's integer");
+  require_equal(at(result, 0, 0)->value().number_format(), std::string("#,##0"),
+                "the number format rides along");
+  require_equal(at(result, 0, 1)->text(), std::string("10"),
+                "a different integer uses calamine's text");
+  require_equal(at(result, 0, 2)->text(), std::string("9007199254740993"),
+                "an integer a double cannot hold is not the double next to it");
+  require(at(result, 0, 2)->value().integer() == 9007199254740993,
+          "and keeps every digit");
+}
+
 // A formula the file stores with no cached result (a workbook a library
 // wrote and no spreadsheet program ever saved): calamine reads the source
 // and nothing else, libreoffice computed the result when it loaded the file.
@@ -489,6 +524,7 @@ int main() {
       verify_values_and_text_are_calamine,
       verify_formatted_values_and_formula_caches,
       verify_declared_headers_survive_adoption,
+      verify_an_integer_agrees_with_the_same_number,
       verify_uncached_formula_keeps_libreoffice_result,
       verify_libre_merges_fill_in_for_calamine,
       verify_calamine_merges_win,
