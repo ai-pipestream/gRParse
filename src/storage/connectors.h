@@ -11,7 +11,12 @@
 //   GRPARSE_ALLOWED_TARGET_TYPES  comma-separated target kinds; unset means
 //                                 the built-in kinds (inbody, zip, s3,
 //                                 azure_blob, google_cloud_storage,
-//                                 google_drive).
+//                                 google_drive), plus "repository" on a
+//                                 server with a document repository
+//                                 configured (GRPARSE_REPOSITORY_TARGET,
+//                                 targets/repository_target.h). A list
+//                                 that is set must name "repository" for
+//                                 that target to be taken.
 //   GRPARSE_ALLOW_EXTERNAL_PLUGINS  "true" enables plugin kinds, which must
 //                                 also be listed explicitly above.
 //   GRPARSE_STORAGE_ALLOW_PRIVATE_ENDPOINTS  "1" lets requests name loopback

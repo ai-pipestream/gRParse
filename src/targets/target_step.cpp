@@ -3,12 +3,14 @@
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
 
 #include "bundle.h"
+#include "repository_target.h"
 #include "s3_client.h"
 #include "s3_uploader.h"
 #include "zip_writer.h"
@@ -211,6 +213,27 @@ grpc::Status deliver(const parsev1::Target& target,
       bool handled = false;
       return storage::deliver_to_store(target, build_bundle(converted, result), result,
                                        &handled);
+    }
+    case parsev1::Target::kRepository: {
+      // The policy and the target's own fields were checked before the
+      // conversion ran; they are checked again here because this is the
+      // step that acts on them.
+      if (grpc::Status allowed = storage::check_target_allowed(target); !allowed.ok()) {
+        return allowed;
+      }
+      std::optional<RepositoryConfig> repository;
+      try {
+        repository = repository_config_from_environment();
+      } catch (const std::invalid_argument& misconfigured) {
+        return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION, misconfigured.what());
+      }
+      if (!repository.has_value()) {
+        return grpc::Status(grpc::StatusCode::FAILED_PRECONDITION,
+                            "repository target: no document repository is configured "
+                            "(GRPARSE_REPOSITORY_TARGET)");
+      }
+      return deliver_repository(*repository, target.repository(),
+                                build_bundle(converted, result), result);
     }
     case parsev1::Target::kInbody:
     case parsev1::Target::TARGET_NOT_SET:

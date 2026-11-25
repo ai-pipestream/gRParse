@@ -30,7 +30,9 @@ bool needs_delivery(const ai::pipestream::parse::v1::Target& target);
 // the conversion ran on, never on a gRPC event thread.  Returns
 // UNIMPLEMENTED for the targets this server declares but does not serve,
 // INVALID_ARGUMENT for a target whose own fields are incomplete, and
-// UNAVAILABLE when a store refused an object.
+// UNAVAILABLE when a store refused an object or a document repository did
+// not commit the save (repository_target.h; the repository's own status is
+// then in result->repository_failure).
 grpc::Status deliver(const ai::pipestream::parse::v1::Target& target,
                      const ai::pipestream::parse::v1::ConvertDocumentResponse& converted,
                      ai::pipestream::parse::v1::TargetResult* result);

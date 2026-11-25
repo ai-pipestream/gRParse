@@ -1654,6 +1654,130 @@ if(BUILD_TESTING)
     ENVIRONMENT "GRPARSE_SOURCE_ROOT=${CMAKE_CURRENT_SOURCE_DIR}")
 endif()
 
+# ---- Repository target: a conversion saved in a document repository ---------
+# Appended as one block (src/targets/repository_target.h). An add-on: the
+# server dials the repository only when a request names RepositoryTarget and
+# GRPARSE_REPOSITORY_TARGET says where it is, so nothing here changes a
+# deployment that has none. The contract is protomolt's parts-based
+# DocumentService and the files it imports, vendored byte-identical under
+# repository/ at their own import paths and pinned in collectors/PINS.tsv.
+# They are staged with configure_file like every other contract, so
+# scripts/stage-protos.py and the proto-contract job see the tree protoc
+# compiles. Only the service file gets gRPC stubs.
+configure_file(repository/ai/protomolt/proto/meta/v1/metadata.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/meta/v1/metadata.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/projection/v1/projection.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/projection/v1/projection.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/semantic/v1/semantic.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/semantic/v1/semantic.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/address.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/address.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/any_resolution.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/any_resolution.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/document.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/document.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/document_publication.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/document_publication.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/manifest.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/manifest.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/schema_asset_reference.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/schema_asset_reference.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/schema_occurrence.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/schema_occurrence.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v1/security.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v1/security.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v2/document_service.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v2/document_service.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v2/errors.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v2/errors.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v2/events.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v2/events.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/repo/v2/manifest.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v2/manifest.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/types/v1/concepts.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/types/v1/concepts.proto" COPYONLY)
+configure_file(repository/ai/protomolt/proto/validate/v1/validate.proto
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/validate/v1/validate.proto" COPYONLY)
+configure_file(repository/buf/validate/validate.proto
+  "${STAGED_PROTO_DIR}/buf/validate/validate.proto" COPYONLY)
+set(REPOSITORY_PROTO_FILES
+  ai/protomolt/proto/meta/v1/metadata.proto
+  ai/protomolt/proto/projection/v1/projection.proto
+  ai/protomolt/proto/repo/semantic/v1/semantic.proto
+  ai/protomolt/proto/repo/v1/address.proto
+  ai/protomolt/proto/repo/v1/any_resolution.proto
+  ai/protomolt/proto/repo/v1/document.proto
+  ai/protomolt/proto/repo/v1/document_publication.proto
+  ai/protomolt/proto/repo/v1/manifest.proto
+  ai/protomolt/proto/repo/v1/schema_asset_reference.proto
+  ai/protomolt/proto/repo/v1/schema_occurrence.proto
+  ai/protomolt/proto/repo/v1/security.proto
+  ai/protomolt/proto/repo/v2/document_service.proto
+  ai/protomolt/proto/repo/v2/errors.proto
+  ai/protomolt/proto/repo/v2/events.proto
+  ai/protomolt/proto/repo/v2/manifest.proto
+  ai/protomolt/proto/types/v1/concepts.proto
+  ai/protomolt/proto/validate/v1/validate.proto
+  buf/validate/validate.proto
+)
+set(REPOSITORY_SERVICE_PROTO
+  "${STAGED_PROTO_DIR}/ai/protomolt/proto/repo/v2/document_service.proto")
+set(REPOSITORY_PROTOS)
+set(REPOSITORY_PROTO_SOURCES)
+set(REPOSITORY_GENERATED_SOURCES)
+set(REPOSITORY_GENERATED)
+foreach(repository_proto IN LISTS REPOSITORY_PROTO_FILES)
+  string(REGEX REPLACE "\\.proto$" "" repository_stem "${repository_proto}")
+  list(APPEND REPOSITORY_PROTOS "${STAGED_PROTO_DIR}/${repository_proto}")
+  list(APPEND REPOSITORY_PROTO_SOURCES "repository/${repository_proto}")
+  list(APPEND REPOSITORY_GENERATED_SOURCES "${GENERATED_DIR}/${repository_stem}.pb.cc")
+  list(APPEND REPOSITORY_GENERATED
+    "${GENERATED_DIR}/${repository_stem}.pb.cc" "${GENERATED_DIR}/${repository_stem}.pb.h")
+endforeach()
+set(REPOSITORY_SERVICE_GENERATED
+  "${GENERATED_DIR}/ai/protomolt/proto/repo/v2/document_service.grpc.pb.cc"
+  "${GENERATED_DIR}/ai/protomolt/proto/repo/v2/document_service.grpc.pb.h")
+add_custom_command(
+  OUTPUT ${REPOSITORY_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --cpp_out=${GENERATED_DIR}
+       ${REPOSITORY_PROTOS}
+  DEPENDS ${REPOSITORY_PROTO_SOURCES} protoc
+  VERBATIM)
+add_custom_command(
+  OUTPUT ${REPOSITORY_SERVICE_GENERATED}
+  COMMAND $<TARGET_FILE:protoc>
+  ARGS --proto_path=${STAGED_PROTO_DIR}
+       --proto_path=${protobuf_SOURCE_DIR}/src
+       --grpc_out=${GENERATED_DIR}
+       --plugin=protoc-gen-grpc=$<TARGET_FILE:grpc_cpp_plugin>
+       ${REPOSITORY_SERVICE_PROTO}
+  DEPENDS ${REPOSITORY_PROTO_SOURCES} ${REPOSITORY_GENERATED} protoc grpc_cpp_plugin
+  VERBATIM)
+target_sources(grparse_proto PRIVATE ${REPOSITORY_GENERATED_SOURCES}
+  "${GENERATED_DIR}/ai/protomolt/proto/repo/v2/document_service.grpc.pb.cc")
+target_sources(grparse_core PRIVATE src/targets/repository_target.cpp)
+if(BUILD_TESTING)
+  add_executable(repository-target-test tests/repository_target_test.cpp)
+  target_include_directories(repository-target-test PRIVATE tests)
+  target_link_libraries(repository-target-test PRIVATE grparse_core grparse_flags)
+  add_test(NAME repository-target-test COMMAND repository-target-test)
+  add_dependencies(grparse-tests repository-target-test)
+  set_tests_properties(repository-target-test PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse)
+  # Needs a running document repository (GRPARSE_E2E_REPOSITORY); the header
+  # of the test says how to point it at one.
+  add_executable(repository-target-e2e-test tests/repository_target_e2e_test.cpp)
+  target_include_directories(repository-target-e2e-test PRIVATE tests)
+  target_link_libraries(repository-target-e2e-test PRIVATE grparse_core grparse_flags)
+  add_test(NAME repository-target-e2e-test COMMAND repository-target-e2e-test)
+  add_dependencies(grparse-tests repository-target-e2e-test)
+  set_tests_properties(repository-target-e2e-test PROPERTIES
+    TIMEOUT ${GRPARSE_TEST_TIMEOUT} LABELS grparse SKIP_RETURN_CODE 77)
+endif()
+
 # Tier labels for every test above, the compose-stack suites, and the
 # check that keeps each test in exactly one tier (#244).
 include(cmake/TestTiers.cmake)

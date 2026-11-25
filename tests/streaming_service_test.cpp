@@ -1418,6 +1418,75 @@ void verify_unary_zip_target_delivers_an_archive(TestServer* server) {
           "the delivered archive must be the bundle of the response the caller received");
 }
 
+// The repository target is an add-on: a server with no repository configured
+// turns it down by name before it converts anything, and a configured
+// repository that cannot be reached costs the caller the save, never the
+// conversion, and never reads as a save.
+void verify_unary_repository_target_is_refused_or_reported(TestServer* server) {
+  namespace parsev1 = pipestream::parse::v1;
+  auto client = server->unary_stub();
+  auto request = unary_request();
+  auto* repository = request.mutable_request()->mutable_target()->mutable_repository();
+  repository->set_account_id("acme");
+  repository->set_datasource_id("contracts");
+  repository->set_doc_id("doc-1");
+  repository->set_create(true);
+  {
+    ::unsetenv("GRPARSE_REPOSITORY_TARGET");
+    grpc::ClientContext context;
+    context.set_deadline(std::chrono::system_clock::now() + 10s);
+    pipestream::parse::v1::ConvertSourceResponse response;
+    const grpc::Status status = client->ConvertSource(&context, request, &response);
+    require(status.error_code() == grpc::StatusCode::INVALID_ARGUMENT,
+            "a repository target on a server with no repository must be refused; got " +
+                status.error_message());
+    google::rpc::Status rich;
+    parsev1::OptionRejection rejection;
+    require(rich.ParseFromString(status.error_details()) && rich.details_size() == 1 &&
+                rich.details(0).UnpackTo(&rejection),
+            "the repository refusal carries an OptionRejection");
+    require(rejection.option_path() == "target.repository" &&
+                rejection.reason() == parsev1::OPTION_REJECTION_REASON_NOT_ALLOWED,
+            "the OptionRejection names the repository target as not allowed; got " +
+                rejection.ShortDebugString());
+  }
+  // Nothing listens on loopback's discard port.
+  ::setenv("GRPARSE_REPOSITORY_TARGET", "127.0.0.1:9", 1);
+  ::setenv("GRPARSE_REPOSITORY_TIMEOUT_SECONDS", "5", 1);
+  grpc::ClientContext context;
+  context.set_deadline(std::chrono::system_clock::now() + 30s);
+  pipestream::parse::v1::ConvertSourceResponse response;
+  const grpc::Status status = client->ConvertSource(&context, request, &response);
+  ::unsetenv("GRPARSE_REPOSITORY_TARGET");
+  ::unsetenv("GRPARSE_REPOSITORY_TIMEOUT_SECONDS");
+  require(status.ok(), "an unreachable repository must not fail the conversion: " +
+                           status.error_message());
+  const auto& converted = response.response();
+  require(converted.document().doc().texts_size() == 3 &&
+              converted.document().exports().text() == "one\ntwo\nthree",
+          "the response body stays complete when the save did not commit");
+  require(converted.status() == pipestream::parse::v1::CONVERSION_STATUS_PARTIAL_SUCCESS,
+          "a save that did not commit makes the conversion a partial success");
+  bool reported = false;
+  for (const auto& error : converted.errors()) {
+    reported = reported ||
+               (error.module_name() == "target-delivery" &&
+                error.category() == pipestream::parse::v1::FAILURE_CATEGORY_TARGET_UNAVAILABLE);
+  }
+  require(reported, "the failed save is an error item of category TARGET_UNAVAILABLE");
+  const auto& delivered = converted.target_result();
+  require(!delivered.has_repository() && delivered.objects().empty(),
+          "a save that did not commit reports no accession and no objects");
+  require(delivered.has_repository_failure(), "the response says why the save did not commit");
+  const auto reason = delivered.repository_failure().reason();
+  require(reason == parsev1::REPOSITORY_FAILURE_REASON_UNREACHABLE ||
+              reason == parsev1::REPOSITORY_FAILURE_REASON_DEADLINE_EXCEEDED,
+          "an unreachable repository is reported as unreachable; got " +
+              delivered.repository_failure().ShortDebugString());
+  require(!delivered.repository_failure().operation_id().empty(),
+          "the failure names the operation id an outcome lookup needs");
+}
+
 // The targets the wire declares but this server does not serve say so by
 // name, and the ones it treats as the default deliver nothing extra.
 void verify_unary_unimplemented_targets_are_refused(TestServer* server) {
@@ -9141,6 +9210,7 @@ int main() {
         verify_recognition_options_steer_the_cv_leg(&server);
         verify_unary_multi_format_exports(&server);
         verify_unary_zip_target_delivers_an_archive(&server);
+        verify_unary_repository_target_is_refused_or_reported(&server);
         verify_unary_unimplemented_targets_are_refused(&server);
         verify_stream_resolves_recognition_options();
         verify_stream_carries_source_warnings_typed();

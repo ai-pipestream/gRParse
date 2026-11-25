@@ -6,6 +6,7 @@ import "ai/pipestream/document/v1/document.proto";
 import "ai/pipestream/asr/v1/asr_service.proto";
 import "ai/pipestream/ebcdic/v1/ebcdic.proto";
 import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
 import "lolhtml/v1/lolhtml_service.proto";
 
 option java_multiple_files = true;
@@ -720,6 +721,7 @@ message Target {
     GoogleCloudStorageTarget google_cloud_storage = 7;
     GoogleDriveTarget google_drive = 8;
     PluginTarget plugin = 9;
+    RepositoryTarget repository = 10;
   }
 }
 
@@ -769,6 +771,72 @@ message GoogleDriveTarget {
 message PluginTarget {
   string kind = 1;
   google.protobuf.Any config = 2;
+}
+
+// RepositoryTarget saves the result in a document repository over gRPC: the
+// parts-based store that serves ai.protomolt.proto.repo.v2.DocumentService.
+//
+// It is an add-on. The server dials the repository only when a request
+// names this target, at the address its deployment set in
+// GRPARSE_REPOSITORY_TARGET. The request names neither an address nor a
+// credential. A server with no address configured refuses the target before
+// any fetch or conversion, as INVALID_ARGUMENT with an OptionRejection for
+// "target.repository"; nothing falls back to another target.
+//
+// The save stores the conversion as two raw files of the document's blob
+// bag, both members of the result bundle (see TargetResult) with the
+// bundle's own bytes:
+//   blob "grparse:document.pb"  the Document, schema subject
+//                               "ai/pipestream/document/v1/document.proto"
+//   blob "grparse:response.pb"  the ConvertDocumentResponse that says how
+//                               the conversion went, schema subject
+//                               "ai/pipestream/parse/v1/parse_types.proto"
+// Each blob's filename is its bundle path, its media type is
+// application/x-protobuf, and it declares its length and SHA-256, which the
+// repository verifies. The bundle's other members are not stored: page and
+// picture images are already inside the Document, and exports return in the
+// response body. document.pb is streamed. response.pb rides the same call,
+// so the save is one accession, unless it is larger than 4 MiB: then a
+// second accession, recorded under the operation id followed by
+// "/response", streams it onto the revision the first one committed.
+//
+// The document is stored at the intake address the repository derives from
+// the fields below: (doc_id, datasource_id, account_id, "intake:" followed
+// by account_id). The repository's own rules decide whether the server's
+// credential may write there.
+message RepositoryTarget {
+  // The account (tenant root) that owns the document.
+  string account_id = 1;
+  // The intake datasource the document is stored under, and the writer the
+  // save is attributed to.
+  string datasource_id = 2;
+  // The document's id in the repository.
+  string doc_id = 3;
+  // The connector the datasource binds, when the caller knows it. Recorded
+  // on a document this save creates; left as stored on an existing one.
+  optional string connector_id = 4;
+  // What the caller believes the document's current revision is. Required:
+  // the repository has no unconditional save, and this server does not look
+  // the revision up on the caller's behalf.
+  oneof expected {
+    // The document must not exist yet. The save creates it. Only true is
+    // accepted.
+    bool create = 5;
+    // The document's current revision must be exactly this one. The save
+    // replaces the blobs an earlier RepositoryTarget save wrote (every blob
+    // whose id starts with "grparse:") and keeps every other blob of that
+    // revision as it is.
+    int64 revision = 6;
+  }
+  // The repository drive new objects are written to. Unset uses the
+  // repository's default for the account.
+  optional string drive = 7;
+  // The save's idempotency key, unique per account and at most 180
+  // characters: a retry with the same id and the same content replays the
+  // recorded outcome instead of writing again. Unset derives one from the
+  // address, the expectation and the SHA-256 of both blobs, so the same
+  // conversion saved twice to the same place replays.
+  optional string operation_id = 8;
 }
 
 // ZipTarget returns results as a ZIP archive.
@@ -882,6 +950,100 @@ message TargetResult {
   // pictures in arena order. Empty when every image the Document carries
   // was written under its own type.
   repeated BundleImageIssue image_issues = 3;
+  // The accession a RepositoryTarget committed. Set only by
+  // RepositoryTarget, and only when the repository answered with a
+  // committed save for both blobs; `objects` then lists them (key: the blob
+  // id, size_bytes: the blob's length; the repository returns no entity
+  // tag).
+  optional RepositorySave repository = 4;
+  // Why a RepositoryTarget save did not commit. Set only by
+  // RepositoryTarget, and never together with `repository`.
+  optional RepositoryFailure repository_failure = 5;
+}
+
+// RepositorySave is the accession a RepositoryTarget committed.
+message RepositorySave {
+  // The address the document is stored at, as the repository reported it.
+  string doc_id = 1;
+  string graph_address_id = 2;
+  string account_id = 3;
+  string graph_id = 4;
+  // The revision that holds both blobs: the last one this save committed.
+  int64 revision = 5;
+  // The revision it replaced. Unset when the save created the document.
+  optional int64 previous_revision = 6;
+  // The operation id the save was recorded under.
+  string operation_id = 7;
+  // The repository returned an outcome it had already recorded for this
+  // operation id: an earlier attempt committed, and nothing was written
+  // again.
+  bool replayed = 8;
+  // When the repository committed the revision.
+  google.protobuf.Timestamp committed_at = 9;
+}
+
+// RepositoryFailureReason classifies a RepositoryTarget save that did not
+// commit.
+enum RepositoryFailureReason {
+  REPOSITORY_FAILURE_REASON_UNSPECIFIED = 0;
+  // The repository could not be reached, or the call broke before it
+  // answered. Whether the save committed is unknown; the repository's
+  // GetOperationOutcome for operation_id says.
+  REPOSITORY_FAILURE_REASON_UNREACHABLE = 1;
+  // The call's deadline ran out. Whether the save committed is unknown, as
+  // for UNREACHABLE.
+  REPOSITORY_FAILURE_REASON_DEADLINE_EXCEEDED = 2;
+  // The repository refused the server's credential, or the credential may
+  // not write the document.
+  REPOSITORY_FAILURE_REASON_NOT_AUTHORIZED = 3;
+  // The document's current revision is not the one the request expected;
+  // current_revision carries the one the repository reported.
+  REPOSITORY_FAILURE_REASON_REVISION_CONFLICT = 4;
+  // The operation id is already recorded for a different save.
+  REPOSITORY_FAILURE_REASON_OPERATION_REUSED = 5;
+  // The repository refused the save's content or shape; rejection_raw names
+  // its own reason.
+  REPOSITORY_FAILURE_REASON_REJECTED = 6;
+  // The repository had no room for the save.
+  REPOSITORY_FAILURE_REASON_RESOURCE_EXHAUSTED = 7;
+  // The repository answered something the contract does not allow: no
+  // answer, an answer out of order, or a committed save that names another
+  // operation.
+  REPOSITORY_FAILURE_REASON_PROTOCOL = 8;
+  // The document or the expected revision does not exist, or the server's
+  // credential may not read it (the repository answers both the same way).
+  REPOSITORY_FAILURE_REASON_NOT_FOUND = 9;
+  // Any other status the repository answered with.
+  REPOSITORY_FAILURE_REASON_OTHER = 10;
+}
+
+// RepositoryFailure is the typed account of a RepositoryTarget save that
+// did not commit. The conversion's own response is unaffected: it keeps its
+// DocumentResponse, reports partial success, and carries an error item of
+// category TARGET_UNAVAILABLE beside this.
+message RepositoryFailure {
+  RepositoryFailureReason reason = 1;
+  // The gRPC status code the repository call ended with (google.rpc.Code,
+  // 1 to 16). 0 only for REPOSITORY_FAILURE_REASON_PROTOCOL on a call that
+  // ended OK.
+  int32 grpc_status_code = 2;
+  // The repository's status message, verbatim.
+  string message = 3;
+  // The operation id the save was sent under, for an outcome lookup.
+  string operation_id = 4;
+  // REVISION_CONFLICT: the document's current revision as the repository
+  // reported it (0 when the document does not exist), and whether that
+  // revision is a tombstone.
+  optional int64 current_revision = 5;
+  optional bool current_is_tombstone = 6;
+  // REJECTED: the repository's own rejection reason by its enum value name
+  // (for example "REJECTION_REASON_UPLOAD_MISMATCH"), kept as text so a
+  // reason this contract does not list is not lost.
+  optional string rejection_raw = 7;
+  // Set when the save needed a second accession for response.pb and only
+  // the first committed: the revision that holds document.pb, which
+  // TargetResult.objects then lists.
+  optional int64 committed_revision = 8;
 }
 
 // ============================================================================

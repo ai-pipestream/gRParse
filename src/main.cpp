@@ -29,6 +29,7 @@
 #include "grparse/service_health.h"
 #include "grparse_session_ep.h"
 #include "server_config.h"
+#include "targets/repository_target.h"
 
 namespace {
 
@@ -318,6 +319,9 @@ int main() {
     };
     const auto endpoints = std::make_shared<grparse::CollectorEndpoints>(targets, office_cv);
     grparse::report_collector_targets(targets, layout != nullptr, figure_classes != nullptr);
+    // Read here so a repository setting the server cannot use stops the
+    // startup instead of failing the first save that names the target.
+    std::println("{}", grparse::targets::describe_repository_setting());
     grparse::report_retired_settings();
     grparse::report_model_placements();
     const grparse::CallExecutor::Options executor_options = grparse::read_executor_options();

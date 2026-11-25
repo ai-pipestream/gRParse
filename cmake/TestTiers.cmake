@@ -33,13 +33,14 @@ set(GRPARSE_TIER_LOOPBACK
   chart-derender-test remote-pdf-source-test pdf-source-test
   remote-sources-test storage-connectors-test consensus-page-source-test
   prometheus-metrics-test page-scheduler-test page-previews-test
-  ort-session-ep-test service-health-test)
+  ort-session-ep-test service-health-test repository-target-test)
 set(GRPARSE_TIER_MODELS
   layout-engine-test table-structure-engine-test figure-classifier-test
   chunk-hf-model-test tensorrt-model-test)
 set(GRPARSE_TIER_EMBEDDINGS embedding-model-test embedding-reference-test)
 set(GRPARSE_TIER_EMULATORS
-  storage-connectors-e2e-test remote-sources-e2e-test chart-outputs-e2e-test)
+  storage-connectors-e2e-test remote-sources-e2e-test chart-outputs-e2e-test
+  repository-target-e2e-test)
 
 # The compose-stack suites, registered so `ctest -L stack` lists and runs
 # them. They run exactly as they do by hand (scripts/test/stack-suite.sh
