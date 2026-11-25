@@ -301,6 +301,7 @@ layer where it is good.
 | `s3` | writes the same bundle to an S3-compatible store and returns one `StoredObject` (key, ETag, size) per member |
 | `azure_blob`, `google_cloud_storage`, `google_drive` | writes the same bundle to that store, one `StoredObject` per member (`store_id` is the Drive file id) |
 | `plugin` | hands the bundle to a registered connector plugin |
+| `repository` | saves `document.pb` and `response.pb` in a document repository over gRPC (protomolt's `DocumentService`); an add-on, see [Repository target](#repository-target) |
 | `put`, `presigned_url` | `UNIMPLEMENTED`, named in the status message |
 
 The bundle is one canonical file set, identical whichever target delivers it:
@@ -325,6 +326,40 @@ Determinism is the point here too: members are sorted by path, archive timestamp
 `S3Target` signs each PUT with AWS Signature V4 over libcurl; path style, no SDK, no ambient credential chain by default. The credentials come from the request, are never logged, and never appear in an error message. A request that omits both keys is rejected unless the deployment sets `GRPARSE_S3_AMBIENT_CREDENTIALS=1`; only then do the server's own `AWS_ACCESS_KEY_ID`/`AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN`) sign for the caller's bucket, and only on an endpoint listed in `GRPARSE_S3_AMBIENT_ENDPOINTS` (comma-separated `host[:port]`, a scheme is allowed and ignored; unset lists none), so enable it only where every caller may write wherever that identity can on those endpoints. A session token is never sent over `http://` or with `verify_ssl: false`, and ambient credentials are never used over `http://`, with `verify_ssl: false`, or for an unlisted endpoint: such a target is refused as `INVALID_ARGUMENT`. An endpoint carrying userinfo, whitespace or a control character is refused the same way. `endpoint` may name any S3-compatible store (with or without a scheme, defaulting to https), and the region is read from the endpoint host (`s3.<region>`, `s3-<region>`, past a `dualstack` or `fips` qualifier) or defaults to `us-east-1`; `region` on the target overrides both. TLS peer and hostname verification is ON unless the request explicitly sets `verify_ssl: false` for a self-signed internal store; an absent field means verify. Uploads run on their own pool, sized by `GRPARSE_UPLOAD_WORKERS` (default 4) and `GRPARSE_UPLOAD_QUEUE` (default 32). A store that refuses an upload does not cost the caller the conversion: the response keeps its full `DocumentResponse`, the failure lands as an error item, the objects already written before the refusal are still listed in `target_result.objects` so the caller can clean up or retry, and the status reports partial success; only a misconfigured target itself (missing bucket, unusable endpoint) fails the RPC, as `INVALID_ARGUMENT`.
 
 Security posture: the target's endpoint and credentials are caller-supplied, which makes `ConvertSource` an egress writer to wherever the caller points it. That is the intended shape for the trusted-internal deployments this server assumes (the same trust the request's source URLs already get); an internet-facing deployment must put an endpoint policy in front of this RPC or keep the target surface disabled.
+
+### Repository target
+
+`RepositoryTarget` saves a conversion in a document repository: the parts-based store behind protomolt's `ai.protomolt.proto.repo.v2.DocumentService`, over gRPC and in protobuf end to end. It is an add-on, not a dependency. A server with no repository configured builds, starts and parses exactly as before, opens no channel, and refuses the target by name before any fetch or conversion (`INVALID_ARGUMENT`, `OptionRejection` for `target.repository`, `OPTION_REJECTION_REASON_NOT_ALLOWED`); nothing falls back to another target.
+
+| Setting | Meaning |
+|---|---|
+| `GRPARSE_REPOSITORY_TARGET` | `host:port` of the repository's gRPC listener. Unset or blank: no repository |
+| `GRPARSE_REPOSITORY_API_TOKEN` | the credential sent as `api_token` call metadata; never logged, never in an error message. Unset sends none |
+| `GRPARSE_REPOSITORY_TLS` | `1` or `true` dials with TLS against the system roots; unset, `0` or `false` dials plaintext, which is what the repository's stock listener speaks. The token then crosses the network in the clear, so keep a plaintext repository on a trusted network |
+| `GRPARSE_REPOSITORY_TIMEOUT_SECONDS` | the deadline of each repository call, 1 to 86400, default 300 |
+
+A value outside the table stops the server at startup. The startup log says whether a repository is configured and how it is dialled. A deployment that sets `GRPARSE_ALLOWED_TARGET_TYPES` must list `repository` there too.
+
+The deployment says where the repository is and how the server authenticates; the request says which document the result is. `account_id`, `datasource_id` and `doc_id` name the intake address `(doc_id, datasource_id, account_id, "intake:<account_id>")`, and the save is attributed to that datasource as its intake writer. The request also says what it expects to find there, because the repository has no unconditional save and this server does not guess: `create: true` for a document that must not exist yet, or `revision: N` for the exact current revision of one that does.
+
+The save stores two blobs in the document's blob bag, both with the bundle's own bytes, so they are identical to the same members in a ZIP or a bucket:
+
+| Blob id | Contents | Schema subject |
+|---|---|---|
+| `grparse:document.pb` | the `Document` | `ai/pipestream/document/v1/document.proto` |
+| `grparse:response.pb` | the `ConvertDocumentResponse` that says how the conversion went (status, errors, chunks, findings, confidence) | `ai/pipestream/parse/v1/parse_types.proto` |
+
+Each declares its length and SHA-256, which the repository verifies. The bundle's other members are not stored: page and picture images are already inside the `Document`, and exports return in the response body. `document.pb` is streamed (`UploadDocument`), so its size is not bound by a message limit; `response.pb` rides the same call, which makes the save one accession. Only a `response.pb` over 4 MiB takes a second accession, recorded under the operation id plus `/response`, that streams it onto the revision the first one committed.
+
+A save onto an existing revision reads that revision's blob bag first, replaces the blobs an earlier repository target wrote (every id starting with `grparse:`) and keeps every other blob as it is, so another writer's source file is never dropped. It writes no CORE content: the document's identity and metadata carry forward untouched.
+
+Saves are idempotent by `operation_id`. A request may name one; otherwise it is derived from the address, the expectation and both blobs' SHA-256, so the same conversion saved twice to the same place replays the recorded outcome (`RepositorySave.replayed`) and sends no bytes.
+
+`TargetResult.repository` carries the committed accession (address, revision, the revision it replaced, operation id, commit time) and `objects` lists the two blobs. A save that did not commit never reads as success: the conversion keeps its `DocumentResponse` and reports partial success with a `TARGET_UNAVAILABLE` error item, and `TargetResult.repository_failure` says why, typed: the reason (`UNREACHABLE`, `DEADLINE_EXCEEDED`, `NOT_AUTHORIZED`, `REVISION_CONFLICT` with the document's current revision, `OPERATION_REUSED`, `REJECTED` with the repository's own rejection reason, `RESOURCE_EXHAUSTED`, `NOT_FOUND`, `PROTOCOL`, `OTHER`), the repository's status code and message verbatim, and the operation id for an outcome lookup. A commit that names another operation or no revision is a `PROTOCOL` failure, not a save.
+
+The contract is vendored byte-identical under `repository/` (the service file and the 17 files it imports) and pinned to its protomolt commit in `collectors/PINS.tsv`, so drift fails the `proto-contract` check.
+
+`repository-target-test` runs the target against an in-process `DocumentService` built from the vendored contract, in every build. `repository-target-e2e-test` runs it against a real repository and reads every blob back with `ReadBlob`: point `GRPARSE_E2E_REPOSITORY` at the repository's gRPC listener, `GRPARSE_E2E_REPOSITORY_API_TOKEN` at its token and `GRPARSE_E2E_REPOSITORY_ACCOUNT` at an account it knows (protomolt's `DOCUMENT_PLATFORM_SEED_ACCOUNT_ID`). It skips (77) without the first, and CI starts no repository, so it runs by hand.
 
 ### Storage sources and targets
 
@@ -1689,7 +1724,7 @@ against the `default` configure preset's `build/`):
 | `loopback` | an in-process gRPC server, fake backend or loopback HTTP | every image build, every PR | none |
 | `models` | the files under `models/` | every image build; they pass only on `cpu-image`, which provides the models and sets `GRPARSE_TEST_REQUIRE_MODELS=1` (`models` preset) | cuda and openvino builds skip these four |
 | `embeddings` | the embedding model bundle (`GRPARSE_EMBEDDING_TEST_MODELS`) | skip inside every image build; the openvino CI job runs both through the shipped binaries afterwards | all three, in-build |
-| `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM | skip inside every image build; `cpu-image` runs them afterwards from the e2e image with the emulators up | all three, in-build |
+| `emulators` | fake-gcs, Azurite, RustFS, grpc-enrich and an emulated VLM; a document repository for `repository-target-e2e-test` | skip inside every image build; `cpu-image` runs the storage, remote source and chart suites afterwards from the e2e image with the emulators up; `repository-target-e2e-test` runs by hand against a repository (`GRPARSE_E2E_REPOSITORY`) | all four, in-build |
 | `stack` | a docker compose stack | nightly (`nightly` preset), only the suites `GRPARSE_STACK_SUITES` names (`scripts/test/stack-suite.sh`); never in an image build | every one not named |
 | `eval` | a running stack and an oracle (`vlm-oracle-eval`, `structural-scorecard`) | nightly and release | without `GRPARSE_TARGET`/`VLM_ENDPOINT` |
 | `bench` | timing on fixed fixtures (`grparse-bench`, below) | nightly, enforced; every image build compiles it but never runs it | without `GRPARSE_BENCH_ENFORCE=1` |

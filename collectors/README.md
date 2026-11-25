@@ -29,7 +29,8 @@ fastwarc pair by decoding hand-written wire bytes; a pair that carries real
 traffic deserves the same.
 
 `PINS.tsv` makes the rule a CI check (#246): one row per copy (`file`, owning
-`repo`, `path` there, `commit`), the backend contract under `backends/` and
+`repo`, `path` there, `commit`), the backend contract under `backends/`, the
+document repository contract under `repository/` (`repository/README.md`) and
 every sibling's `document.proto` copy included, and
 `scripts/test/vendored-protos-test.sh` fetches each owner's file at its pinned
 commit and fails with the diff on any byte of difference. Re-vendoring is two

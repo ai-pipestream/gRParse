@@ -132,7 +132,7 @@ RUN --mount=type=cache,id=grparse-cpu-ubuntu26-grpc1.84.1-ort1.30.0-cxx23-sessio
     if [ -d /opt/grparse-seed ] && [ ! -f /build/CMakeCache.txt ]; then \
       cp -a /opt/grparse-seed/. /build/ && echo "seed: /build seeded from /opt/grparse-seed"; \
     fi \
- && PROTO_SUM=$(cat *.proto collectors/*.proto | sha256sum | cut -d' ' -f1) \
+ && PROTO_SUM=$(cat *.proto collectors/*.proto $(find repository -name '*.proto' | sort) | sha256sum | cut -d' ' -f1) \
  && if [ "$(cat /build/.proto-sum 2>/dev/null)" != "$PROTO_SUM" ]; then \
       rm -rf /build/proto /build/generated && printf '%s' "$PROTO_SUM" > /build/.proto-sum; \
     fi \

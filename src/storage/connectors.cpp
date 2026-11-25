@@ -9,6 +9,7 @@
 #include <stdexcept>
 
 #include "../source_parse.h"
+#include "../targets/repository_target.h"
 #include "azure_blob.h"
 #include "google_storage.h"
 #include "http_call.h"
@@ -38,7 +39,7 @@ const std::set<std::string>& reserved_kinds() {
   static const std::set<std::string> kinds = {"file", "http", "s3", "azure_blob",
                                               "google_cloud_storage", "google_drive", "inbody",
                                               "zip", "put", "presigned_url", "local_path",
-                                              "plugin"};
+                                              "plugin", "repository"};
   return kinds;
 }
 
@@ -199,6 +200,7 @@ std::string target_kind(const parsev1::Target& target) {
     case parsev1::Target::kGoogleCloudStorage: return "google_cloud_storage";
     case parsev1::Target::kGoogleDrive: return "google_drive";
     case parsev1::Target::kPlugin: return target.plugin().kind();
+    case parsev1::Target::kRepository: return "repository";
     case parsev1::Target::TARGET_NOT_SET: return "inbody";
   }
   return std::string();
@@ -285,6 +287,20 @@ grpc::Status check_target_allowed(const parsev1::Target& target) {
       return grpc::Status::OK;
     default:
       break;
+  }
+  if (target.has_repository()) {
+    // The repository target is an add-on the deployment turns on by
+    // configuring a repository (GRPARSE_REPOSITORY_TARGET), so it needs no
+    // entry in the default list; a deployment that does list its target
+    // kinds must list this one too.
+    const auto allowed = listed("GRPARSE_ALLOWED_TARGET_TYPES");
+    if (allowed.has_value() && !allowed->contains("repository")) {
+      return option_rejected("target", parsev1::OPTION_REJECTION_REASON_NOT_ALLOWED,
+                             "repository",
+                             "target: target kind 'repository' is not allowed "
+                             "(GRPARSE_ALLOWED_TARGET_TYPES)");
+    }
+    return targets::check_repository_target(target.repository());
   }
   const bool plugin = target.has_plugin();
   return check_kind(target_kind(target), plugin, plugin ? "target.plugin" : "target",
