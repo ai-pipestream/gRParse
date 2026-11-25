@@ -36,7 +36,10 @@ inline constexpr uint32_t kManifestSchemaVersion = 1;
 //                            schema version, deterministically serialized
 //   manifest.json            the same message as JSON, for people
 //   document.pb              the Document, deterministically serialized
-//   document.json            the canonical JSON dialect of the same Document
+//   document.json            the canonical JSON dialect of the same Document,
+//                            only when the request asked for that output
+//                            format (the same bytes as
+//                            exports/canonical_json.json)
 //   response.pb              a ConvertDocumentResponse: the conversion's
 //                            status, errors, chunks, structure findings,
 //                            read quality, offset table and option

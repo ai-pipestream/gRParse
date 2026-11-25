@@ -15,7 +15,6 @@
 
 #include "grparse/image_ref.h"
 #include "grparse/content_sniff.h"
-#include "grparse/document_render.h"
 #include "sha256.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -269,12 +268,14 @@ std::vector<BundleFile> build_bundle(const parsev1::ConvertDocumentResponse& con
   result->clear_image_issues();
   std::vector<BundleFile> files;
   files.push_back({"document.pb", serialize(document, "document")});
-  // The canonical JSON is the bundle's readable form of the same document.
-  // Reusing the export when the request already asked for it keeps a fold
-  // that walks the whole document from running twice.
-  files.push_back({"document.json", exports.has_canonical_json()
-                                        ? exports.canonical_json()
-                                        : render_canonical_json(document)});
+  // document.pb is the document.  Its canonical JSON is an output format
+  // like any other, so document.json is a member only when the request
+  // asked for that format, and it is the rendering the request already
+  // paid for: the bundle never walks the document a second time for a file
+  // nobody asked for.
+  if (exports.has_canonical_json()) {
+    files.push_back({"document.json", exports.canonical_json()});
+  }
   add_exports(exports, &files);
 
   // std::map, not the proto map: page images must land in page order for the

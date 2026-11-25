@@ -32,6 +32,7 @@
 #include "ai/pipestream/document/v1/document.pb.h"
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "grparse/base64.h"
+#include "grparse/document_render.h"
 #include "support/check.h"
 
 namespace docv1 = ai::pipestream::document::v1;
@@ -150,13 +151,12 @@ void verify_bundles_are_reproducible() {
 void verify_bundle_carries_the_canonical_file_set() {
   const docv1::Document document = sample_document("members");
   const auto files = sample_bundle(document);
-  for (const auto& path : {"document.json", "document.pb", "exports/markdown.md",
-                           "exports/text.txt", "manifest.json", "manifest.pb",
-                           "pages/page_0001.png", "pages/page_0002.png",
-                           "pictures/pic_0001.png", "response.pb"}) {
+  for (const auto& path : {"document.pb", "exports/markdown.md", "exports/text.txt",
+                           "manifest.json", "manifest.pb", "pages/page_0001.png",
+                           "pages/page_0002.png", "pictures/pic_0001.png", "response.pb"}) {
     member(files, path);
   }
-  require(files.size() == 10, "the bundle carries exactly its own members, not more");
+  require(files.size() == 9, "the bundle carries exactly its own members, not more");
   require(std::ranges::is_sorted(files, {}, &targets::BundleFile::path),
           "bundle members must be sorted by path");
   require(member(files, "pages/page_0001.png").bytes == fake_image(1),
@@ -317,6 +317,41 @@ std::string data_uri(const std::string& mimetype, const std::string& bytes) {
 
 bool has_member(const std::vector<targets::BundleFile>& files, const std::string& path) {
   return std::ranges::find(files, path, &targets::BundleFile::path) != files.end();
+}
+
+// document.pb is the document. Its JSON rendering is an output format like
+// any other, so the bundle holds it only when the request asked for it: a
+// request that named no JSON output gets no document.json, and pays for no
+// second walk over the document and no second copy of it in the store.
+void verify_document_json_is_written_only_on_request() {
+  const docv1::Document document = sample_document("json on request");
+
+  const auto unasked = sample_bundle(document);
+  require(!has_member(unasked, "document.json"),
+          "a request that asked for no canonical JSON gets no document.json");
+  require(!has_member(unasked, "exports/canonical_json.json"),
+          "a request that asked for no canonical JSON gets no canonical JSON export");
+  require(has_member(unasked, "document.pb"), "document.pb is always a member");
+  for (const auto& entry : bundled_manifest(unasked).files()) {
+    require(entry.path() != "document.json", "the manifest lists no member the bundle lacks");
+  }
+
+  parsev1::ConvertDocumentResponse asked = sample_conversion(document);
+  const std::string rendered = grparse::render_canonical_json(document);
+  asked.mutable_document()->mutable_exports()->set_canonical_json(rendered);
+  parsev1::TargetResult result;
+  const auto files = targets::build_bundle(asked, &result);
+  require_equal(member(files, "document.json").bytes, rendered,
+                "document.json is the canonical JSON the request asked for");
+  require_equal(member(files, "exports/canonical_json.json").bytes, rendered,
+                "the canonical JSON export is the same rendering");
+  require(files.size() == unasked.size() + 2,
+          "asking for canonical JSON adds exactly its two members");
+  bool listed = false;
+  for (const auto& entry : bundled_manifest(files).files()) {
+    listed = listed || entry.path() == "document.json";
+  }
+  require(listed, "the manifest lists document.json when the bundle holds it");
 }
 
 // The bundle's own account of the conversion, read back the way a reader of
@@ -1167,6 +1202,7 @@ int main() {
       verify_sha256_matches_the_published_vectors,
       verify_bundles_are_reproducible,
       verify_bundle_carries_the_canonical_file_set,
+      verify_document_json_is_written_only_on_request,
       verify_manifest_describes_every_member,
       verify_the_manifest_is_a_typed_message,
       verify_the_json_manifest_says_what_the_typed_manifest_says,
