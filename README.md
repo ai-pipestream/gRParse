@@ -310,7 +310,7 @@ The bundle is one canonical file set, identical whichever target delivers it:
 | `manifest.pb` | a `BundleManifest`, deterministically serialized: every member below with its SHA-256 and byte size, plus the generator and schema version. This is the index a program reads |
 | `manifest.json` | the same message in protobuf's JSON mapping, for people; it is rendered from `manifest.pb`'s message and never says anything else |
 | `document.pb` | the `Document`, deterministically serialized |
-| `document.json` | the canonical JSON dialect of the same document |
+| `document.json` | the canonical JSON dialect of the same document, only when the request asked for that output format; it is the same bytes as `exports/canonical_json.json`. A request that asks for no canonical JSON gets `document.pb` alone |
 | `response.pb` | a `ConvertDocumentResponse`, deterministically serialized: the conversion's `status`, `errors`, `chunks`, `structure_findings`, `confidence`, `text_offsets` and `option_notices`, `document.filename`, and `target_result.image_issues` |
 | `exports/<name>.<ext>` | one file per output format the request asked for |
 | `pages/page_NNNN.<ext>` | each page image the document embeds |
