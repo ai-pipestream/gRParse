@@ -5,10 +5,12 @@
 // on every call, content only for the parts a save writes, no
 // client-supplied storage reference or write stamp on a blob, a blob without
 // bytes only when the expected revision holds it, the declared length and
-// SHA-256 of the streamed bytes, compare-and-swap on the expected revision,
-// and replay by operation id.  What it stores is read back and compared
-// byte for byte with the bundle, so a save that "succeeded" without the
-// bytes arriving fails here.
+// SHA-256 of the streamed bytes, a PUT that replaces the whole part, a
+// parser result admitted only when its shape is a type the repository has a
+// schema for, compare-and-swap on the expected revision, and replay by
+// operation id.  What it stores is read back and compared byte for byte
+// with the bundle, so a save that "succeeded" without the bytes arriving
+// fails here.
 
 #include <algorithm>
 #include <chrono>
@@ -55,6 +57,8 @@ using grparse_test::require_equal;
 namespace {
 
 constexpr const char* kToken = "repository-test-token";
+constexpr const char* kDocumentTypeUrl =
+    "type.googleapis.com/ai.pipestream.document.v1.Document";
 
 class ScopedEnv {
  public:
@@ -118,6 +122,9 @@ class FakeRepository final : public repov2::DocumentService::Service {
   struct Revision {
     repov1::Document core;  // doc_id and ownership
     std::vector<StoredBlob> blobs;
+    // The PARSED part as stored: one codec fragment, a Document holding the
+    // parser results. Empty when the revision has none.
+    std::string parsed;
     repov2::SaveOwner owner;
     std::string drive;
   };
@@ -132,11 +139,19 @@ class FakeRepository final : public repov2::DocumentService::Service {
     answer_another_operation_ = true;
   }
 
-  // A document some other writer saved: one revision holding `blob_id`.
+  void end_the_next_read_early() {
+    std::lock_guard lock(mutex_);
+    end_the_next_read_early_ = true;
+  }
+
+  // A document some other writer saved: one revision holding `blob_id`, or
+  // one more blob on the revision already seeded.
   void seed(const repov1::NodeAddress& address, const std::string& blob_id,
             const std::string& bytes) {
     std::lock_guard lock(mutex_);
-    Revision revision;
+    std::vector<Revision>& history = documents_[address_key(address)];
+    if (history.empty()) history.emplace_back();
+    Revision& revision = history.back();
     revision.core.set_doc_id(address.doc_id());
     revision.core.mutable_ownership()->set_account_id(address.account_id());
     revision.core.mutable_ownership()->set_datasource_id(address.graph_address_id());
@@ -149,7 +164,19 @@ class FakeRepository final : public repov2::DocumentService::Service {
     stored.blob.set_checksum_type(repov1::CHECKSUM_TYPE_SHA256);
     stored.bytes = bytes;
     revision.blobs.push_back(std::move(stored));
-    documents_[address_key(address)].push_back(std::move(revision));
+  }
+
+  // Another parser's result on the seeded revision.
+  void seed_parser_result(const repov1::NodeAddress& address, const repov1::ParserResult& result) {
+    std::lock_guard lock(mutex_);
+    Revision& revision = documents_.at(address_key(address)).back();
+    repov1::Document fragment;
+    if (!revision.parsed.empty() && !fragment.ParseFromString(revision.parsed)) {
+      throw std::runtime_error("the seeded PARSED part does not parse");
+    }
+    fragment.set_doc_id(address.doc_id());
+    (*fragment.mutable_parser_results())[result.parser_name()] = result;
+    revision.parsed = fragment.SerializeAsString();
   }
 
   std::vector<Revision> revisions(const repov1::NodeAddress& address) const {
@@ -164,6 +191,10 @@ class FakeRepository final : public repov2::DocumentService::Service {
   int reads() const {
     std::lock_guard lock(mutex_);
     return reads_;
+  }
+  int part_reads() const {
+    std::lock_guard lock(mutex_);
+    return part_reads_;
   }
   int data_frames() const {
     std::lock_guard lock(mutex_);
@@ -202,6 +233,65 @@ class FakeRepository final : public repov2::DocumentService::Service {
     }
     *response->mutable_manifest()->mutable_address() = request->address();
     response->mutable_manifest()->set_revision(wanted);
+    // Every part the revision has, selected or not.
+    if (!revision.blobs.empty()) {
+      auto* part = response->mutable_manifest()->add_parts();
+      part->mutable_selector()->set_part(repov2::DOCUMENT_PART_BLOBS);
+      part->set_state(repov2::PART_STATE_PRESENT);
+      part->set_content_included(true);
+    }
+    if (!revision.parsed.empty()) {
+      auto* part = response->mutable_manifest()->add_parts();
+      part->mutable_selector()->set_part(repov2::DOCUMENT_PART_PARSED);
+      part->set_state(repov2::PART_STATE_PRESENT);
+      part->set_size_bytes(static_cast<int64_t>(revision.parsed.size()));
+    }
+    return grpc::Status::OK;
+  }
+
+  // The streamed read of the PARSED part: the manifest, the stored fragment
+  // in frames, the completion.
+  grpc::Status ReadDocument(grpc::ServerContext* context,
+                            const repov2::ReadDocumentRequest* request,
+                            grpc::ServerWriter<repov2::ReadDocumentResponse>* writer) override {
+    if (grpc::Status credential = check_credential(*context); !credential.ok()) return credential;
+    std::string parsed;
+    bool end_early = false;
+    {
+      std::lock_guard lock(mutex_);
+      ++part_reads_;
+      if (request->selection().selectors_size() != 1 ||
+          request->selection().selectors(0).part() != repov2::DOCUMENT_PART_PARSED) {
+        return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "only a read of PARSED here");
+      }
+      const auto found = documents_.find(address_key(request->address()));
+      const int64_t wanted = request->revision().revision();
+      if (found == documents_.end() || wanted <= 0 ||
+          wanted > static_cast<int64_t>(found->second.size())) {
+        return grpc::Status(grpc::StatusCode::NOT_FOUND, "Document revision not found");
+      }
+      parsed = found->second[static_cast<size_t>(wanted - 1)].parsed;
+      end_early = end_the_next_read_early_;
+      end_the_next_read_early_ = false;
+    }
+    repov2::ReadDocumentResponse frame;
+    *frame.mutable_manifest()->mutable_address() = request->address();
+    frame.mutable_manifest()->set_revision(request->revision().revision());
+    writer->Write(frame);
+    constexpr size_t kFrame = 7;  // small, so even a short part crosses frames
+    for (size_t offset = 0; offset < parsed.size(); offset += kFrame) {
+      repov2::ReadDocumentResponse data;
+      auto* part = data.mutable_part_data();
+      part->mutable_selector()->set_part(repov2::DOCUMENT_PART_PARSED);
+      part->set_offset(static_cast<int64_t>(offset));
+      part->set_data(parsed.substr(offset, kFrame));
+      part->set_last(offset + kFrame >= parsed.size());
+      writer->Write(data);
+    }
+    if (end_early) return grpc::Status::OK;
+    repov2::ReadDocumentResponse complete;
+    complete.mutable_complete();
+    writer->Write(complete);
     return grpc::Status::OK;
   }
 
@@ -230,18 +320,45 @@ class FakeRepository final : public repov2::DocumentService::Service {
       return malformed("an owner names an intake origin or a step");
     }
     std::set<repov2::DocumentPart> puts;
+    std::set<repov2::DocumentPart> written;
+    bool empties_blobs = false;
     for (const auto& write : save.writes()) {
-      if (write.action() != repov2::WRITE_ACTION_PUT || !write.selector().has_part() ||
-          !puts.insert(write.selector().part()).second) {
+      if (!write.selector().has_part() || !written.insert(write.selector().part()).second) {
         return malformed("Unsupported or duplicate write");
+      }
+      if (write.action() == repov2::WRITE_ACTION_PUT) {
+        puts.insert(write.selector().part());
+      } else if (write.action() == repov2::WRITE_ACTION_EMPTY &&
+                 write.selector().part() == repov2::DOCUMENT_PART_BLOBS) {
+        empties_blobs = true;
+      } else {
+        return malformed("Unsupported write");
       }
     }
     const bool writes_core = puts.contains(repov2::DOCUMENT_PART_CORE);
+    const bool writes_blobs = puts.contains(repov2::DOCUMENT_PART_BLOBS);
     const bool core_content = !save.document().doc_id().empty() || save.document().has_ownership();
     if (core_content && !writes_core) {
       return malformed("Content for CORE is present but the part is not written");
     }
-    if (!puts.contains(repov2::DOCUMENT_PART_BLOBS)) {
+    const bool streams_parsed =
+        header.has_encoded_part() &&
+        header.encoded_part().selector().part() == repov2::DOCUMENT_PART_PARSED;
+    if (header.has_encoded_part() && !streams_parsed) {
+      return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "only PARSED is streamed encoded here");
+    }
+    if (streams_parsed && !puts.contains(repov2::DOCUMENT_PART_PARSED)) {
+      return malformed("Streamed part PARSED must be listed as a PUT write");
+    }
+    if (!streams_parsed && puts.contains(repov2::DOCUMENT_PART_PARSED)) {
+      return grpc::Status(grpc::StatusCode::UNIMPLEMENTED, "PARSED is written streamed here");
+    }
+    if (save.document().parser_results_size() > 0) {
+      return malformed(streams_parsed
+                           ? "Streamed part PARSED must not also carry inline content in document"
+                           : "Content for PARSED is present but the part is not written");
+    }
+    if (header.has_blob_id() && !writes_blobs) {
       return malformed("Uploading a raw blob requires a BLOBS PUT write");
     }
     repov1::NodeAddress address;
@@ -276,7 +393,10 @@ class FakeRepository final : public repov2::DocumentService::Service {
       denied.set_message("The intake owner differs from the document's datasource");
       return status_with(grpc::StatusCode::PERMISSION_DENIED, denied.message(), denied);
     }
-    if (!header.has_blob_id() || blank(header.blob_id())) {
+    if (!header.has_blob_id() && !header.has_encoded_part()) {
+      return malformed("An upload carries a raw blob or an encoded part");
+    }
+    if (header.has_blob_id() && blank(header.blob_id())) {
       return malformed("Uploaded blob_id must not be blank");
     }
     if (!header.has_streamed()) {
@@ -287,6 +407,12 @@ class FakeRepository final : public repov2::DocumentService::Service {
     std::vector<repov1::Blob> bag;
     if (save.document().blob_bag().has_blob()) bag.push_back(save.document().blob_bag().blob());
     for (const auto& blob : save.document().blob_bag().blobs().blob()) bag.push_back(blob);
+    if (!bag.empty() && !writes_blobs) {
+      return malformed("Content for BLOBS is present but the part is not written");
+    }
+    if (bag.empty() && writes_blobs) {
+      return malformed("PUT BLOBS has no content; write EMPTY instead");
+    }
     std::set<std::string> ids;
     bool streamed_listed = false;
     for (const auto& blob : bag) {
@@ -305,12 +431,14 @@ class FakeRepository final : public repov2::DocumentService::Service {
           blob.checksum_type() != repov1::CHECKSUM_TYPE_SHA256) {
         return malformed("the repository verifies and records SHA-256 only");
       }
-      if (blob.blob_id() == header.blob_id()) {
+      if (header.has_blob_id() && blob.blob_id() == header.blob_id()) {
         if (blob.has_data()) return malformed("The streamed blob must not carry inline data");
         streamed_listed = true;
       }
     }
-    if (!streamed_listed) return malformed("The uploaded blob is not in the blob bag");
+    if (header.has_blob_id() && !streamed_listed) {
+      return malformed("The uploaded blob is not in the blob bag");
+    }
 
     // --- replay, reuse, expected revision ---------------------------------
     const std::string outcome_key = address.account_id() + "|" + save.operation_id();
@@ -349,7 +477,9 @@ class FakeRepository final : public repov2::DocumentService::Service {
     }
     const Revision* base = current == 0 ? nullptr : &history.back();
     for (const auto& blob : bag) {
-      if (blob.has_data() || blob.blob_id() == header.blob_id()) continue;
+      if (blob.has_data() || (header.has_blob_id() && blob.blob_id() == header.blob_id())) {
+        continue;
+      }
       const bool held = base != nullptr &&
                         std::ranges::any_of(base->blobs, [&blob](const StoredBlob& stored) {
                           return stored.blob.blob_id() == blob.blob_id();
@@ -387,6 +517,38 @@ class FakeRepository final : public repov2::DocumentService::Service {
       return mismatch("Uploaded stream SHA-256 differs from the expected one");
     }
 
+    // --- admission of the streamed PARSED part ----------------------------
+    if (streams_parsed) {
+      const auto refused = [](repov2::RejectionReason reason, const std::string& message) {
+        repov2::SaveRejection rejection;
+        rejection.set_reason(reason);
+        rejection.set_message(message);
+        return status_with(grpc::StatusCode::FAILED_PRECONDITION, message, rejection);
+      };
+      if (body.empty()) return malformed("PUT PARSED has no content; write EMPTY instead");
+      repov1::Document fragment;
+      if (!fragment.ParseFromString(body)) {
+        return refused(repov2::REJECTION_REASON_VALIDATION_FAILED,
+                       "The composed document cannot be admitted: PARSED fragment does not parse");
+      }
+      if (fragment.has_ownership() || fragment.has_blob_bag() || fragment.has_search_metadata()) {
+        return malformed("The PARSED fragment carries another part's content");
+      }
+      for (const auto& [parser, result] : fragment.parser_results()) {
+        if (!result.document().has_shape()) continue;
+        // The one payload type this repository has a schema for.
+        docv1::Document shape;
+        if (result.document().shape().type_url() != kDocumentTypeUrl) {
+          return refused(repov2::REJECTION_REASON_SCHEMA_MISSING,
+                         "No schema is registered for " + result.document().shape().type_url());
+        }
+        if (!shape.ParseFromString(result.document().shape().value())) {
+          return refused(repov2::REJECTION_REASON_INVALID_BYTES,
+                         "The shape of parser " + parser + " does not decode");
+        }
+      }
+    }
+
     // --- the commit -------------------------------------------------------
     lock.lock();
     data_frames_ += frames;
@@ -403,13 +565,22 @@ class FakeRepository final : public repov2::DocumentService::Service {
     }
     next.owner = save.owner();
     next.drive = save.drive();
+    // A part the save does not write is carried from the revision before.
+    if (streams_parsed) {
+      next.parsed = body;
+    } else if (current > 0) {
+      next.parsed = committed_history.back().parsed;
+    }
+    if (!writes_blobs && !empties_blobs && current > 0) {
+      next.blobs = committed_history.back().blobs;
+    }
     for (const auto& blob : bag) {
       StoredBlob stored;
       stored.blob = blob;
       stored.blob.clear_content();
       if (blob.has_data()) {
         stored.bytes = blob.data();
-      } else if (blob.blob_id() == header.blob_id()) {
+      } else if (header.has_blob_id() && blob.blob_id() == header.blob_id()) {
         stored.bytes = body;
       } else {
         for (const StoredBlob& held : committed_history.back().blobs) {
@@ -460,8 +631,10 @@ class FakeRepository final : public repov2::DocumentService::Service {
   std::map<int, grpc::Status> refusals_;
   std::vector<repov2::UploadHeader> headers_;
   bool answer_another_operation_ = false;
+  bool end_the_next_read_early_ = false;
   int uploads_ = 0;
   int reads_ = 0;
+  int part_reads_ = 0;
   int data_frames_ = 0;
 };
 
@@ -546,6 +719,29 @@ const FakeRepository::StoredBlob& blob(const FakeRepository::Revision& revision,
     if (stored.blob.blob_id() == blob_id) return stored;
   }
   throw std::runtime_error("the revision holds no blob " + std::string(blob_id));
+}
+
+// The parser results a revision stores, decoded.
+repov1::Document parsed(const FakeRepository::Revision& revision) {
+  require(!revision.parsed.empty(), "the revision holds a PARSED part");
+  repov1::Document fragment;
+  require(fragment.ParseFromString(revision.parsed), "the stored PARSED part parses");
+  return fragment;
+}
+
+// This target's own entry of them.
+repov1::ParserResult grparse_result(const repov1::Document& fragment) {
+  const auto found = fragment.parser_results().find("grparse");
+  require(found != fragment.parser_results().end(), "the parser results hold a grparse entry");
+  return found->second;
+}
+
+std::set<repov2::DocumentPart> parts_put(const repov2::UploadHeader& header) {
+  std::set<repov2::DocumentPart> parts;
+  for (const auto& write : header.save().writes()) {
+    if (write.action() == repov2::WRITE_ACTION_PUT) parts.insert(write.selector().part());
+  }
+  return parts;
 }
 
 parsev1::OptionRejection rejection_of(const grpc::Status& status) {
@@ -703,7 +899,7 @@ void verify_the_settings_are_read_strictly_and_never_print_the_credential() {
 
 // ---- the save ---------------------------------------------------------------
 
-void verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession() {
+void verify_a_create_stores_the_document_typed_and_the_response_in_one_accession() {
   RepositoryFixture fixture;
   const std::string address = fixture.address();
   ScopedEnv configured("GRPARSE_REPOSITORY_TARGET", address.c_str());
@@ -724,17 +920,36 @@ void verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession() {
   const auto history = fixture.repository.revisions(sample_address());
   require_equal(history.size(), size_t{1}, "one accession, one revision");
   const auto& revision = history.front();
-  require_equal(revision.blobs.size(), size_t{2}, "the revision holds the two blobs");
-  const auto& document_blob = blob(revision, "grparse:document.pb");
-  const auto& response_blob = blob(revision, "grparse:response.pb");
-  require(document_blob.bytes == member(files, "document.pb"),
-          "the stored document.pb is the bundle's, byte for byte");
-  require(response_blob.bytes == member(files, "response.pb"),
-          "the stored response.pb is the bundle's, byte for byte");
+
+  // The Document: a typed parser result, not a file.
+  const repov1::Document fragment = parsed(revision);
+  require_equal(fragment.doc_id(), "doc-1", "the fragment names its document");
+  require_equal(fragment.parser_results_size(), 1, "one parser result");
+  const repov1::ParserResult ours = grparse_result(fragment);
+  require_equal(ours.parser_name(), "grparse", "the result names its parser as its key does");
+  require(!ours.parser_version().empty(), "and the version that ran");
+  require_equal(ours.document().shape().type_url(), kDocumentTypeUrl,
+                "the shape is typed as the Document");
+  require(ours.document().shape().value() == member(files, "document.pb"),
+          "the shape's bytes are the bundle's document.pb, byte for byte");
   docv1::Document stored_document;
-  require(stored_document.ParseFromString(document_blob.bytes), "the stored blob is a Document");
+  require(ours.document().shape().UnpackTo(&stored_document), "the shape unpacks as a Document");
   require(stored_document.SerializeAsString() == converted.document().doc().SerializeAsString(),
           "the stored Document is the converted one");
+  require(!ours.document().has_extracted_fields() && ours.document().metadata().empty() &&
+              ours.metadata().empty(),
+          "nothing is copied out of the Document into untyped fields");
+  require_equal(static_cast<int>(ours.status()), static_cast<int>(repov1::PARSE_STATUS_PARTIAL),
+                "a partial conversion is a partial parse in the repository");
+  require_equal(ours.error(), "ocr: page 3 was unreadable", "with the conversion's errors as why");
+  require(!ours.has_parsed_date(),
+          "no clock is recorded, so the same conversion is the same bytes");
+
+  // response.pb: the one blob.
+  require_equal(revision.blobs.size(), size_t{1}, "the revision holds one blob");
+  const auto& response_blob = blob(revision, "grparse:response.pb");
+  require(response_blob.bytes == member(files, "response.pb"),
+          "the stored response.pb is the bundle's, byte for byte");
   parsev1::ConvertDocumentResponse stored_response;
   require(stored_response.ParseFromString(response_blob.bytes),
           "the stored response.pb is a ConvertDocumentResponse");
@@ -742,17 +957,13 @@ void verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession() {
                 static_cast<int>(parsev1::CONVERSION_STATUS_PARTIAL_SUCCESS),
                 "a partial conversion reads as partial in the repository");
   require_equal(stored_response.errors_size(), 1, "the conversion's errors are stored with it");
-
-  // What each blob says about itself.
-  require_equal(document_blob.blob.filename(), "document.pb", "the blob's filename");
-  require_equal(document_blob.blob.mime_type(), "application/x-protobuf", "the media type");
-  require_equal(document_blob.blob.schema_subject(), "ai/pipestream/document/v1/document.proto",
-                "the Document's schema subject");
+  require_equal(response_blob.blob.filename(), "response.pb", "the blob's filename");
+  require_equal(response_blob.blob.mime_type(), "application/x-protobuf", "the media type");
   require_equal(response_blob.blob.schema_subject(), "ai/pipestream/parse/v1/parse_types.proto",
                 "the response's schema subject");
-  require_equal(document_blob.blob.checksum(), targets::sha256_hex(document_blob.bytes),
+  require_equal(response_blob.blob.checksum(), targets::sha256_hex(response_blob.bytes),
                 "the declared SHA-256");
-  require_equal(document_blob.blob.size_bytes(), static_cast<int64_t>(document_blob.bytes.size()),
+  require_equal(response_blob.blob.size_bytes(), static_cast<int64_t>(response_blob.bytes.size()),
                 "the declared length");
 
   // The document's identity, and who wrote it.
@@ -764,18 +975,26 @@ void verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession() {
   require_equal(revision.owner.intake().connector_id(), "s3-crawler", "the writer's connector");
   require_equal(revision.drive, "cold", "the drive the request named");
 
-  // How it travelled: one call, the Document in data frames, a declared
-  // length and digest so a replay needs no bytes.
+  // How it travelled: one call, the parser result in data frames as the
+  // PARSED part, a declared length and digest so a replay needs no bytes.
   require_equal(fixture.repository.uploads(), 1, "one upload call");
-  require_equal(fixture.repository.reads(), 0, "a create reads nothing first");
+  require_equal(fixture.repository.reads() + fixture.repository.part_reads(), 0,
+                "a create reads nothing first");
   require(fixture.repository.data_frames() >= 3,
           "a Document of this size crosses several data frames");
   const auto header = fixture.repository.headers().front();
-  require_equal(header.blob_id(), "grparse:document.pb", "the streamed blob");
-  require_equal(header.declared_length(), static_cast<int64_t>(document_blob.bytes.size()),
+  require(!header.has_blob_id(), "no raw blob is streamed");
+  require_equal(static_cast<int>(header.encoded_part().selector().part()),
+                static_cast<int>(repov2::DOCUMENT_PART_PARSED), "the streamed part is PARSED");
+  require_equal(header.declared_length(), static_cast<int64_t>(revision.parsed.size()),
                 "the header declares the streamed length");
-  require_equal(header.expected_sha256(), targets::sha256_hex(document_blob.bytes),
+  require_equal(header.expected_sha256(), targets::sha256_hex(revision.parsed),
                 "the header declares the streamed digest");
+  require(parts_put(header) ==
+              std::set<repov2::DocumentPart>{repov2::DOCUMENT_PART_CORE,
+                                             repov2::DOCUMENT_PART_BLOBS,
+                                             repov2::DOCUMENT_PART_PARSED},
+          "a create writes CORE, BLOBS and PARSED");
   require(header.save().expected().none(), "a create expects no document");
 
   // What the caller is told.
@@ -791,12 +1010,26 @@ void verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession() {
   require(result.repository().has_committed_at(), "the commit time is passed on");
   require(result.repository().operation_id().starts_with("grparse-"),
           "an unnamed operation gets a derived id");
-  require_equal(result.objects_size(), 2, "both blobs are listed");
-  require_equal(result.objects(0).key(), "grparse:document.pb", "the first object");
-  require_equal(result.objects(0).size_bytes(), document_blob.bytes.size(),
-                "the first object's size");
-  require_equal(result.objects(1).key(), "grparse:response.pb", "the second object");
+  require_equal(result.objects_size(), 1, "the one blob is listed");
+  require_equal(result.objects(0).key(), "grparse:response.pb", "it is response.pb");
+  require_equal(result.objects(0).size_bytes(), response_blob.bytes.size(), "with its size");
   require(!result.has_archive(), "a repository target builds no archive");
+}
+
+void verify_a_clean_conversion_is_a_clean_parse_with_no_error_text() {
+  RepositoryFixture fixture;
+  parsev1::ConvertDocumentResponse converted = sample_conversion();
+  converted.set_status(parsev1::CONVERSION_STATUS_SUCCESS);
+  converted.clear_errors();
+  parsev1::TargetResult scratch;
+  const auto files = targets::build_bundle(converted, &scratch);
+  parsev1::TargetResult result;
+  require(targets::deliver_repository(fixture.config(), sample_target(), files, &result).ok(),
+          "the save commits");
+  const repov1::Document fragment = parsed(fixture.repository.revisions(sample_address()).front());
+  require_equal(static_cast<int>(grparse_result(fragment).status()),
+                static_cast<int>(repov1::PARSE_STATUS_OK), "a successful conversion is OK");
+  require(grparse_result(fragment).error().empty(), "and carries no error text");
 }
 
 void verify_the_same_conversion_saved_twice_replays_without_sending_bytes() {
@@ -857,9 +1090,21 @@ void verify_a_stale_expectation_is_a_typed_conflict_not_a_save() {
                 "nothing was written over the first save");
 }
 
-void verify_an_update_replaces_its_own_blobs_and_keeps_everyone_elses() {
+void verify_an_update_replaces_its_own_content_and_keeps_everyone_elses() {
   RepositoryFixture fixture;
+  // The document as other writers left it: the source file, another parser's
+  // result, and the two blobs this target stored before the Document became
+  // a typed parser result.
   fixture.repository.seed(sample_address(), "source-file", "%PDF-1.7 the original");
+  fixture.repository.seed(sample_address(), "grparse:document.pb", "an earlier layout's Document");
+  fixture.repository.seed(sample_address(), "grparse:response.pb", "an earlier layout's response");
+  repov1::ParserResult tika;
+  tika.set_parser_name("tika");
+  tika.set_parser_version("3.1");
+  tika.set_status(repov1::PARSE_STATUS_OK);
+  tika.set_config_fingerprint("tika-config-7");
+  (*tika.mutable_metadata())["pages"] = "12";
+  fixture.repository.seed_parser_result(sample_address(), tika);
   parsev1::TargetResult scratch;
 
   parsev1::RepositoryTarget onto_first = sample_target();
@@ -871,7 +1116,8 @@ void verify_an_update_replaces_its_own_blobs_and_keeps_everyone_elses() {
   require(status.ok(), "a save onto an existing revision commits: " + status.error_message());
   require_equal(first.repository().revision(), int64_t{2}, "the new revision");
   require_equal(first.repository().previous_revision(), int64_t{1}, "the revision it replaced");
-  require_equal(fixture.repository.reads(), 1, "the expected revision's blobs are read once");
+  require_equal(fixture.repository.reads(), 1, "the expected revision is read once");
+  require_equal(fixture.repository.part_reads(), 1, "and its parser results once");
 
   parsev1::RepositoryTarget onto_second = sample_target();
   onto_second.set_revision(2);
@@ -884,23 +1130,58 @@ void verify_an_update_replaces_its_own_blobs_and_keeps_everyone_elses() {
   const auto history = fixture.repository.revisions(sample_address());
   require_equal(history.size(), size_t{3}, "three revisions in all");
   const auto& latest = history.back();
-  require_equal(latest.blobs.size(), size_t{3},
-                "the other writer's blob and this target's two, no stale copies");
+  require_equal(latest.blobs.size(), size_t{2},
+                "the other writer's blob and this target's one, no stale copies");
   require_equal(blob(latest, "source-file").bytes, "%PDF-1.7 the original",
                 "the other writer's blob is kept with its bytes");
   require_equal(blob(latest, "source-file").blob.filename(), "source.pdf",
                 "and with what it said about itself");
-  require(blob(latest, "grparse:document.pb").bytes == member(second_files, "document.pb"),
-          "document.pb is the re-parse's");
   require(blob(latest, "grparse:response.pb").bytes == member(second_files, "response.pb"),
           "response.pb is the re-parse's");
+
+  // The parser results: this target's entry replaced, the other parser's
+  // exactly as it was.
+  const repov1::Document fragment = parsed(latest);
+  require_equal(fragment.parser_results_size(), 2, "both parsers' results, one entry each");
+  require(fragment.parser_results().at("tika").SerializeAsString() == tika.SerializeAsString(),
+          "the other parser's result is kept as it was");
+  require(grparse_result(fragment).document().shape().value() ==
+              member(second_files, "document.pb"),
+          "the grparse result is the re-parse's Document");
   require_equal(latest.core.doc_id(), "doc-1", "the document's identity is carried, not rewritten");
   // An update addresses the document and writes no CORE.
   const auto header = fixture.repository.headers().back();
   require(header.save().target().has_address(), "an update names the full address");
-  require_equal(header.save().writes_size(), 1, "an update writes one part");
+  require(parts_put(header) == std::set<repov2::DocumentPart>{repov2::DOCUMENT_PART_BLOBS,
+                                                              repov2::DOCUMENT_PART_PARSED},
+          "an update writes BLOBS and PARSED");
   require(header.save().document().doc_id().empty() && !header.save().document().has_ownership(),
           "an update sends no CORE content");
+}
+
+void verify_parser_results_that_do_not_read_back_whole_stop_the_save() {
+  RepositoryFixture fixture;
+  fixture.repository.seed(sample_address(), "source-file", "%PDF-1.7 the original");
+  repov1::ParserResult tika;
+  tika.set_parser_name("tika");
+  tika.set_status(repov1::PARSE_STATUS_OK);
+  fixture.repository.seed_parser_result(sample_address(), tika);
+  fixture.repository.end_the_next_read_early();
+  parsev1::TargetResult scratch;
+  const auto files = targets::build_bundle(sample_conversion(), &scratch);
+  parsev1::RepositoryTarget target = sample_target();
+  target.set_revision(1);
+
+  parsev1::TargetResult result;
+  const grpc::Status status = targets::deliver_repository(fixture.config(), target, files, &result);
+  require(!status.ok(), "a read that ended without its completion is not trusted");
+  require_equal(static_cast<int>(result.repository_failure().reason()),
+                static_cast<int>(parsev1::REPOSITORY_FAILURE_REASON_PROTOCOL),
+                "the failure is a protocol break");
+  require_equal(fixture.repository.uploads(), 0,
+                "and nothing is saved over results that were not read whole");
+  require_equal(fixture.repository.revisions(sample_address()).size(), size_t{1},
+                "the document is as it was");
 }
 
 void verify_an_oversized_response_takes_a_second_accession() {
@@ -918,6 +1199,9 @@ void verify_an_oversized_response_takes_a_second_accession() {
   require_equal(fixture.repository.uploads(), 2, "two upload calls");
   const auto headers = fixture.repository.headers();
   require_equal(headers[0].save().operation_id(), "crawl-42", "the request's operation id");
+  require(parts_put(headers[0]) == std::set<repov2::DocumentPart>{repov2::DOCUMENT_PART_CORE,
+                                                                  repov2::DOCUMENT_PART_PARSED},
+          "the first accession writes no blob part when it has no blob to store");
   require_equal(headers[1].save().operation_id(), "crawl-42/response",
                 "the second accession's operation id");
   require_equal(headers[1].blob_id(), "grparse:response.pb", "the second call streams response.pb");
@@ -926,16 +1210,48 @@ void verify_an_oversized_response_takes_a_second_accession() {
 
   const auto history = fixture.repository.revisions(sample_address());
   require_equal(history.size(), size_t{2}, "two revisions");
-  require_equal(history[0].blobs.size(), size_t{1}, "the first holds document.pb alone");
-  require(blob(history[1], "grparse:document.pb").bytes == member(files, "document.pb"),
-          "the second keeps document.pb");
+  require_equal(history[0].blobs.size(), size_t{0}, "the first holds the Document alone");
+  require(grparse_result(parsed(history[0])).document().shape().value() ==
+              member(files, "document.pb"),
+          "as the typed parser result");
+  require(history[1].parsed == history[0].parsed, "the second keeps the parser result");
   require(blob(history[1], "grparse:response.pb").bytes == member(files, "response.pb"),
           "and adds response.pb, byte for byte");
   require_equal(result.repository().revision(), int64_t{2},
-                "the result names the revision that holds both blobs");
+                "the result names the revision that holds both");
   require_equal(result.repository().operation_id(), "crawl-42", "under the request's id");
   require(!result.repository().has_previous_revision(), "the save as a whole replaced nothing");
-  require_equal(result.objects_size(), 2, "both blobs are listed");
+  require_equal(result.objects_size(), 1, "the blob is listed");
+}
+
+void verify_a_first_accession_with_no_blob_to_keep_empties_this_targets_stale_ones() {
+  RepositoryFixture fixture;
+  // Only this target's own blobs, from an earlier save; the new response is
+  // too large to ride, so the first accession has no blob to put.
+  fixture.repository.seed(sample_address(), "grparse:document.pb", "an earlier layout's Document");
+  fixture.repository.seed(sample_address(), "grparse:response.pb", "an earlier response");
+  targets::RepositoryConfig config = fixture.config();
+  config.inline_budget_bytes = 16;
+  fixture.repository.refuse_upload(
+      2, grpc::Status(grpc::StatusCode::UNAVAILABLE, "the repository went away"));
+  parsev1::TargetResult scratch;
+  const auto files = targets::build_bundle(sample_conversion(), &scratch);
+  parsev1::RepositoryTarget target = sample_target();
+  target.set_revision(1);
+
+  parsev1::TargetResult result;
+  require(!targets::deliver_repository(config, target, files, &result).ok(),
+          "the save as a whole failed at its second accession");
+  const auto history = fixture.repository.revisions(sample_address());
+  require_equal(history.size(), size_t{2}, "the first accession committed");
+  require_equal(history[1].blobs.size(), size_t{0},
+                "and left no earlier response beside the new Document");
+  const repov2::UploadHeader first_header = fixture.repository.headers().front();
+  require(std::ranges::any_of(first_header.save().writes(), [](const repov2::PartWrite& write) {
+            return write.selector().part() == repov2::DOCUMENT_PART_BLOBS &&
+                   write.action() == repov2::WRITE_ACTION_EMPTY;
+          }),
+          "by writing the blob part empty");
 }
 
 void verify_a_second_accession_that_fails_says_what_did_commit() {
@@ -959,11 +1275,10 @@ void verify_a_second_accession_that_fails_says_what_did_commit() {
   require_equal(failure.message(), "Save buffer budget exhausted",
                 "the repository's message, verbatim");
   require_equal(failure.committed_revision(), int64_t{1},
-                "the failure says which revision holds document.pb");
+                "the failure says which revision holds the Document");
   require(failure.operation_id().ends_with("/response"),
           "and names the operation that failed");
-  require_equal(result.objects_size(), 1, "the blob that is stored is listed");
-  require_equal(result.objects(0).key(), "grparse:document.pb", "it is document.pb");
+  require_equal(result.objects_size(), 0, "no blob is listed, because none is stored");
 }
 
 void verify_the_repositorys_refusals_arrive_typed() {
@@ -1019,6 +1334,31 @@ void verify_the_repositorys_refusals_arrive_typed() {
                   "with the repository's own reason by name");
     require_equal(failure.message(), "No writer grant exists for the owner",
                   "and its message verbatim");
+  }
+  {
+    // A repository that has no schema for the Document. The stand-in decides
+    // this itself, from the shape's type: here it is asked to store another
+    // parser's result of a type it does not know, carried from the revision.
+    RepositoryFixture fixture;
+    fixture.repository.seed(sample_address(), "source-file", "%PDF-1.7");
+    repov1::ParserResult other;
+    other.set_parser_name("other");
+    other.mutable_document()->mutable_shape()->set_type_url(
+        "type.googleapis.com/example.v1.Unregistered");
+    fixture.repository.seed_parser_result(sample_address(), other);
+    parsev1::RepositoryTarget target = sample_target();
+    target.set_revision(1);
+    parsev1::TargetResult result;
+    require(!targets::deliver_repository(fixture.config(), target, files, &result).ok(),
+            "a save the repository has no schema for is not a save");
+    const auto& failure = result.repository_failure();
+    require_equal(static_cast<int>(failure.reason()),
+                  static_cast<int>(parsev1::REPOSITORY_FAILURE_REASON_REJECTED),
+                  "a missing schema is REJECTED");
+    require_equal(failure.rejection_raw(), "REJECTION_REASON_SCHEMA_MISSING",
+                  "with the repository's own reason by name");
+    require_equal(fixture.repository.revisions(sample_address()).size(), size_t{1},
+                  "and nothing is stored as an untyped file instead");
   }
   {
     // An operation id already used for something else.
@@ -1100,11 +1440,14 @@ int main() {
       verify_a_listed_target_policy_must_name_the_repository,
       verify_an_incomplete_target_is_refused_field_by_field,
       verify_the_settings_are_read_strictly_and_never_print_the_credential,
-      verify_a_create_stores_both_blobs_byte_for_byte_in_one_accession,
+      verify_a_create_stores_the_document_typed_and_the_response_in_one_accession,
+      verify_a_clean_conversion_is_a_clean_parse_with_no_error_text,
       verify_the_same_conversion_saved_twice_replays_without_sending_bytes,
       verify_a_stale_expectation_is_a_typed_conflict_not_a_save,
-      verify_an_update_replaces_its_own_blobs_and_keeps_everyone_elses,
+      verify_an_update_replaces_its_own_content_and_keeps_everyone_elses,
+      verify_parser_results_that_do_not_read_back_whole_stop_the_save,
       verify_an_oversized_response_takes_a_second_accession,
+      verify_a_first_accession_with_no_blob_to_keep_empties_this_targets_stale_ones,
       verify_a_second_accession_that_fails_says_what_did_commit,
       verify_the_repositorys_refusals_arrive_typed,
       verify_an_answer_that_names_another_operation_is_not_believed,

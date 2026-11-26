@@ -2,7 +2,13 @@
 // that serves ai.protomolt.proto.repo.v2.DocumentService, not the in-process
 // stand-in of repository_target_test.cpp.  Everything asserted here is read
 // back from the repository over its own read RPCs, so the test fails when a
-// save "succeeded" without the bytes being there.
+// save "succeeded" without the bytes being there, and when the Document is
+// there but the repository stored it without decoding it.
+//
+// The repository must have the schema of ai.pipestream.document.v1.Document.
+// protomolt's reads it over gRPC server reflection from the servers its
+// DOCUMENT_PLATFORM_REFLECTED_SCHEMA_TARGETS names: a running gRParse, or
+// any server that serves the Document's descriptor.
 //
 // It needs a running repository and skips (77) without one:
 //   GRPARSE_E2E_REPOSITORY            host:port of the repository's gRPC
@@ -34,6 +40,7 @@
 #include "ai/pipestream/parse/v1/parse_types.pb.h"
 #include "ai/protomolt/proto/repo/v1/document.pb.h"
 #include "ai/protomolt/proto/repo/v2/document_service.grpc.pb.h"
+#include "ai/protomolt/proto/repo/v2/manifest.pb.h"
 #include "support/check.h"
 #include "support/document_builder.h"
 
@@ -51,6 +58,8 @@ using grparse_test::require_equal;
 namespace {
 
 constexpr const char* kDatasource = "grparse-e2e";
+constexpr const char* kDocumentTypeUrl =
+    "type.googleapis.com/ai.pipestream.document.v1.Document";
 
 std::string environment(const char* name) {
   const char* value = std::getenv(name);
@@ -183,6 +192,67 @@ void require_stored(const Repository& repository, const parsev1::RepositorySave&
   require(read.bytes == bytes, what + " is the bundle member, byte for byte");
 }
 
+// The parser results of one revision, as a typed read serves them.
+repov2::GetDocumentResponse read_parsed(const Repository& repository,
+                                        const repov1::NodeAddress& address, int64_t revision,
+                                        const std::string& what) {
+  repov2::GetDocumentRequest request;
+  *request.mutable_address() = address;
+  request.mutable_revision()->set_revision(revision);
+  request.mutable_selection()->add_selectors()->set_part(repov2::DOCUMENT_PART_PARSED);
+  repov2::GetDocumentResponse response;
+  grpc::ClientContext context;
+  repository.prepare(&context);
+  const grpc::Status status = repository.stub->GetDocument(&context, request, &response);
+  require(status.ok(), what + " reads back typed: " + status.error_message());
+  require_equal(response.manifest().revision(), revision,
+                what + " is read at the committed revision");
+  return response;
+}
+
+// The Document must be in the repository at `revision` as the grparse parser
+// result, with exactly `bytes`, decoded by the repository with a schema it
+// retained. Returns the read for what else a case wants from it.
+repov2::GetDocumentResponse require_document(const Repository& repository,
+                                             const parsev1::RepositorySave& saved,
+                                             int64_t revision, const std::string& bytes,
+                                             const std::string& what) {
+  const repov2::GetDocumentResponse read =
+      read_parsed(repository, address_of(saved), revision, what);
+  const auto found = read.document().parser_results().find("grparse");
+  require(found != read.document().parser_results().end(),
+          what + " is the document's grparse parser result");
+  const repov1::ParserResult& result = found->second;
+  require_equal(result.parser_name(), "grparse", what + " names its parser");
+  require(!result.parser_version().empty(), what + " names the version that ran");
+  require_equal(result.document().shape().type_url(), kDocumentTypeUrl,
+                what + " is typed as the Document");
+  require(result.document().shape().value() == bytes,
+          what + " is the bundle's document.pb, byte for byte");
+
+  // Typed, not parked: the repository decoded the shape with a schema of its
+  // own and says which.
+  const repov2::RevisionValidation& validation = read.validation();
+  require_equal(static_cast<int>(validation.status()),
+                static_cast<int>(repov2::VALIDATION_STATUS_TYPED_VALID),
+                what + " was validated typed: " + validation.ShortDebugString());
+  require_equal(validation.opaque_occurrences_size(), 0, what + " holds nothing opaque");
+  const std::string digest = targets::sha256_hex(bytes);
+  bool decoded = false;
+  for (const auto& occurrence : validation.resolved_occurrences()) {
+    if (occurrence.schema().type_url() != kDocumentTypeUrl) continue;
+    if (occurrence.payload_sha256() != digest) continue;
+    require_equal(occurrence.payload_length(), static_cast<int64_t>(bytes.size()),
+                  what + ": the decoded payload's length");
+    require_equal(occurrence.schema().descriptor_sha256().size(), size_t{64},
+                  what + ": the schema the repository retained for it");
+    decoded = true;
+  }
+  require(decoded, what + " is recorded as decoded with the Document's schema: " +
+                       validation.ShortDebugString());
+  return read;
+}
+
 parsev1::RepositorySave save(const Repository& repository, const targets::RepositoryConfig& config,
                              const parsev1::RepositoryTarget& target,
                              const std::vector<targets::BundleFile>& files,
@@ -201,7 +271,7 @@ parsev1::RepositorySave save(const Repository& repository, const targets::Reposi
 
 // ---- the cases ------------------------------------------------------------
 
-void verify_a_create_is_in_the_repository_byte_for_byte(const Repository& repository) {
+void verify_a_create_is_in_the_repository_typed_and_byte_for_byte(const Repository& repository) {
   const auto converted = conversion("the first conversion");
   const auto files = bundle(converted);
   const parsev1::RepositoryTarget target = target_for(repository, "create");
@@ -210,20 +280,24 @@ void verify_a_create_is_in_the_repository_byte_for_byte(const Repository& reposi
   require(!saved.replayed(), "a first save is not a replay");
   require_equal(saved.graph_address_id(), kDatasource, "the intake address is the datasource");
   require_equal(saved.graph_id(), "intake:" + repository.account, "the intake graph");
-  require_stored(repository, saved, saved.revision(), "grparse:document.pb",
-                 member(files, "document.pb"), "document.pb");
+  const repov2::GetDocumentResponse read = require_document(
+      repository, saved, saved.revision(), member(files, "document.pb"), "the Document");
   require_stored(repository, saved, saved.revision(), "grparse:response.pb",
                  member(files, "response.pb"), "response.pb");
 
-  // What comes back parses as what was converted.
-  const ReadBack document =
-      read_blob(repository, address_of(saved), saved.revision(), "grparse:document.pb");
+  // What comes back is what was converted, and says how the conversion went.
+  const repov1::ParserResult& result = read.document().parser_results().at("grparse");
   docv1::Document stored;
-  require(stored.ParseFromString(document.bytes), "the stored blob parses as a Document");
+  require(result.document().shape().UnpackTo(&stored), "the stored shape unpacks as a Document");
   require(stored.SerializeAsString() == converted.document().doc().SerializeAsString(),
           "the stored Document is the converted one");
-  require_equal(document.header.filename(), "document.pb", "the blob's filename");
-  require_equal(document.header.mime_type(), "application/x-protobuf", "the blob's media type");
+  require_equal(static_cast<int>(result.status()), static_cast<int>(repov1::PARSE_STATUS_PARTIAL),
+                "a partial conversion is a partial parse");
+  require_equal(result.error(), "ocr: page 3 was unreadable", "with the conversion's error");
+  // The Document is no longer also a file.
+  const ReadBack file =
+      read_blob(repository, address_of(saved), saved.revision(), "grparse:document.pb");
+  require(!file.status.ok(), "the Document is not stored a second time as a blob");
 
   // The same conversion again is the same save, not a second revision.
   const auto again = save(repository, repository.config, target, files, "the repeated save");
@@ -247,57 +321,77 @@ void verify_a_create_is_in_the_repository_byte_for_byte(const Repository& reposi
                     refused.repository_failure().ShortDebugString());
   require_equal(refused.repository_failure().current_revision(), saved.revision(),
                 "the conflict names the revision the repository holds");
-  require_stored(repository, saved, saved.revision(), "grparse:document.pb",
-                 member(files, "document.pb"), "document.pb after the refused save");
+  require_document(repository, saved, saved.revision(), member(files, "document.pb"),
+                   "the Document after the refused save");
 }
 
-void verify_an_update_replaces_its_own_blobs_and_keeps_another_writers(
+void verify_an_update_replaces_its_own_content_and_keeps_another_writers(
     const Repository& repository) {
-  const auto first_files = bundle(conversion("before the update"));
+  // Another writer creates the document: a file of its own and its own
+  // parser's result.
   parsev1::RepositoryTarget target = target_for(repository, "update");
-  const auto created = save(repository, repository.config, target, first_files, "the create");
-
-  // Another writer puts a blob of its own on the document.
   const std::string note = "kept by someone else";
   repov2::SaveDocumentRequest other;
   other.set_operation_id("grparse-e2e-" + repository.run + "-other-writer");
   other.mutable_owner()->mutable_intake()->set_datasource_id(kDatasource);
-  *other.mutable_target()->mutable_address() = address_of(created);
-  other.mutable_expected()->set_revision(created.revision());
-  auto* bag = other.mutable_document()->mutable_blob_bag()->mutable_blobs();
-  for (const char* kept : {"grparse:document.pb", "grparse:response.pb"}) {
-    bag->add_blob()->set_blob_id(kept);
-  }
-  auto* foreign = bag->add_blob();
+  other.mutable_target()->set_use_datasource_id(kDatasource);
+  other.mutable_expected()->set_none(true);
+  other.mutable_document()->set_doc_id(target.doc_id());
+  other.mutable_document()->mutable_ownership()->set_account_id(repository.account);
+  other.mutable_document()->mutable_ownership()->set_datasource_id(kDatasource);
+  auto* foreign = other.mutable_document()->mutable_blob_bag()->mutable_blobs()->add_blob();
   foreign->set_blob_id("other:note.txt");
   foreign->set_data(note);
   foreign->set_mime_type("text/plain");
   foreign->set_filename("note.txt");
-  auto* write = other.add_writes();
-  write->mutable_selector()->set_part(repov2::DOCUMENT_PART_BLOBS);
-  write->set_action(repov2::WRITE_ACTION_PUT);
+  repov1::ParserResult theirs;
+  theirs.set_parser_name("other-parser");
+  theirs.set_parser_version("7.2");
+  theirs.set_status(repov1::PARSE_STATUS_OK);
+  theirs.set_config_fingerprint("other-config");
+  (*other.mutable_document()->mutable_parser_results())["other-parser"] = theirs;
+  for (const auto part : {repov2::DOCUMENT_PART_CORE, repov2::DOCUMENT_PART_BLOBS,
+                          repov2::DOCUMENT_PART_PARSED}) {
+    auto* write = other.add_writes();
+    write->mutable_selector()->set_part(part);
+    write->set_action(repov2::WRITE_ACTION_PUT);
+  }
   repov2::SaveDocumentResponse other_saved;
   grpc::ClientContext context;
   repository.prepare(&context);
   const grpc::Status other_status = repository.stub->SaveDocument(&context, other, &other_saved);
   require(other_status.ok(), "the other writer's save commits: " + other_status.error_message());
-  const int64_t with_note = other_saved.accession().revision();
+  const int64_t theirs_revision = other_saved.accession().revision();
 
-  // The update names the revision it read.
+  // The first parse is saved onto the revision the other writer made.
+  const auto first_files = bundle(conversion("before the update"));
+  target.set_revision(theirs_revision);
+  const auto parsed = save(repository, repository.config, target, first_files, "the first parse");
+  require_equal(parsed.previous_revision(), theirs_revision,
+                "the first parse names the revision it replaced");
+
+  // A re-parse names the revision the first one committed.
   const auto second_files = bundle(conversion("after the update"));
-  target.set_revision(with_note);
+  target.set_revision(parsed.revision());
   const auto updated = save(repository, repository.config, target, second_files, "the update");
-  require(updated.revision() > with_note, "an update is a new revision");
-  require_equal(updated.previous_revision(), with_note, "the update names the revision it replaced");
-  require_stored(repository, updated, updated.revision(), "grparse:document.pb",
-                 member(second_files, "document.pb"), "the updated document.pb");
+  require(updated.revision() > parsed.revision(), "an update is a new revision");
+  require_equal(updated.previous_revision(), parsed.revision(),
+                "the update names the revision it replaced");
+  const repov2::GetDocumentResponse read =
+      require_document(repository, updated, updated.revision(),
+                       member(second_files, "document.pb"), "the updated Document");
   require_stored(repository, updated, updated.revision(), "grparse:response.pb",
                  member(second_files, "response.pb"), "the updated response.pb");
   require_stored(repository, updated, updated.revision(), "other:note.txt", note,
                  "the other writer's blob after the update");
-  // History is intact: the first revision still serves the first bytes.
-  require_stored(repository, created, created.revision(), "grparse:document.pb",
-                 member(first_files, "document.pb"), "the first revision's document.pb");
+  require_equal(read.document().parser_results_size(), 2,
+                "the other parser's result and this target's, one entry each");
+  require(read.document().parser_results().at("other-parser").SerializeAsString() ==
+              theirs.SerializeAsString(),
+          "the other parser's result is kept as it was");
+  // History is intact: the first parse's revision still serves its Document.
+  require_document(repository, parsed, parsed.revision(), member(first_files, "document.pb"),
+                   "the first parse's Document");
 
   // The revision the update replaced is now stale.
   parsev1::TargetResult refused;
@@ -321,8 +415,8 @@ void verify_a_response_over_the_inline_budget_takes_a_second_accession(
 
   const auto saved = save(repository, small, target, files, "the two-accession save");
   require(saved.revision() >= 2, "the second accession is a second revision");
-  require_stored(repository, saved, saved.revision(), "grparse:document.pb",
-                 member(files, "document.pb"), "document.pb after the second accession");
+  require_document(repository, saved, saved.revision(), member(files, "document.pb"),
+                   "the Document after the second accession");
   require_stored(repository, saved, saved.revision(), "grparse:response.pb",
                  member(files, "response.pb"), "the streamed response.pb");
 
@@ -369,8 +463,8 @@ int main() {
   }
   try {
     const Repository repository = repository_from_environment();
-    verify_a_create_is_in_the_repository_byte_for_byte(repository);
-    verify_an_update_replaces_its_own_blobs_and_keeps_another_writers(repository);
+    verify_a_create_is_in_the_repository_typed_and_byte_for_byte(repository);
+    verify_an_update_replaces_its_own_content_and_keeps_another_writers(repository);
     verify_a_response_over_the_inline_budget_takes_a_second_accession(repository);
     verify_a_wrong_credential_is_refused_typed(repository);
     verify_an_unknown_account_is_refused_typed(repository);

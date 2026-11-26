@@ -783,22 +783,42 @@ message PluginTarget {
 // any fetch or conversion, as INVALID_ARGUMENT with an OptionRejection for
 // "target.repository"; nothing falls back to another target.
 //
-// The save stores the conversion as two raw files of the document's blob
-// bag, both members of the result bundle (see TargetResult) with the
-// bundle's own bytes:
-//   blob "grparse:document.pb"  the Document, schema subject
-//                               "ai/pipestream/document/v1/document.proto"
-//   blob "grparse:response.pb"  the ConvertDocumentResponse that says how
-//                               the conversion went, schema subject
-//                               "ai/pipestream/parse/v1/parse_types.proto"
-// Each blob's filename is its bundle path, its media type is
-// application/x-protobuf, and it declares its length and SHA-256, which the
-// repository verifies. The bundle's other members are not stored: page and
-// picture images are already inside the Document, and exports return in the
-// response body. document.pb is streamed. response.pb rides the same call,
-// so the save is one accession, unless it is larger than 4 MiB: then a
-// second accession, recorded under the operation id followed by
-// "/response", streams it onto the revision the first one committed.
+// The save stores two members of the result bundle (see TargetResult), each
+// with the bundle's own bytes:
+//   the Document     typed, as the document's parser result "grparse":
+//                    parser_results["grparse"].document.shape is an Any of
+//                    ai.pipestream.document.v1.Document whose value is
+//                    document.pb. Beside it the result carries the parser
+//                    name, this server's version, and how the conversion
+//                    went: OK for SUCCESS, PARTIAL for PARTIAL_SUCCESS and
+//                    FAILED for FAILURE, with the conversion's error
+//                    messages as its error text when it is not OK. It
+//                    carries no parse time, so the same conversion is the
+//                    same bytes.
+//   response.pb      the ConvertDocumentResponse that says how the
+//                    conversion went, as the raw file "grparse:response.pb"
+//                    of the document's blob bag: filename response.pb, media
+//                    type application/x-protobuf, schema subject
+//                    "ai/pipestream/parse/v1/parse_types.proto", with its
+//                    length and SHA-256 declared, which the repository
+//                    verifies.
+// The bundle's other members are not stored: page and picture images are
+// already inside the Document, and exports return in the response body.
+//
+// The repository decodes a typed parser result and stores it only when it
+// has the schema of the Document as this server serves it; one that does
+// not refuses the save (RepositoryFailure, rejection_raw
+// "REJECTION_REASON_SCHEMA_MISSING"), and nothing is stored as an untyped
+// file instead. The repository also bounds a typed part's size and its
+// number of values; a Document beyond its bound is refused the same loud
+// way. This server serves the Document's descriptor over gRPC server
+// reflection, which is where a repository can read it.
+//
+// The parser result is streamed as the document's PARSED part.
+// response.pb rides the same call, so the save is one accession, unless it
+// is larger than 4 MiB: then a second accession, recorded under the
+// operation id followed by "/response", streams it onto the revision the
+// first one committed.
 //
 // The document is stored at the intake address the repository derives from
 // the fields below: (doc_id, datasource_id, account_id, "intake:" followed
@@ -823,9 +843,11 @@ message RepositoryTarget {
     // accepted.
     bool create = 5;
     // The document's current revision must be exactly this one. The save
-    // replaces the blobs an earlier RepositoryTarget save wrote (every blob
-    // whose id starts with "grparse:") and keeps every other blob of that
-    // revision as it is.
+    // replaces what an earlier RepositoryTarget save wrote (the parser
+    // result "grparse" and every blob whose id starts with "grparse:") and
+    // keeps every other parser's result and every other blob of that
+    // revision as it is. To keep them it reads them first: the revision's
+    // blob list and, when the revision has parser results, all of them.
     int64 revision = 6;
   }
   // The repository drive new objects are written to. Unset uses the
@@ -834,8 +856,9 @@ message RepositoryTarget {
   // The save's idempotency key, unique per account and at most 180
   // characters: a retry with the same id and the same content replays the
   // recorded outcome instead of writing again. Unset derives one from the
-  // address, the expectation and the SHA-256 of both blobs, so the same
-  // conversion saved twice to the same place replays.
+  // address, the expectation and the SHA-256 of document.pb and of
+  // response.pb, so the same conversion saved twice to the same place
+  // replays.
   optional string operation_id = 8;
 }
 
@@ -952,9 +975,10 @@ message TargetResult {
   repeated BundleImageIssue image_issues = 3;
   // The accession a RepositoryTarget committed. Set only by
   // RepositoryTarget, and only when the repository answered with a
-  // committed save for both blobs; `objects` then lists them (key: the blob
-  // id, size_bytes: the blob's length; the repository returns no entity
-  // tag).
+  // committed save for the parser result and for response.pb; `objects`
+  // then lists the one blob, response.pb (key: the blob id, size_bytes: the
+  // blob's length; the repository returns no entity tag). The Document is
+  // not an object: it is the parser result "grparse" of that revision.
   optional RepositorySave repository = 4;
   // Why a RepositoryTarget save did not commit. Set only by
   // RepositoryTarget, and never together with `repository`.
@@ -968,7 +992,8 @@ message RepositorySave {
   string graph_address_id = 2;
   string account_id = 3;
   string graph_id = 4;
-  // The revision that holds both blobs: the last one this save committed.
+  // The revision that holds the parser result and response.pb: the last
+  // one this save committed.
   int64 revision = 5;
   // The revision it replaced. Unset when the save created the document.
   optional int64 previous_revision = 6;
@@ -1041,8 +1066,8 @@ message RepositoryFailure {
   // reason this contract does not list is not lost.
   optional string rejection_raw = 7;
   // Set when the save needed a second accession for response.pb and only
-  // the first committed: the revision that holds document.pb, which
-  // TargetResult.objects then lists.
+  // the first committed: the revision that holds the Document as its parser
+  // result. TargetResult.objects is then empty, because no blob is stored.
   optional int64 committed_revision = 8;
 }
 
