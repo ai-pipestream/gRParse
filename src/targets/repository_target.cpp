@@ -11,6 +11,8 @@
 #include <string_view>
 #include <utility>
 
+#include <google/protobuf/io/coded_stream.h>
+#include <google/protobuf/io/zero_copy_stream_impl_lite.h>
 #include <grpc/impl/channel_arg_names.h>
 
 #include "../option_rejection.h"
@@ -29,12 +31,23 @@ namespace repov2 = ai::protomolt::proto::repo::v2;
 namespace grparse::targets {
 namespace {
 
+#ifndef GRPARSE_VERSION
+#define GRPARSE_VERSION "unversioned"
+#endif
+
+// The key of this target's entry in the document's parser results, which is
+// how a later save tells its own earlier result from every other parser's.
+constexpr const char* kParserName = "grparse";
+// What the entry's Any says it holds. The repository decodes the value with
+// the schema it has for this name, so it is the Document's full name and
+// nothing else.
+constexpr const char* kDocumentTypeUrl =
+    "type.googleapis.com/ai.pipestream.document.v1.Document";
 // Every blob this target writes carries this prefix, which is how a later
 // save tells its own earlier blobs from everybody else's.
 constexpr std::string_view kBlobPrefix = "grparse:";
 constexpr std::string_view kDocumentMember = "document.pb";
 constexpr std::string_view kResponseMember = "response.pb";
-constexpr std::string_view kDocumentSubject = "ai/pipestream/document/v1/document.proto";
 constexpr std::string_view kResponseSubject = "ai/pipestream/parse/v1/parse_types.proto";
 constexpr std::string_view kProtobufMediaType = "application/x-protobuf";
 // What the second accession's operation id adds to the first one's.
@@ -46,6 +59,12 @@ constexpr size_t kMaxOperationIdChars = 180;
 constexpr size_t kDataFrameBytes = 256 * 1024;
 // A blob bag is metadata only, but a document can hold many blobs.
 constexpr int kMaxReceiveBytes = 64 * 1024 * 1024;
+// The repository's own bound on one stored part. A stored PARSED part that
+// reads back larger than this is not one the repository could have admitted.
+constexpr size_t kMaxParsedBytes = 64 * 1024 * 1024;
+// What the derived operation id says about the layout it saves, so an id
+// derived for the earlier two-blob layout is never reused for this one.
+constexpr std::string_view kLayout = "parsed/1";
 
 std::string trimmed(std::string_view text) {
   const auto first = text.find_first_not_of(" \t\r\n");
@@ -183,7 +202,8 @@ void prepare(grpc::ClientContext* context, const RepositoryConfig& config) {
   if (!config.api_token.empty()) context->AddMetadata("api_token", config.api_token);
 }
 
-// One blob this save writes: a bundle member under its blob id.
+// One bundle member this save stores: response.pb as the blob of that id,
+// document.pb as the value of the parser result's shape.
 struct Member {
   std::string blob_id;
   const BundleFile* file = nullptr;
@@ -254,6 +274,7 @@ std::string derived_operation_id(const parsev1::RepositoryTarget& target, const 
                               : std::string("create"));
   field(document.sha256);
   field(response.sha256);
+  field(kLayout);
   return "grparse-" + hash.hex_digest();
 }
 
@@ -268,13 +289,39 @@ repov2::SaveDocumentRequest save_frame(const parsev1::RepositoryTarget& target,
   return save;
 }
 
-// The header of one streamed upload: `save` with `blobs` as its blob bag and
-// `streamed` as the blob the data frames carry.
-repov2::UploadHeader header_of(repov2::SaveDocumentRequest save, std::vector<repov1::Blob> blobs,
-                               const Member& streamed) {
-  auto* bag = save.mutable_document()->mutable_blob_bag()->mutable_blobs();
+// Puts `blobs` in the save as its whole blob bag. An empty bag is no content
+// for a PUT: the part is written EMPTY when the expected revision held blobs
+// that must go, and is not written at all otherwise.
+void write_blobs(repov2::SaveDocumentRequest* save, std::vector<repov1::Blob> blobs,
+                 bool clear_when_empty) {
+  if (blobs.empty()) {
+    if (!clear_when_empty) return;
+    repov2::PartWrite* empty = save->add_writes();
+    empty->mutable_selector()->set_part(repov2::DOCUMENT_PART_BLOBS);
+    empty->set_action(repov2::WRITE_ACTION_EMPTY);
+    return;
+  }
+  auto* bag = save->mutable_document()->mutable_blob_bag()->mutable_blobs();
   for (auto& blob : blobs) *bag->add_blob() = std::move(blob);
-  *save.add_writes() = put(repov2::DOCUMENT_PART_BLOBS);
+  *save->add_writes() = put(repov2::DOCUMENT_PART_BLOBS);
+}
+
+// The header of the upload that streams the PARSED part: `fragment` is the
+// part's whole content, so the save carries no parser result of its own.
+repov2::UploadHeader parsed_header(repov2::SaveDocumentRequest save, const std::string& fragment) {
+  *save.add_writes() = put(repov2::DOCUMENT_PART_PARSED);
+  repov2::UploadHeader header;
+  *header.mutable_save() = std::move(save);
+  header.mutable_encoded_part()->mutable_selector()->set_part(repov2::DOCUMENT_PART_PARSED);
+  header.set_declared_length(static_cast<int64_t>(fragment.size()));
+  header.set_expected_sha256(sha256_hex(fragment));
+  header.mutable_streamed();
+  return header;
+}
+
+// The header of the upload that streams one raw blob: `save`, whose blob
+// bag lists `streamed` without bytes.
+repov2::UploadHeader blob_header(repov2::SaveDocumentRequest save, const Member& streamed) {
   repov2::UploadHeader header;
   *header.mutable_save() = std::move(save);
   header.set_blob_id(streamed.blob_id);
@@ -380,12 +427,20 @@ void report_object(const Member& member, parsev1::TargetResult* result) {
   stored->set_size_bytes(member.file->bytes.size());
 }
 
-// The blobs of the expected revision that are not this target's own, as a
-// BLOBS PUT keeps them: by id, without bytes, a storage reference or the
-// repository's write stamp, none of which a client may send.
-grpc::Status read_kept_blobs(repov2::DocumentService::Stub& stub, const RepositoryConfig& config,
-                             const parsev1::RepositoryTarget& target,
-                             std::vector<repov1::Blob>* kept) {
+// What the expected revision holds that this save must not lose.
+struct Base {
+  // The blobs that are not this target's own, as a BLOBS PUT keeps them: by
+  // id, without bytes, a storage reference or the repository's write stamp,
+  // none of which a client may send.
+  std::vector<repov1::Blob> kept;
+  // The revision holds blobs an earlier save of this target wrote.
+  bool holds_own_blobs = false;
+  // The revision has a PARSED part with content.
+  bool holds_parsed = false;
+};
+
+grpc::Status read_base(repov2::DocumentService::Stub& stub, const RepositoryConfig& config,
+                       const parsev1::RepositoryTarget& target, Base* base) {
   repov2::GetDocumentRequest request;
   *request.mutable_address() = intake_address(target);
   request.mutable_revision()->set_revision(target.revision());
@@ -396,16 +451,132 @@ grpc::Status read_kept_blobs(repov2::DocumentService::Stub& stub, const Reposito
   const grpc::Status status = stub.GetDocument(&context, request, &response);
   if (!status.ok()) return status;
   const auto& bag = response.document().blob_bag();
-  const auto keep = [kept](const repov1::Blob& blob) {
-    if (blob.blob_id().starts_with(kBlobPrefix)) return;
+  const auto keep = [base](const repov1::Blob& blob) {
+    if (blob.blob_id().starts_with(kBlobPrefix)) {
+      base->holds_own_blobs = true;
+      return;
+    }
     repov1::Blob copy = blob;
     copy.clear_content();
     copy.clear_written();
-    kept->push_back(std::move(copy));
+    base->kept.push_back(std::move(copy));
   };
   if (bag.has_blob()) keep(bag.blob());
   for (const auto& blob : bag.blobs().blob()) keep(blob);
+  // The manifest lists every part of the revision, selected or not.
+  for (const auto& part : response.manifest().parts()) {
+    if (part.selector().part() == repov2::DOCUMENT_PART_PARSED &&
+        part.state() == repov2::PART_STATE_PRESENT) {
+      base->holds_parsed = true;
+    }
+  }
   return grpc::Status::OK;
+}
+
+// The expected revision's PARSED part as the repository stores it: every
+// parser's result. A PARSED PUT replaces the whole part, so the results of
+// the other parsers are read here and sent back with this target's own.
+// `protocol_error` is set when the call ended OK without the frames the
+// contract requires.
+grpc::Status read_parsed(repov2::DocumentService::Stub& stub, const RepositoryConfig& config,
+                         const parsev1::RepositoryTarget& target, std::string* fragment,
+                         std::string* protocol_error) {
+  repov2::ReadDocumentRequest request;
+  *request.mutable_address() = intake_address(target);
+  request.mutable_revision()->set_revision(target.revision());
+  request.mutable_selection()->add_selectors()->set_part(repov2::DOCUMENT_PART_PARSED);
+  grpc::ClientContext context;
+  prepare(&context, config);
+  const auto reader = stub.ReadDocument(&context, request);
+  bool complete = false;
+  std::string broken;
+  repov2::ReadDocumentResponse frame;
+  while (broken.empty() && reader->Read(&frame)) {
+    if (complete) {
+      broken = "the repository sent a frame after the read's completion";
+    } else if (frame.has_complete()) {
+      complete = true;
+    } else if (frame.has_part_data()) {
+      const auto& data = frame.part_data();
+      if (data.selector().part() != repov2::DOCUMENT_PART_PARSED) {
+        broken = "the repository answered a read of PARSED with another part";
+      } else if (data.offset() != static_cast<int64_t>(fragment->size())) {
+        broken = "the repository sent the PARSED part out of order";
+      } else if (fragment->size() + data.data().size() > kMaxParsedBytes) {
+        broken = "the stored PARSED part is larger than " + std::to_string(kMaxParsedBytes) +
+                 " bytes";
+      } else {
+        fragment->append(data.data());
+      }
+    }
+  }
+  if (!broken.empty()) {
+    context.TryCancel();
+    reader->Finish();
+    *protocol_error = std::move(broken);
+    return grpc::Status::OK;
+  }
+  const grpc::Status status = reader->Finish();
+  if (status.ok() && !complete) {
+    *protocol_error = "the repository ended the read of PARSED without completing it";
+  }
+  return status;
+}
+
+// How the conversion went, in the repository's vocabulary. The repository
+// has no name for a status other than these three; such a status is left
+// unspecified there and named in the result's error text.
+void set_outcome(const parsev1::ConvertDocumentResponse& conversion, repov1::ParserResult* ours) {
+  switch (conversion.status()) {
+    case parsev1::CONVERSION_STATUS_SUCCESS:
+      ours->set_status(repov1::PARSE_STATUS_OK);
+      return;
+    case parsev1::CONVERSION_STATUS_PARTIAL_SUCCESS:
+      ours->set_status(repov1::PARSE_STATUS_PARTIAL);
+      break;
+    case parsev1::CONVERSION_STATUS_FAILURE:
+      ours->set_status(repov1::PARSE_STATUS_FAILED);
+      break;
+    default:
+      ours->set_status(repov1::PARSE_STATUS_UNSPECIFIED);
+      break;
+  }
+  std::string reason;
+  for (const auto& error : conversion.errors()) {
+    if (!reason.empty()) reason += "; ";
+    if (!error.module_name().empty()) reason += error.module_name() + ": ";
+    reason += error.error_message();
+  }
+  if (reason.empty()) {
+    reason = "conversion status " +
+             (conversion.has_status_raw() ? conversion.status_raw()
+                                          : parsev1::ConversionStatus_Name(conversion.status()));
+  }
+  ours->set_error(reason);
+}
+
+// The PARSED part this save stores: `fragment` (the expected revision's
+// part, or nothing) with this target's entry set to the conversion. The same
+// input serializes to the same bytes, which is what lets a repeated save
+// replay. No parse time is recorded for the same reason: the bundle holds
+// none.
+bool parsed_fragment(const parsev1::RepositoryTarget& target, const Member& document,
+                     const parsev1::ConvertDocumentResponse& conversion,
+                     repov1::Document fragment, std::string* bytes) {
+  if (fragment.doc_id().empty()) fragment.set_doc_id(target.doc_id());
+  repov1::ParserResult& ours = (*fragment.mutable_parser_results())[kParserName];
+  ours.Clear();
+  ours.set_parser_name(kParserName);
+  ours.set_parser_version(GRPARSE_VERSION);
+  set_outcome(conversion, &ours);
+  auto* shape = ours.mutable_document()->mutable_shape();
+  shape->set_type_url(kDocumentTypeUrl);
+  shape->set_value(document.file->bytes);
+  bytes->clear();
+  google::protobuf::io::StringOutputStream sink(bytes);
+  google::protobuf::io::CodedOutputStream coded(&sink);
+  coded.SetSerializationDeterministic(true);
+  return fragment.SerializeToCodedStream(&coded) && !coded.HadError();
 }
 
 grpc::Status invalid(const std::string& field, const std::string& value,
@@ -533,9 +704,13 @@ grpc::Status deliver_repository(const RepositoryConfig& config,
   result->clear_repository_failure();
   Member document;
   Member response;
+  parsev1::ConvertDocumentResponse conversion;
   try {
-    document = member_of(files, kDocumentMember, kDocumentSubject);
+    document = member_of(files, kDocumentMember, std::string_view());
     response = member_of(files, kResponseMember, kResponseSubject);
+    if (!conversion.ParseFromString(response.file->bytes)) {
+      throw std::logic_error("the result bundle's response.pb does not parse");
+    }
   } catch (const std::logic_error& defect) {
     return grpc::Status(grpc::StatusCode::INTERNAL,
                         std::string("repository target: ") + defect.what());
@@ -545,17 +720,38 @@ grpc::Status deliver_repository(const RepositoryConfig& config,
                                        : derived_operation_id(target, document, response);
   const auto stub = repov2::DocumentService::NewStub(channel_for(config));
 
-  // The blobs the document already holds that are not this target's own
-  // stay; a BLOBS PUT that left them out would drop them.
-  std::vector<repov1::Blob> kept;
+  // What the document already holds that is not this target's own stays: a
+  // PUT of a part replaces all of it, so a save that left the other blobs or
+  // the other parsers' results out would drop them.
+  Base base;
+  repov1::Document stored_parsed;
   if (target.has_revision()) {
-    if (const grpc::Status read = read_kept_blobs(*stub, config, target, &kept); !read.ok()) {
-      return failed(result, read, operation_id, "reading the expected revision's blobs");
+    if (const grpc::Status read = read_base(*stub, config, target, &base); !read.ok()) {
+      return failed(result, read, operation_id, "reading the expected revision");
+    }
+    if (base.holds_parsed) {
+      const std::string step = "reading the expected revision's parser results";
+      std::string stored;
+      std::string protocol_error;
+      const grpc::Status read = read_parsed(*stub, config, target, &stored, &protocol_error);
+      if (!read.ok()) return failed(result, read, operation_id, step);
+      if (protocol_error.empty() && !stored_parsed.ParseFromString(stored)) {
+        protocol_error = "the stored PARSED part does not parse as a document fragment";
+      }
+      if (!protocol_error.empty()) {
+        return failed(result, parsev1::REPOSITORY_FAILURE_REASON_PROTOCOL,
+                      grpc::Status(grpc::StatusCode::OK, protocol_error), operation_id, step);
+      }
     }
   }
+  std::string fragment;
+  if (!parsed_fragment(target, document, conversion, std::move(stored_parsed), &fragment)) {
+    return grpc::Status(grpc::StatusCode::INTERNAL,
+                        "repository target: the parser result does not serialize");
+  }
 
-  // The first accession: document.pb streamed, response.pb beside it when
-  // it fits the frame.
+  // The first accession: the parser result streamed as the PARSED part,
+  // response.pb beside it as a blob when it fits the frame.
   const bool response_rides = response.file->bytes.size() <= config.inline_budget_bytes;
   repov2::SaveDocumentRequest save = save_frame(target, operation_id);
   if (target.has_revision()) {
@@ -575,18 +771,15 @@ grpc::Status deliver_repository(const RepositoryConfig& config,
     }
     *save.add_writes() = put(repov2::DOCUMENT_PART_CORE);
   }
-  std::vector<repov1::Blob> blobs = kept;
-  blobs.push_back(blob_of(document, false));
+  std::vector<repov1::Blob> blobs = base.kept;
   if (response_rides) blobs.push_back(blob_of(response, true));
-  const Upload first =
-      upload(*stub, config, header_of(std::move(save), std::move(blobs), document),
-             document.file->bytes);
+  write_blobs(&save, std::move(blobs), base.holds_own_blobs);
+  const Upload first = upload(*stub, config, parsed_header(std::move(save), fragment), fragment);
   if (!first.status.ok()) return failed(result, first.status, operation_id, "the save");
   if (const std::string defect = commit_defect(first, operation_id); !defect.empty()) {
     return failed(result, parsev1::REPOSITORY_FAILURE_REASON_PROTOCOL,
                   grpc::Status(grpc::StatusCode::OK, defect), operation_id, "the save");
   }
-  report_object(document, result);
 
   const repov2::Accession* last = &first.saved.accession();
   bool replayed = first.replayed;
@@ -598,10 +791,10 @@ grpc::Status deliver_repository(const RepositoryConfig& config,
     repov2::SaveDocumentRequest follow = save_frame(target, second_id);
     *follow.mutable_target()->mutable_address() = first.saved.accession().address();
     follow.mutable_expected()->set_revision(first.saved.accession().revision());
-    std::vector<repov1::Blob> follow_blobs = kept;
-    follow_blobs.push_back(blob_of(document, false));
+    std::vector<repov1::Blob> follow_blobs = base.kept;
     follow_blobs.push_back(blob_of(response, false));
-    second = upload(*stub, config, header_of(std::move(follow), std::move(follow_blobs), response),
+    write_blobs(&follow, std::move(follow_blobs), false);
+    second = upload(*stub, config, blob_header(std::move(follow), response),
                     response.file->bytes);
     grpc::Status broken = grpc::Status::OK;
     if (!second.status.ok()) {
@@ -612,7 +805,7 @@ grpc::Status deliver_repository(const RepositoryConfig& config,
                       "the save of response.pb");
     }
     if (!broken.ok()) {
-      // document.pb is in the repository all the same, and the caller is
+      // The Document is in the repository all the same, and the caller is
       // told where.
       result->mutable_repository_failure()->set_committed_revision(
           first.saved.accession().revision());

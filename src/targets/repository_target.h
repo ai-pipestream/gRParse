@@ -37,8 +37,8 @@
 
 namespace grparse::targets {
 
-// What response.pb may weigh and still ride the call that streams
-// document.pb. The repository bounds one inbound message (10 MiB on its
+// What response.pb may weigh and still ride the call that streams the
+// parser result. The repository bounds one inbound message (10 MiB on its
 // stock listener) and the same frame carries the save itself, so the budget
 // stays well under it.
 inline constexpr size_t kRepositoryInlineBudgetBytes = 4 * 1024 * 1024;
@@ -70,9 +70,10 @@ std::string describe_repository_setting();
 // typed OptionRejection naming the field.
 grpc::Status check_repository_target(const ai::pipestream::parse::v1::RepositoryTarget& target);
 
-// Saves the bundle's document.pb and response.pb as the two blobs
-// RepositoryTarget documents and fills `result`: `repository` and `objects`
-// when the repository committed, `repository_failure` when it did not.
+// Saves the bundle's document.pb as the typed parser result and its
+// response.pb as the blob RepositoryTarget documents, and fills `result`:
+// `repository` and `objects` when the repository committed,
+// `repository_failure` when it did not.
 // Blocking. A save the repository refused or that broke on the way returns
 // UNAVAILABLE with the repository's own status in the message and in
 // result->repository_failure; it never returns OK for a save that did not
