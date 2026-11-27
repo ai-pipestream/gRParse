@@ -318,6 +318,9 @@ EmbeddingConfig read_embedding_config(const std::filesystem::path& models_dir) {
       throw std::invalid_argument("GRPARSE_EMBEDDING_DEVICE must be GPU or GPU.<index>");
     }
   }
+  if (config.backend == EmbeddingBackend::openvino) {
+    config.openvino_cache_dir = configured_openvino_cache_dir();
+  }
   config.gpu_index = configured_index("GRPARSE_EMBEDDING_GPU_INDEX", 0);
   config.max_batch_size = configured_size("GRPARSE_EMBEDDING_BATCH_SIZE", 32, 1024);
   config.max_batch_bytes = configured_size("GRPARSE_EMBEDDING_BATCH_BYTES", 1024 * 1024,

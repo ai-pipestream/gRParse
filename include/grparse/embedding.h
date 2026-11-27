@@ -62,6 +62,9 @@ struct EmbeddingConfig {
   EmbeddingBackend backend = EmbeddingBackend::disabled;
   std::filesystem::path model_dir;
   std::string device = "GPU";  // native OpenVINO device
+  // Compiled-blob cache for the native OpenVINO device (GRPARSE_OPENVINO_CACHE_DIR,
+  // the directory the ONNX Runtime sessions use too); empty disables it.
+  std::string openvino_cache_dir;
   int gpu_index = 0;           // native TensorRT device
   std::size_t max_batch_size = 32;
   std::size_t max_batch_bytes = 1024 * 1024;
